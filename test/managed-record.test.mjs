@@ -4,6 +4,7 @@ import {
   decodeRecordData,
   encodeRecordData,
   parseManagedDocument,
+  renderLegacyManagedDocument,
   renderManagedDocument
 } from "../src/managed-record.mjs";
 
@@ -34,7 +35,7 @@ test("encodes managed data on one base64url line and decodes it exactly", () => 
   assert.deepEqual(decodeRecordData(encoded), value);
 });
 
-test("renders a readable time range and distinctly labeled verbatim sources", () => {
+test("renders internal data and verbatim sources as collapsed callouts", () => {
   const value = entry({
     sources: [
       {kind: "initial", text: "初始原文", sourceId: "aaaaaaaaaaaaaaaa"},
@@ -44,15 +45,23 @@ test("renders a readable time range and distinctly labeled verbatim sources", ()
   const markdown = renderManagedDocument("2026-07-18", [value]);
   assert.match(markdown, /^# 2026年07月18日工作记录/m);
   assert.match(markdown, /^## 记录 1｜16:30–17:30｜标品订单RV会议$/m);
+  assert.match(markdown, /^> \[!abstract\]- 内部数据（程序使用）\n> llw-record-data: [A-Za-z0-9_-]+$/m);
   assert.match(markdown, /> \[!quote\]- 原始内容 1｜首次记录\n> 初始原文/);
   assert.match(markdown, /> \[!quote\]- 原始内容 2｜补充\n> 补充第一行\n> 补充第二行/);
-  assert.match(markdown, /<!-- llw-record-data: [A-Za-z0-9_-]+ -->/);
+  assert.doesNotMatch(markdown, /<!-- llw-record-(start|data|end):/);
 });
 
 test("round-trips a complete managed document", () => {
   const value = entry();
   const markdown = renderManagedDocument("2026-07-18", [value]);
   assert.deepEqual(parseManagedDocument(markdown, "2026-07-18"), [value]);
+});
+
+test("continues parsing the existing legacy comment format", () => {
+  const value = entry();
+  const legacy = renderLegacyManagedDocument("2026-07-18", [value]);
+  assert.match(legacy, /llw-record-data/);
+  assert.deepEqual(parseManagedDocument(legacy, "2026-07-18"), [value]);
 });
 
 test("rejects invalid ids, duplicate source ids, and malformed markers", () => {
@@ -62,5 +71,7 @@ test("rejects invalid ids, duplicate source ids, and malformed markers", () => {
     {kind: "supplement", text: "二", sourceId: "aaaaaaaaaaaaaaaa"}
   ]})), /duplicate_source_id/);
   const markdown = renderManagedDocument("2026-07-18", [entry()]);
-  assert.throws(() => parseManagedDocument(markdown.replace(/<!-- llw-record-end:[^>]+ -->/, ""), "2026-07-18"), /malformed_record_markers/);
+  assert.throws(() => parseManagedDocument(markdown.replace(/^> llw-record-data: [A-Za-z0-9_-]+$/m, ""), "2026-07-18"), /malformed_record_markers/);
+  const legacy = renderLegacyManagedDocument("2026-07-18", [entry()]);
+  assert.throws(() => parseManagedDocument(legacy.replace(/<!-- llw-record-end:[^>]+ -->/, ""), "2026-07-18"), /malformed_record_markers/);
 });

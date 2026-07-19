@@ -24,6 +24,22 @@ export function parseManagedDocument(markdown, date) {
   if (typeof markdown !== "string" || !DATE.test(date)) throw new Error("invalid_managed_document");
   const expectedHeading = `# ${date.slice(0, 4)}年${date.slice(5, 7)}月${date.slice(8, 10)}日工作记录`;
   if (!markdown.startsWith(expectedHeading)) throw new Error("unexpected_daily_file");
+  const headers = [...markdown.matchAll(/(?:^# [^\n]+\n\n|^---\n\n)> \[!abstract\]- 内部数据（程序使用）$/gm)];
+  if (headers.length === 0) return parseLegacyManagedDocument(markdown, date);
+  if (/^<!-- llw-record-start:/m.test(markdown)) throw new Error("mixed_record_formats");
+  const blocks = [...markdown.matchAll(/(?:^# [^\n]+\n\n|^---\n\n)> \[!abstract\]- 内部数据（程序使用）\n> llw-record-data: ([A-Za-z0-9_-]+)\n\n(?=## )/gm)];
+  if (blocks.length !== headers.length) throw new Error("malformed_record_markers");
+  return blocks.map(match => {
+    const entry = decodeRecordData(match[1]);
+    if (entry.record.occurred_date !== date) throw new Error("record_date_mismatch");
+    return entry;
+  });
+}
+
+export function parseLegacyManagedDocument(markdown, date) {
+  if (typeof markdown !== "string" || !DATE.test(date)) throw new Error("invalid_managed_document");
+  const expectedHeading = `# ${date.slice(0, 4)}年${date.slice(5, 7)}月${date.slice(8, 10)}日工作记录`;
+  if (!markdown.startsWith(expectedHeading)) throw new Error("unexpected_daily_file");
   const starts = [...markdown.matchAll(/^<!-- llw-record-start: ([a-f0-9]{16}) ([0-9-]+) -->$/gm)];
   const ends = [...markdown.matchAll(/^<!-- llw-record-end: ([a-f0-9]{16}) -->$/gm)];
   if (starts.length !== ends.length) throw new Error("malformed_record_markers");
@@ -37,6 +53,17 @@ export function parseManagedDocument(markdown, date) {
     if (entry.record.occurred_date !== date) throw new Error("record_date_mismatch");
     return entry;
   });
+}
+
+export function renderLegacyManagedDocument(date, entries) {
+  if (!DATE.test(date) || !Array.isArray(entries)) throw new Error("invalid_managed_document");
+  for (const entry of entries) {
+    validateEntry(entry);
+    if (entry.record.occurred_date !== date) throw new Error("record_date_mismatch");
+  }
+  const heading = `# ${date.slice(0, 4)}年${date.slice(5, 7)}月${date.slice(8, 10)}日工作记录`;
+  const blocks = entries.map((entry, index) => renderLegacyBlock(entry, index + 1));
+  return `${heading}\n\n${blocks.join("\n\n---\n\n")}\n`;
 }
 
 export function renderManagedDocument(date, entries) {
@@ -80,6 +107,14 @@ function validateRecord(record) {
 }
 
 function renderBlock(entry, number) {
+  return `> [!abstract]- 内部数据（程序使用）\n> llw-record-data: ${encodeRecordData(entry)}\n\n${renderVisibleBlock(entry, number)}`;
+}
+
+function renderLegacyBlock(entry, number) {
+  return `<!-- llw-record-start: ${entry.id} ${entry.sortKey} -->\n<!-- llw-record-data: ${encodeRecordData(entry)} -->\n${renderVisibleBlock(entry, number)}\n\n<!-- llw-record-end: ${entry.id} -->`;
+}
+
+function renderVisibleBlock(entry, number) {
   const {record} = entry;
   const time = record.occurred_time
     ? `${record.occurred_time}${record.occurred_end_time ? `–${record.occurred_end_time}` : ""}`
@@ -92,7 +127,7 @@ function renderBlock(entry, number) {
     const quoted = source.text.split(/\r?\n/).map(line => `> ${line}`).join("\n");
     return `> [!quote]- 原始内容 ${index + 1}｜${label}\n${quoted}`;
   }).join("\n\n");
-  return `<!-- llw-record-start: ${entry.id} ${entry.sortKey} -->\n<!-- llw-record-data: ${encodeRecordData(entry)} -->\n## 记录 ${number}｜${time}｜${safeInline(record.title)}\n\n> [!info] 关键信息\n> - 时间：${record.occurred_date}${record.occurred_time ? ` ${time}` : "（具体时间未说明）"}（北京时间）\n> - 人物：${people}\n> - 地点：${location}\n\n### 整理后记录\n\n${safeParagraph(record.summary)}\n\n### 后续事项\n\n${followUps}\n\n${sources}\n\n<!-- llw-record-end: ${entry.id} -->`;
+  return `## 记录 ${number}｜${time}｜${safeInline(record.title)}\n\n> [!info] 关键信息\n> - 时间：${record.occurred_date}${record.occurred_time ? ` ${time}` : "（具体时间未说明）"}（北京时间）\n> - 人物：${people}\n> - 地点：${location}\n\n### 整理后记录\n\n${safeParagraph(record.summary)}\n\n### 后续事项\n\n${followUps}\n\n${sources}`;
 }
 
 function safeInline(value) { return String(value).replace(/[\r\n|#]/g, " ").trim(); }
