@@ -94,9 +94,7 @@ export class DailyWorkService {
 
   async ignore(message, decision) {
     await this.state.clearConversation();
-    const reason = String(decision.reason || "不是工作记录").trim();
-    const reply = `这段内容未作为工作记录入库。原因：${reason}`;
-    return outcome("ignored", reply);
+    return outcome("ignored", null);
   }
 }
 

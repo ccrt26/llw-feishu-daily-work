@@ -4,6 +4,11 @@ import {buildCapabilityRegistry} from "../src/capabilities/index.mjs";
 
 test("registry has stable explicit order and omits disabled capabilities",() => {
   const daily={name:"daily-work"},invoice={name:"invoice"};
-  assert.deepEqual(buildCapabilityRegistry({dailyWork:daily,invoice,enabled:{"daily-work":true,invoice:true}}),[daily,invoice]);
-  assert.deepEqual(buildCapabilityRegistry({dailyWork:daily,invoice,enabled:{"daily-work":true,invoice:false}}),[daily]);
+  const contracts={"daily-work":{capability:"daily-work"},invoice:{capability:"invoice"}};
+  assert.deepEqual(buildCapabilityRegistry({dailyWork:daily,invoice,contracts,enabled:{"daily-work":true,invoice:true}}),[
+    {...daily,routingContract:contracts["daily-work"]},{...invoice,routingContract:contracts.invoice}
+  ]);
+  assert.deepEqual(buildCapabilityRegistry({dailyWork:daily,invoice,contracts,enabled:{"daily-work":true,invoice:false}}),[
+    {...daily,routingContract:contracts["daily-work"]}
+  ]);
 });

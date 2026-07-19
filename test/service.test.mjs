@@ -106,7 +106,8 @@ test("ignore never writes", async () => {
   const result = await h.service.handleEvent({...baseEvent, content: "收到，谢谢"});
   assert.equal(h.creates.length, 0);
   assert.equal(h.supplements.length, 0);
-  assert.equal(result.reply, "这段内容未作为工作记录入库。原因：普通回复");
+  assert.equal(result.reply, null);
+  assert.equal(result.status,"ignored");
   assert.equal(h.sends.length, 0);
 });
 
@@ -145,16 +146,14 @@ test("missing Vault never falls back to a Mac directory", async () => {
   assert.equal(h.sends.length, 0);
 });
 
-test("daily-work capability matches only non-empty text and maps normalized events", async () => {
+test("daily-work capability maps only an already-selected normalized event", async () => {
   const received = [];
   const capability = createDailyWorkCapability({service:{handleEvent:async event => {
     received.push(event);
     return {status:"ignored", reply:"未入库", artifacts:[]};
   }}});
   assert.equal(capability.name, "daily-work");
-  assert.equal(capability.match({messageType:"text", content:"工作内容"}), true);
-  assert.equal(capability.match({messageType:"text", content:"   "}), false);
-  assert.equal(capability.match({messageType:"image", content:"x"}), false);
+  assert.equal(Object.hasOwn(capability,"match"),false);
   const result = await capability.handle({messageId:"m1", createTimeMs:1784426400000, content:"工作内容", senderId:"u1", chatId:"c1", chatType:"p2p", messageType:"text"});
   assert.equal(result.status, "ignored");
   assert.deepEqual(received[0], {message_id:"m1", create_time:1784426400000, content:"工作内容", sender_id:"u1", chat_id:"c1", chat_type:"p2p", message_type:"text"});

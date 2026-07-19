@@ -1,7 +1,6 @@
 export function createDailyWorkCapability({service}) {
   return {
     name: "daily-work",
-    match: event => event.messageType === "text" && event.content.trim().length > 0,
     handle: event => service.handleEvent({
       message_id: event.messageId,
       create_time: event.createTimeMs,

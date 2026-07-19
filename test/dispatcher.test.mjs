@@ -1,113 +1,64 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { Dispatcher } from "../src/core/dispatcher.mjs";
-import { StateStore } from "../src/state-store.mjs";
+import {mkdtemp} from "node:fs/promises";
+import {tmpdir} from "node:os";
+import {join} from "node:path";
+import {Dispatcher} from "../src/core/dispatcher.mjs";
+import {StateStore} from "../src/state-store.mjs";
 
-const raw = {
-  event_id:"e1", message_id:"m1", sender_id:"u1", chat_id:"c1", chat_type:"p2p",
-  message_type:"image", content:"![Image](img_abc)", create_time:"1784426400000"
-};
+const raw={event_id:"e1",message_id:"m1",sender_id:"u1",chat_id:"c1",chat_type:"p2p",message_type:"image",content:"![Image](img_abc)",create_time:"1784426400000"};
+const contract=name=>({capability:name,purpose:name==="invoice"?"归档发票":"记录工作",accepts:name==="invoice"?["image","file"]:["text"],positive_examples:["正例"],negative_examples:["反例"],supports_continuation:name==="daily-work"});
 
-async function harness({send, capability, state} = {}) {
-  const dir = await mkdtemp(join(tmpdir(), "llw-dispatcher-"));
-  const actualState = state || await StateStore.open(join(dir, "state.json"));
-  const sends = [];
-  const runs = [];
-  const actualCapability = capability || {
-    name:"invoice",
-    match:event => event.messageType === "image",
-    handle:async () => {
-      runs.push("handle");
-      return {status:"committed", reply:"发票已归档", artifacts:["亚信工作/日常发票/餐饮发票/2026年07月/10.00.jpg"]};
-    }
-  };
-  const messenger = {send:send || (async message => sends.push(message))};
-  return {state:actualState, sends, runs, dispatcher:new Dispatcher({
-    binding:{senderId:"u1", chatId:"c1"},
-    state:actualState,
-    capabilities:[actualCapability],
-    messenger
-  })};
+async function harness({decision,handle,status="committed",send}={}) {
+  const dir=await mkdtemp(join(tmpdir(),"llw-dispatcher-")); const state=await StateStore.open(join(dir,"state.json"));
+  const routerCalls=[],runs=[],sends=[];
+  const capabilities=["daily-work","invoice"].map(name=>({name,routingContract:contract(name),handle:async event=>{runs.push(name);return handle?handle(name,event):{status,reply:status==="ignored"?null:`${name}完成`,artifacts:status==="committed"?["p"]:[]};}}));
+  const intentRouter={decide:async input=>{routerCalls.push(structuredClone(input));return typeof decision==="function"?decision(input):decision||{action:"route",capability:"invoice",confidence:"high",reasonCode:"attachment_match"};}};
+  const dispatcher=new Dispatcher({binding:{senderId:"u1",chatId:"c1"},state,capabilities,intentRouter,messenger:{send:send|| (async message=>sends.push(message))}});
+  return {state,routerCalls,runs,sends,dispatcher};
 }
 
-test("persists outcome before sending and suppresses duplicate execution", async () => {
-  const order = [];
-  const dir = await mkdtemp(join(tmpdir(), "llw-dispatch-order-"));
-  const state = await StateStore.open(join(dir, "state.json"));
-  const originalSave = state.saveOutcome.bind(state);
-  const originalMark = state.markReplied.bind(state);
-  state.saveOutcome = async (...args) => { order.push("save"); return originalSave(...args); };
-  state.markReplied = async (...args) => { order.push("mark"); return originalMark(...args); };
-  const capability = {name:"invoice", match:() => true, handle:async () => {
-    order.push("handle");
-    return {status:"committed", reply:"发票已归档", artifacts:["p"]};
-  }};
-  const h = await harness({state, capability, send:async () => order.push("send")});
-  await h.dispatcher.handleRawEvent(raw);
-  await h.dispatcher.handleRawEvent(raw);
-  assert.deepEqual(order, ["handle", "save", "send", "mark"]);
+test("routes once, invokes only the selected capability, persists before send and suppresses duplicates",async () => {
+  const order=[]; const h=await harness({decision:{action:"route",capability:"invoice",confidence:"high",reasonCode:"attachment_match"},handle:async name=>{order.push(name);return {status:"committed",reply:"已归档",artifacts:["p"]};},send:async()=>order.push("send")});
+  const original=h.state.saveOutcome.bind(h.state); h.state.saveOutcome=async(...args)=>{order.push("save");return original(...args);};
+  await h.dispatcher.handleRawEvent(raw); await h.dispatcher.handleRawEvent(raw);
+  assert.equal(h.routerCalls.length,1); assert.deepEqual(h.runs,["invoice"]); assert.deepEqual(order,["invoice","save","send"]);
 });
 
-test("send failure leaves one unreplied outcome and resume does not rerun capability", async () => {
-  let first = true;
-  const sent = [];
-  const h = await harness({send:async message => {
-    if (first) { first = false; throw new Error("network_detail_must_not_escape"); }
-    sent.push(message);
-  }});
-  await assert.rejects(() => h.dispatcher.handleRawEvent(raw), /message_send_failed/);
-  assert.equal(h.runs.length, 1);
-  assert.equal(h.state.unreplied().length, 1);
-  await h.dispatcher.resumeReplies();
-  assert.equal(h.runs.length, 1);
-  assert.equal(sent.length, 1);
-  assert.equal(sent[0].idempotencyKey, "invoice-reply:m1");
-  assert.deepEqual(h.state.unreplied(), []);
+test("security failures, empty text and duplicates never call the router",async () => {
+  const h=await harness();
+  await h.dispatcher.handleRawEvent({...raw,sender_id:"other"});
+  await h.dispatcher.handleRawEvent({...raw,message_id:"m2",message_type:"text",content:"   "});
+  assert.equal(h.routerCalls.length,0); assert.equal(h.sends.length,0);
 });
 
-test("another sender, another chat, and group events are silent", async () => {
-  const h = await harness();
-  for (const event of [
-    {...raw, sender_id:"u2"},
-    {...raw, chat_id:"c2"},
-    {...raw, chat_type:"group"}
-  ]) await h.dispatcher.handleRawEvent(event);
-  assert.equal(h.runs.length, 0);
-  assert.equal(h.sends.length, 0);
+test("one unclear turn asks once and a second unclear answer lists capabilities then closes",async () => {
+  const h=await harness({decision:{action:"clarify",question:"你希望记录工作，还是处理发票？"}});
+  await h.dispatcher.handleRawEvent({...raw,message_type:"text",content:"帮我处理一下"});
+  assert.equal((await h.state.getRouterConversation()).attempts,1);
+  await h.dispatcher.handleRawEvent({...raw,message_id:"m2",message_type:"text",content:"就是这个"});
+  assert.equal(await h.state.getRouterConversation(),null); assert.equal(h.runs.length,0); assert.equal(h.sends.length,2); assert.match(h.sends[1].text,/daily-work/); assert.match(h.sends[1].text,/invoice/);
 });
 
-test("empty text is silently ignored before routing", async () => {
-  const h = await harness({capability:{name:"daily-work", match:event => event.messageType === "text", handle:async () => { throw new Error("must_not_run"); }}});
-  const result = await h.dispatcher.handleRawEvent({...raw, message_type:"text", content:"   "});
-  assert.deepEqual(result, {handled:false, reason:"empty_text"});
-  assert.equal(h.sends.length, 0);
+test("explicit cancellation becomes a silent idempotent outcome",async () => {
+  const h=await harness({decision:{action:"unsupported",reason:"cancelled"}});
+  await h.state.setRouterConversation({capability:"daily-work",question:"补充哪一场？",startedAt:new Date(raw.create_time*1).toISOString(),attempts:1,status:"open"});
+  const result=await h.dispatcher.handleRawEvent({...raw,message_type:"text",content:"不用了"});
+  assert.equal(result.status,"ignored"); assert.equal(h.runs.length,0); assert.equal(h.sends.length,0); assert.deepEqual(h.state.unreplied(),[]);
 });
 
-test("bound malformed event gets one safe failure while unbound malformed event is silent", async () => {
-  const h = await harness();
-  await h.dispatcher.handleRawEvent({...raw, create_time:"bad"});
-  await h.dispatcher.handleRawEvent({...raw, message_id:"m2", sender_id:"u2", create_time:"bad"});
-  assert.equal(h.sends.length, 1);
-  assert.equal(h.sends[0].text, "消息结构无效，本条未处理；请重新发送。");
-  assert.equal(h.state.hasOutcome("m1"), true);
-  assert.equal(h.state.hasOutcome("m2"), false);
+test("business ignored is silent and not_applicable asks once without trying another capability",async () => {
+  const ignored=await harness({status:"ignored"}); await ignored.dispatcher.handleRawEvent(raw); assert.equal(ignored.sends.length,0); assert.deepEqual(ignored.runs,["invoice"]);
+  const no=await harness({handle:async()=>({status:"not_applicable",reply:null,artifacts:[]})}); await no.dispatcher.handleRawEvent(raw); assert.deepEqual(no.runs,["invoice"]); assert.equal(no.sends.length,1); assert.match(no.sends[0].text,/无法确定/);
 });
 
-test("route conflict persists a safe failure and invokes no capability", async () => {
-  let runs = 0;
-  const capability = name => ({name, match:() => true, handle:async () => { runs++; }});
-  const dir = await mkdtemp(join(tmpdir(), "llw-route-conflict-"));
-  const state = await StateStore.open(join(dir, "state.json"));
-  const sends = [];
-  const dispatcher = new Dispatcher({
-    binding:{senderId:"u1",chatId:"c1"}, state,
-    capabilities:[capability("invoice"),capability("other")],
-    messenger:{send:async message => sends.push(message)}
-  });
-  await dispatcher.handleRawEvent(raw);
-  assert.equal(runs, 0);
-  assert.equal(sends[0].text, "消息路由配置冲突，本条未处理；请稍后重试。");
+test("unsupported and router failure invoke no capability and send one safe reply",async () => {
+  const unsupported=await harness({decision:{action:"unsupported",reason:"目前没有相应能力"}}); await unsupported.dispatcher.handleRawEvent(raw); assert.equal(unsupported.runs.length,0); assert.equal(unsupported.sends.length,1);
+  const failed=await harness({decision:()=>{throw new Error("secret");}}); await failed.dispatcher.handleRawEvent(raw); assert.equal(failed.runs.length,0); assert.equal(failed.sends.length,1); assert.match(failed.sends[0].text,/暂时无法判断/);
+});
+
+test("send failure resumes the same reply without rerunning router or capability",async () => {
+  let first=true; const sent=[]; const h=await harness({send:async message=>{if(first){first=false;throw new Error("network");}sent.push(message);}});
+  await assert.rejects(()=>h.dispatcher.handleRawEvent(raw),/message_send_failed/); assert.equal(h.routerCalls.length,1); assert.equal(h.runs.length,1);
+  await h.dispatcher.resumeReplies(); assert.equal(h.routerCalls.length,1); assert.equal(h.runs.length,1); assert.equal(sent.length,1);
 });

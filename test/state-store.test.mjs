@@ -22,16 +22,16 @@ function conversation() {
   };
 }
 
-test("persists a version-3 activity conversation with mode 0600", async () => {
+test("persists a version-4 activity conversation with mode 0600", async () => {
   const {file} = await fresh();
   const store = await StateStore.open(file);
   await store.setConversation(conversation());
   const reopened = await StateStore.open(file);
-  assert.equal(reopened.version(), 3);
+  assert.equal(reopened.version(), 4);
   assert.deepEqual(reopened.getConversation(), conversation());
   assert.deepEqual(reopened.getCapabilityState("daily-work"), {conversation: conversation()});
   assert.equal((await stat(file)).mode & 0o777, 0o600);
-  assert.equal(JSON.parse(await readFile(file, "utf8")).version, 3);
+  assert.equal(JSON.parse(await readFile(file, "utf8")).version, 4);
 });
 
 test("migrates version-1 pending data without preserving forceDaily semantics", async () => {
@@ -52,7 +52,7 @@ test("migrates version-1 pending data without preserving forceDaily semantics", 
     candidateIds: []
   });
   const persisted = JSON.parse(await readFile(file, "utf8"));
-  assert.equal(persisted.version, 3);
+  assert.equal(persisted.version, 4);
   assert.equal(JSON.stringify(persisted).includes("forceDaily"), false);
   assert.equal(store.hasOutcome("old"), true);
 });
@@ -65,11 +65,11 @@ test("migrates version-2 conversation and outcomes without loss", async () => {
     outcomes: {m1: {status: "committed", reply: "已入库", recordIds: ["r1"], replied: true}}
   }));
   const store = await StateStore.open(file);
-  assert.equal(store.version(), 3);
+  assert.equal(store.version(), 4);
   assert.deepEqual(store.getConversation(), conversation());
   assert.equal(store.hasOutcome("m1"), true);
   const persisted = JSON.parse(await readFile(file, "utf8"));
-  assert.equal(persisted.version, 3);
+  assert.equal(persisted.version, 4);
   assert.deepEqual(persisted.capabilityState["daily-work"], {conversation: conversation()});
 });
 
@@ -107,6 +107,35 @@ test("persists outcome before reply and exposes unreplied work", async () => {
   assert.deepEqual(store.unreplied(), [{messageId: "m1", status: "committed", reply: "已入库", recordIds: ["r1"], replied: false}]);
   await store.markReplied("m1");
   assert.deepEqual((await StateStore.open(file)).unreplied(), []);
+});
+
+test("migrates exact version 3 without losing daily-work, invoice or outcomes",async () => {
+  const {file}=await fresh();
+  const invoice={transactions:{tx:{transactionId:"tx",status:"published"}}};
+  await writeFile(file,JSON.stringify({version:3,capabilityState:{"daily-work":{conversation:conversation()},invoice},outcomes:{m1:{status:"committed",reply:"已入库",artifacts:["p"],replied:true}}}));
+  const store=await StateStore.open(file);
+  assert.equal(store.version(),4);
+  assert.deepEqual(store.getConversation(),conversation());
+  assert.deepEqual(store.getCapabilityState("invoice"),invoice);
+  assert.equal(store.hasOutcome("m1"),true);
+  assert.deepEqual(store.getCapabilityState("router"),{conversation:null});
+});
+
+test("expires router conversations after 24 hours and preserves one attempt",async () => {
+  const {file}=await fresh(); const store=await StateStore.open(file);
+  const started="2026-07-18T12:00:00.000Z";
+  await store.setRouterConversation({capability:"daily-work",question:"这是补充哪一场？",startedAt:started,attempts:1,status:"open"});
+  assert.equal((await store.getRouterConversation(Date.parse(started)+23*60*60*1000)).capability,"daily-work");
+  assert.equal(await store.getRouterConversation(Date.parse(started)+24*60*60*1000),null);
+  assert.deepEqual((await StateStore.open(file)).getCapabilityState("router"),{conversation:null});
+  await assert.rejects(()=>store.setRouterConversation({capability:null,question:"x",startedAt:started,attempts:2,status:"open"}),/invalid_router_conversation/);
+});
+
+test("silent outcomes are persisted but never resumed or sent",async () => {
+  const {file}=await fresh(); const store=await StateStore.open(file);
+  await store.saveOutcome("silent",{capability:"daily-work",status:"ignored",reply:null,artifacts:[],noReplyRequired:true});
+  assert.deepEqual(store.unreplied(),[]);
+  assert.equal(store.hasOutcome("silent"),true);
 });
 
 test("persists invoice archive transactions and terminal status", async () => {

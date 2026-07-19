@@ -6,7 +6,6 @@ import {failure,formatArchive,formatNonArchive,formatUnsupported} from "./receip
 export function createInvoiceCapability({download,inspect,preparePdf,decide,validate,writer,cleanup=defaultCleanup,parse=parseInvoiceResource}) {
   return {
     name:"invoice",
-    match:event => ["image","file"].includes(event.messageType),
     async handle(event) {
       let resource;
       try { resource=parse(event); }

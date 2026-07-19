@@ -14,14 +14,21 @@ export class StateStore {
     let migrated = false;
     try {
       const parsed = JSON.parse(await readFile(file, "utf8"));
-      if (parsed?.version === 3 && parsed.capabilityState && typeof parsed.capabilityState === "object" && parsed.outcomes && typeof parsed.outcomes === "object") {
+      if (parsed?.version === 4 && parsed.capabilityState && typeof parsed.capabilityState === "object" && parsed.outcomes && typeof parsed.outcomes === "object") {
         data = {
-          version: 3,
+          version: 4,
           capabilityState: structuredClone(parsed.capabilityState),
           outcomes: structuredClone(parsed.outcomes)
         };
         if (!data.capabilityState["daily-work"]) data.capabilityState["daily-work"] = {conversation: null};
         if (!data.capabilityState.invoice) data.capabilityState.invoice = {};
+        if (!data.capabilityState.router) data.capabilityState.router = {conversation: null};
+      } else if (parsed?.version === 3 && parsed.capabilityState && typeof parsed.capabilityState === "object" && parsed.outcomes && typeof parsed.outcomes === "object") {
+        data={version:4,capabilityState:structuredClone(parsed.capabilityState),outcomes:structuredClone(parsed.outcomes)};
+        if (!data.capabilityState["daily-work"]) data.capabilityState["daily-work"]={conversation:null};
+        if (!data.capabilityState.invoice) data.capabilityState.invoice={};
+        data.capabilityState.router={conversation:null};
+        migrated=true;
       } else if (parsed?.version === 2 && parsed.outcomes && typeof parsed.outcomes === "object") {
         data = migratedState(parsed.conversation || null, parsed.outcomes);
         migrated = true;
@@ -39,6 +46,34 @@ export class StateStore {
 
   version() { return this.data.version; }
   getCapabilityState(name) { return structuredClone(this.data.capabilityState[name] || {}); }
+
+  async getRouterConversation(nowMs=Date.now()) {
+    const conversation=this.data.capabilityState.router?.conversation || null;
+    if (!conversation || conversation.status!=="open") return null;
+    if (nowMs-Date.parse(conversation.startedAt) < 24*60*60*1000) return structuredClone(conversation);
+    this.data.capabilityState.router.conversation=null;
+    await this.persist();
+    return null;
+  }
+
+  async setRouterConversation(conversation) {
+    validateRouterConversation(conversation);
+    this.data.capabilityState.router={conversation:structuredClone(conversation)};
+    await this.persist();
+  }
+
+  async closeRouterConversation(status) {
+    if (!["superseded","cancelled"].includes(status)) throw new Error("invalid_router_conversation_status");
+    const conversation=this.data.capabilityState.router?.conversation;
+    if (!conversation) return;
+    conversation.status=status;
+    await this.persist();
+  }
+
+  async clearRouterConversation() {
+    this.data.capabilityState.router={conversation:null};
+    await this.persist();
+  }
 
   listInvoiceTransactions() {
     const transactions = this.data.capabilityState.invoice?.transactions || {};
@@ -86,7 +121,7 @@ export class StateStore {
 
   unreplied() {
     return Object.entries(this.data.outcomes)
-      .filter(([, outcome]) => !outcome.replied)
+      .filter(([, outcome]) => !outcome.replied && outcome.noReplyRequired !== true)
       .map(([messageId, outcome]) => ({messageId, ...structuredClone(outcome)}));
   }
 
@@ -140,18 +175,26 @@ export class StateStore {
 
 function emptyState() {
   return {
-    version: 3,
-    capabilityState: {"daily-work": {conversation: null}, invoice: {}},
+    version: 4,
+    capabilityState: {"daily-work": {conversation: null}, invoice: {}, router:{conversation:null}},
     outcomes: {}
   };
 }
 
 function migratedState(conversation, outcomes) {
   return {
-    version: 3,
-    capabilityState: {"daily-work": {conversation}, invoice: {}},
+    version: 4,
+    capabilityState: {"daily-work": {conversation}, invoice: {}, router:{conversation:null}},
     outcomes: structuredClone(outcomes)
   };
+}
+
+function validateRouterConversation(conversation) {
+  const fields=new Set(["capability","question","startedAt","attempts","status"]);
+  if (!conversation || typeof conversation!=="object" || Array.isArray(conversation) || Object.keys(conversation).length!==fields.size || Object.keys(conversation).some(key=>!fields.has(key))) throw new Error("invalid_router_conversation");
+  if (conversation.capability!==null && (typeof conversation.capability!=="string" || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(conversation.capability))) throw new Error("invalid_router_conversation");
+  if (typeof conversation.question!=="string" || !conversation.question.trim() || [...conversation.question].length>200) throw new Error("invalid_router_conversation");
+  if (!Number.isFinite(Date.parse(conversation.startedAt)) || conversation.attempts!==1 || !["open","superseded","cancelled"].includes(conversation.status)) throw new Error("invalid_router_conversation");
 }
 
 function migratePending(pending) {

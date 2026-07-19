@@ -1,5 +1,5 @@
 import {mkdir,rename,writeFile} from "node:fs/promises";
-import {dirname} from "node:path";
+import {dirname,join} from "node:path";
 import {loadConfig,validatePdfTools} from "./config.mjs";
 import {StateStore} from "./state-store.mjs";
 import {VaultWriter} from "./vault-writer.mjs";
@@ -19,6 +19,8 @@ import {downloadLarkResource,scavengeInvoiceTempRoot} from "./adapters/lark-reso
 import {createLarkMessenger} from "./adapters/lark-reply.mjs";
 import {Dispatcher} from "./core/dispatcher.mjs";
 import {safeLog} from "./core/redaction.mjs";
+import {loadRoutingContract} from "./core/routing-contract.mjs";
+import {invokeIntentRouter,validateIntentRouterSkill} from "./core/intent-router-client.mjs";
 
 process.umask(0o077);
 
@@ -26,6 +28,11 @@ const configFile=process.argv[2] || "/Users/ccrt/Library/Application Support/LLW
 const config=await loadConfig(configFile);
 const invoiceConfig=config.capabilities.invoice;
 await validatePdfTools(invoiceConfig);
+const contracts={};
+if (config.capabilities["daily-work"].enabled) contracts["daily-work"]=await loadRoutingContract(config.capabilities["daily-work"].skillRoot,"daily-work");
+if (invoiceConfig.enabled) contracts.invoice=await loadRoutingContract(invoiceConfig.skillRoot,"invoice");
+const routerSkillRoot=join(config.vaultRoot,".agents","skills","feishu-intent-router");
+await validateIntentRouterSkill(routerSkillRoot);
 const state=await StateStore.open(config.stateFile);
 const binding={senderId:config.senderId,chatId:config.chatId};
 const messenger=createLarkMessenger({cliPath:config.cliPath,profile:config.profile,boundChatId:config.chatId});
@@ -57,8 +64,9 @@ const invoiceCapability=createInvoiceCapability({
   writer:invoiceArchiveWriter
 });
 
-const capabilities=buildCapabilityRegistry({dailyWork:dailyCapability,invoice:invoiceCapability,enabled:{"daily-work":config.capabilities["daily-work"].enabled,invoice:invoiceConfig.enabled}});
-const dispatcher=new Dispatcher({binding,state,capabilities,messenger});
+const capabilities=buildCapabilityRegistry({dailyWork:dailyCapability,invoice:invoiceCapability,contracts,enabled:{"daily-work":config.capabilities["daily-work"].enabled,invoice:invoiceConfig.enabled}});
+const intentRouter={decide:input=>invokeIntentRouter({codexPath:config.codexPath,workspaceRoot:config.vaultRoot,skillRoot:routerSkillRoot,input,timeoutMs:invoiceConfig.aiTimeoutMs})};
+const dispatcher=new Dispatcher({binding,state,capabilities,intentRouter,messenger});
 
 await scavengeInvoiceTempRoot(invoiceConfig.tempRoot);
 await invoiceArchiveWriter.recoverTransactions();

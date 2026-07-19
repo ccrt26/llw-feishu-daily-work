@@ -37,7 +37,7 @@ function harness({kind="supported_image",raw,archive,failAt="",prepareCode="pdf_
 
 test("committed and existing image archives get independent exact outcomes",async () => {
   const h=harness();
-  assert.equal(h.capability.name,"invoice"); assert.equal(h.capability.match(event),true); assert.equal(h.capability.match({...event,messageType:"text"}),false);
+  assert.equal(h.capability.name,"invoice"); assert.equal(Object.hasOwn(h.capability,"match"),false);
   const first=await h.capability.handle(event);
   assert.equal(first.status,"committed"); assert.match(first.reply,/发票已归档\n/); assert.match(first.reply,/290.00 元/); assert.equal(first.artifacts.length,1); assert.equal(h.calls.cleanup,1);
   assert.equal(h.calls.prepare,0); assert.equal(h.calls.decideInput.analysisInput.pageImages.length,1);
