@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DailyWorkService } from "../src/service.mjs";
 import { StateStore } from "../src/state-store.mjs";
+import { createDailyWorkCapability } from "../src/capabilities/daily-work/capability.mjs";
 
 const binding = {senderId: "user-1", chatId: "chat-1"};
 const baseEvent = {sender_id: "user-1", chat_id: "chat-1", chat_type: "p2p", message_type: "text", message_id: "m1", create_time: "1784426400000", content: "今天完成了方案评审"};
@@ -37,16 +38,16 @@ async function harness(decide, {catalogEntries = [candidate]} = {}) {
   return {state, creates, supplements, sends, catalog, writer, service: new DailyWorkService({binding, state, decide, catalog, writer, send})};
 }
 
-test("clear new work creates once and returns organized content", async () => {
+test("clear new work returns one committed outcome without sending", async () => {
   const h = await harness(async ({message}) => createDecision(message.text));
-  await h.service.handleEvent(baseEvent);
-  await h.service.handleEvent(baseEvent);
+  const result = await h.service.handleEvent(baseEvent);
   assert.equal(h.creates.length, 1);
   assert.equal(h.supplements.length, 0);
-  assert.equal(h.sends.length, 1);
-  assert.match(h.sends[0].text, /已入库/);
-  assert.match(h.sends[0].text, /完成方案评审/);
-  assert.equal(h.sends[0].idempotencyKey, "reply:m1");
+  assert.equal(h.sends.length, 0);
+  assert.equal(result.status, "committed");
+  assert.match(result.reply, /已入库/);
+  assert.match(result.reply, /完成方案评审/);
+  assert.deepEqual(result.artifacts, ["亚信工作/每日工作/2026年07月19日/工作记录.md"]);
 });
 
 test("natural-language clarification supplements the July 18 record instead of creating July 19", async () => {
@@ -67,9 +68,10 @@ test("natural-language clarification supplements the July 18 record instead of c
       })]
     };
   });
-  await h.service.handleEvent({...baseEvent, content: supplementText});
+  const first = await h.service.handleEvent({...baseEvent, content: supplementText});
+  assert.equal(first.status, "awaiting_clarification");
   assert.equal(h.state.getConversation().turns.length, 2);
-  await h.service.handleEvent({...baseEvent, message_id: "m2", create_time: "1784426460000", content: clarification});
+  const second = await h.service.handleEvent({...baseEvent, message_id: "m2", create_time: "1784426460000", content: clarification});
   assert.equal(calls.length, 2);
   assert.equal(calls[1].message.text, clarification);
   assert.equal(calls[1].conversation.turns[0].text, supplementText);
@@ -79,8 +81,9 @@ test("natural-language clarification supplements the July 18 record instead of c
   assert.equal(h.supplements.length, 1);
   assert.equal(h.supplements[0].targetRecordId, candidate.record_id);
   assert.equal(h.supplements[0].record.original_text, supplementText);
-  assert.match(h.sends.at(-1).text, /已补充到原记录/);
-  assert.match(h.sends.at(-1).text, /2026年07月18日/);
+  assert.match(second.reply, /已补充到原记录/);
+  assert.match(second.reply, /2026年07月18日/);
+  assert.equal(h.sends.length, 0);
   assert.equal(h.state.getConversation(), null);
 });
 
@@ -100,10 +103,11 @@ test("every reply phrase is sent back to AI without program keyword handling", a
 
 test("ignore never writes", async () => {
   const h = await harness(async ({message}) => ({action: "ignore", confidence: "high", reason: "普通回复", question: "", source_text: message.text, target_record_id: "", records: []}));
-  await h.service.handleEvent({...baseEvent, content: "收到，谢谢"});
+  const result = await h.service.handleEvent({...baseEvent, content: "收到，谢谢"});
   assert.equal(h.creates.length, 0);
   assert.equal(h.supplements.length, 0);
-  assert.equal(h.sends[0].text, "这段内容未作为工作记录入库。原因：普通回复");
+  assert.equal(result.reply, "这段内容未作为工作记录入库。原因：普通回复");
+  assert.equal(h.sends.length, 0);
 });
 
 test("another sender and group messages are silently ignored", async () => {
@@ -118,32 +122,40 @@ test("another sender and group messages are silently ignored", async () => {
 test("bound user unsupported attachment is not sent to AI", async () => {
   let decisions = 0;
   const h = await harness(async () => { decisions++; return createDecision("x"); });
-  await h.service.handleEvent({...baseEvent, message_type: "image", content: "[图片]"});
+  const result = await h.service.handleEvent({...baseEvent, message_type: "image", content: "[图片]"});
   assert.equal(decisions, 0);
-  assert.equal(h.sends[0].text, "当前工作记录第一版仅支持纯文字；该附件未下载、未交给 AI、未入库。");
-});
-
-test("restart retries only a stored reply", async () => {
-  const h = await harness(async ({message}) => createDecision(message.text));
-  await h.state.saveOutcome("m-old", {status: "committed", reply: "已入库旧记录", recordIds: ["r-old"]});
-  await h.service.resumeReplies();
-  assert.equal(h.creates.length, 0);
-  assert.equal(h.supplements.length, 0);
-  assert.deepEqual(h.sends[0], {chatId: "chat-1", text: "已入库旧记录", idempotencyKey: "reply:m-old"});
-  assert.deepEqual(h.state.unreplied(), []);
+  assert.equal(result.reply, "当前工作记录第一版仅支持纯文字；该附件未下载、未交给 AI、未入库。");
+  assert.equal(h.sends.length, 0);
 });
 
 test("temporary AI failure does not create a false conversation", async () => {
   const h = await harness(async () => { throw new Error("model_capacity"); });
-  await h.service.handleEvent(baseEvent);
+  const result = await h.service.handleEvent(baseEvent);
   assert.equal(h.creates.length, 0);
   assert.equal(h.state.getConversation(), null);
-  assert.equal(h.sends[0].text, "AI 暂时不可用，本条未入库；请稍后重新发送。");
+  assert.equal(result.reply, "AI 暂时不可用，本条未入库；请稍后重新发送。");
+  assert.equal(h.sends.length, 0);
 });
 
 test("missing Vault never falls back to a Mac directory", async () => {
   const h = await harness(async ({message}) => createDecision(message.text));
   h.writer.create = async () => { throw new Error("vault_marker_missing"); };
-  await h.service.handleEvent(baseEvent);
-  assert.equal(h.sends[0].text, "U盘知识库当前不可用，本条未入库；请连接U盘后重新发送。");
+  const result = await h.service.handleEvent(baseEvent);
+  assert.equal(result.reply, "U盘知识库当前不可用，本条未入库；请连接U盘后重新发送。");
+  assert.equal(h.sends.length, 0);
+});
+
+test("daily-work capability matches only non-empty text and maps normalized events", async () => {
+  const received = [];
+  const capability = createDailyWorkCapability({service:{handleEvent:async event => {
+    received.push(event);
+    return {status:"ignored", reply:"未入库", artifacts:[]};
+  }}});
+  assert.equal(capability.name, "daily-work");
+  assert.equal(capability.match({messageType:"text", content:"工作内容"}), true);
+  assert.equal(capability.match({messageType:"text", content:"   "}), false);
+  assert.equal(capability.match({messageType:"image", content:"x"}), false);
+  const result = await capability.handle({messageId:"m1", createTimeMs:1784426400000, content:"工作内容", senderId:"u1", chatId:"c1", chatType:"p2p", messageType:"text"});
+  assert.equal(result.status, "ignored");
+  assert.deepEqual(received[0], {message_id:"m1", create_time:1784426400000, content:"工作内容", sender_id:"u1", chat_id:"c1", chat_type:"p2p", message_type:"text"});
 });

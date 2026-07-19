@@ -71,6 +71,14 @@ export async function sendLarkText({cliPath, profile, chatId, text, idempotencyK
   if (parsed?.ok !== true) throw new Error("lark_send_failed");
 }
 
+export async function sendLarkReply({cliPath,profile,messageId,text,idempotencyKey,environment=process.env}) {
+  const args=["--profile",profile,"im","+messages-reply","--as","bot","--message-id",messageId,"--text",text,"--idempotency-key",idempotencyKey];
+  const output=await run(cliPath,args,larkEnvironment(environment));
+  let parsed;
+  try { parsed=JSON.parse(output); } catch { throw new Error("lark_reply_invalid_response"); }
+  if (parsed?.ok !== true) throw new Error("lark_reply_failed");
+}
+
 function larkEnvironment(environment) {
   const pathParts = ["/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin", ...(environment.PATH || "").split(":")];
   return {
