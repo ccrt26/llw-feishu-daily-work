@@ -1,16 +1,90 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, open, readFile, realpath, rename, stat } from "node:fs/promises";
+import { mkdir, open, readFile, readdir, realpath, rename, stat } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
+import { parseManagedDocument, renderManagedDocument } from "./managed-record.mjs";
 
-const START = /<!-- llw-record-start: ([a-f0-9]{16}) ([0-9-]+) -->/g;
+const DATE_FOLDER = /^(\d{4})年(\d{2})月(\d{2})日$/;
 
 export class VaultWriter {
   constructor(vaultRoot) { this.vaultRoot = vaultRoot; }
 
-  async commit({messageId, createTime, records}) {
-    if (!messageId || !Number.isFinite(createTime) || !Array.isArray(records) || records.length === 0) {
-      throw new Error("invalid_commit");
+  async create({messageId, createTime, records}) {
+    validateJob(messageId, createTime);
+    if (!Array.isArray(records) || records.length === 0) throw new Error("invalid_create_records");
+    const {vaultReal, workReal} = await this.openRoots();
+    const grouped = new Map();
+    records.forEach((record, index) => {
+      validateInputRecord(record);
+      const item = {
+        id: recordId(messageId, index),
+        sortKey: makeSortKey(record, createTime, index),
+        record: withoutOriginal(record),
+        sources: [{kind: "initial", text: record.original_text, sourceId: sourceId(messageId, index)}]
+      };
+      if (!grouped.has(record.occurred_date)) grouped.set(record.occurred_date, []);
+      grouped.get(record.occurred_date).push(item);
+    });
+    const files = [];
+    const recordIds = [];
+    let inserted = false;
+    for (const [date, additions] of grouped) {
+      const target = await dailyTarget(workReal, date);
+      const before = await readOptional(target);
+      const entries = before ? parseManagedDocument(before, date) : [];
+      for (const addition of additions) {
+        recordIds.push(addition.id);
+        if (!entries.some(entry => entry.id === addition.id)) {
+          entries.push(addition);
+          inserted = true;
+        }
+      }
+      entries.sort(compareEntries);
+      const after = renderManagedDocument(date, entries);
+      if (after !== before) await atomicReplace(target, before, after);
+      const checked = parseManagedDocument(await readFile(target, "utf8"), date);
+      for (const addition of additions) {
+        if (!checked.some(entry => entry.id === addition.id)) throw new Error("write_verification_failed");
+      }
+      files.push(relative(vaultReal, target).split(sep).join("/"));
     }
+    return {files, recordIds, inserted};
+  }
+
+  async supplement({messageId, createTime, targetRecordId, record}) {
+    validateJob(messageId, createTime);
+    if (!/^[a-f0-9]{16}$/.test(targetRecordId || "")) throw new Error("invalid_target_record_id");
+    validateInputRecord(record);
+    const {vaultReal, workReal} = await this.openRoots();
+    const matches = await findTarget(workReal, targetRecordId);
+    if (matches.length === 0) throw new Error("target_record_not_found");
+    if (matches.length !== 1) throw new Error("target_record_not_unique");
+    const match = matches[0];
+    if (record.occurred_date !== match.date) throw new Error("supplement_date_mismatch");
+    const newSourceId = sourceId(messageId, 0);
+    const existing = match.entries[match.index];
+    if (existing.sources.some(source => source.sourceId === newSourceId)) {
+      return {files: [relative(vaultReal, match.target).split(sep).join("/")], recordIds: [targetRecordId], updated: false};
+    }
+    match.entries[match.index] = {
+      ...existing,
+      sortKey: makeSortKey(record, createTime, 0),
+      record: withoutOriginal(record),
+      sources: [...existing.sources, {kind: "supplement", text: record.original_text, sourceId: newSourceId}]
+    };
+    match.entries.sort(compareEntries);
+    const after = renderManagedDocument(match.date, match.entries);
+    await atomicReplace(match.target, match.before, after);
+    const checked = parseManagedDocument(await readFile(match.target, "utf8"), match.date);
+    const updated = checked.find(entry => entry.id === targetRecordId);
+    if (!updated || !updated.sources.some(source => source.sourceId === newSourceId)) throw new Error("write_verification_failed");
+    return {
+      files: [relative(vaultReal, match.target).split(sep).join("/")],
+      recordIds: [targetRecordId],
+      updated: true
+    };
+  }
+
+  async openRoots() {
     const vaultReal = await realpath(this.vaultRoot);
     try {
       await Promise.all([
@@ -20,52 +94,11 @@ export class VaultWriter {
     } catch {
       throw new Error("vault_marker_missing");
     }
-
     const workRoot = join(vaultReal, "亚信工作", "每日工作");
     await mkdir(workRoot, {recursive: true, mode: 0o700});
     const workReal = await realpath(workRoot);
     if (workReal !== workRoot) throw new Error("work_root_mismatch");
-
-    const grouped = new Map();
-    records.forEach((record, index) => {
-      validateRecord(record);
-      const id = recordId(messageId, index);
-      const sortKey = makeSortKey(record, createTime, index);
-      const item = {id, sortKey, record};
-      if (!grouped.has(record.occurred_date)) grouped.set(record.occurred_date, []);
-      grouped.get(record.occurred_date).push(item);
-    });
-
-    const files = [];
-    const ids = [];
-    let inserted = false;
-    for (const [date, additions] of grouped) {
-      const folder = `${date.slice(0, 4)}年${date.slice(5, 7)}月${date.slice(8, 10)}日`;
-      const dailyDir = join(workReal, folder);
-      await mkdir(dailyDir, {recursive: true, mode: 0o700});
-      const dailyReal = await realpath(dailyDir);
-      if (!dailyReal.startsWith(`${workReal}${sep}`)) throw new Error("path_escape");
-      const target = resolve(dailyReal, "工作记录.md");
-      if (!target.startsWith(`${workReal}${sep}`)) throw new Error("path_escape");
-      const before = await readOptional(target);
-      const parsed = parseDocument(before, date);
-      for (const addition of additions) {
-        ids.push(addition.id);
-        if (!parsed.entries.some(entry => entry.id === addition.id)) {
-          parsed.entries.push({...addition, block: renderBlock(addition.record, addition.id, addition.sortKey, 0)});
-          inserted = true;
-        }
-      }
-      parsed.entries.sort((a, b) => a.sortKey.localeCompare(b.sortKey) || a.id.localeCompare(b.id));
-      const after = renderDocument(date, parsed.entries);
-      if (after !== before) await atomicReplace(target, before, after);
-      const checked = await readFile(target, "utf8");
-      for (const addition of additions) {
-        if (!checked.includes(`<!-- llw-record-start: ${addition.id} `)) throw new Error("write_verification_failed");
-      }
-      files.push(relative(vaultReal, target).split(sep).join("/"));
-    }
-    return {files, recordIds: ids, inserted};
+    return {vaultReal, workReal};
   }
 }
 
@@ -73,9 +106,20 @@ export function recordId(messageId, index) {
   return createHash("sha256").update(`${messageId}:${index}`).digest("hex").slice(0, 16);
 }
 
-function validateRecord(record) {
-  if (!record || !/^\d{4}-\d{2}-\d{2}$/.test(record.occurred_date)) throw new Error("invalid_record_date");
-  if (record.occurred_time && !/^([01]\d|2[0-3]):[0-5]\d$/.test(record.occurred_time)) throw new Error("invalid_record_time");
+function sourceId(messageId, index) {
+  return createHash("sha256").update(`source:${messageId}:${index}`).digest("hex").slice(0, 16);
+}
+
+function validateJob(messageId, createTime) {
+  if (typeof messageId !== "string" || !messageId || !Number.isFinite(createTime)) throw new Error("invalid_write_job");
+}
+
+function validateInputRecord(record) {
+  if (!record || !/^\d{4}-\d{2}-\d{2}$/.test(record.occurred_date || "")) throw new Error("invalid_record_date");
+  for (const field of ["occurred_time", "occurred_end_time"]) {
+    if (record[field] && !/^([01]\d|2[0-3]):[0-5]\d$/.test(record[field])) throw new Error("invalid_record_time");
+  }
+  if (record.occurred_end_time && !record.occurred_time) throw new Error("end_time_without_start");
   for (const field of ["title", "summary", "original_text"]) {
     if (typeof record[field] !== "string" || !record[field]) throw new Error(`invalid_record_${field}`);
   }
@@ -83,6 +127,21 @@ function validateRecord(record) {
     throw new Error("invalid_record_fields");
   }
 }
+
+function withoutOriginal(record) {
+  return {
+    occurred_date: record.occurred_date,
+    occurred_time: record.occurred_time,
+    occurred_end_time: record.occurred_end_time,
+    title: record.title,
+    people: [...record.people],
+    location: record.location,
+    summary: record.summary,
+    follow_ups: [...record.follow_ups]
+  };
+}
+
+function compareEntries(a, b) { return a.sortKey.localeCompare(b.sortKey) || a.id.localeCompare(b.id); }
 
 function makeSortKey(record, createTime, index) {
   const fallback = beijingTime(createTime);
@@ -97,42 +156,35 @@ function beijingTime(milliseconds) {
   return `${value.hour}:${value.minute}`;
 }
 
-function parseDocument(markdown, date) {
-  if (!markdown) return {entries: []};
-  const starts = [...markdown.matchAll(START)];
-  const ends = [...markdown.matchAll(/<!-- llw-record-end: ([a-f0-9]{16}) -->/g)];
-  if (starts.length !== ends.length) throw new Error("malformed_record_markers");
-  const entries = [];
-  const blockPattern = /<!-- llw-record-start: ([a-f0-9]{16}) ([0-9-]+) -->[\s\S]*?<!-- llw-record-end: \1 -->/g;
-  for (const match of markdown.matchAll(blockPattern)) entries.push({id: match[1], sortKey: match[2], block: match[0]});
-  if (entries.length !== starts.length) throw new Error("malformed_record_markers");
-  if (!markdown.startsWith(`# ${date.slice(0, 4)}年${date.slice(5, 7)}月${date.slice(8, 10)}日工作记录`)) {
-    throw new Error("unexpected_daily_file");
+async function dailyTarget(workReal, date) {
+  const folder = `${date.slice(0, 4)}年${date.slice(5, 7)}月${date.slice(8, 10)}日`;
+  const dailyDir = join(workReal, folder);
+  await mkdir(dailyDir, {recursive: true, mode: 0o700});
+  const dailyReal = await realpath(dailyDir);
+  if (!dailyReal.startsWith(`${workReal}${sep}`)) throw new Error("path_escape");
+  const target = resolve(dailyReal, "工作记录.md");
+  if (!target.startsWith(`${workReal}${sep}`)) throw new Error("path_escape");
+  return target;
+}
+
+async function findTarget(workReal, targetRecordId) {
+  const matches = [];
+  const folders = await readdir(workReal, {withFileTypes: true});
+  for (const folder of folders) {
+    const dateParts = folder.isDirectory() && folder.name.match(DATE_FOLDER);
+    if (!dateParts) continue;
+    const date = `${dateParts[1]}-${dateParts[2]}-${dateParts[3]}`;
+    const target = resolve(workReal, folder.name, "工作记录.md");
+    if (!target.startsWith(`${workReal}${sep}`)) throw new Error("path_escape");
+    const before = await readOptional(target);
+    if (!before) continue;
+    const entries = parseManagedDocument(before, date);
+    entries.forEach((entry, index) => {
+      if (entry.id === targetRecordId) matches.push({date, target, before, entries, index});
+    });
   }
-  return {entries};
+  return matches;
 }
-
-function renderDocument(date, entries) {
-  const heading = `# ${date.slice(0, 4)}年${date.slice(5, 7)}月${date.slice(8, 10)}日工作记录`;
-  const blocks = entries.map((entry, index) => renumber(entry.block, index + 1));
-  return `${heading}\n\n${blocks.join("\n\n---\n\n")}\n`;
-}
-
-function renderBlock(record, id, sortKey, number) {
-  const time = record.occurred_time || "时间未说明";
-  const people = record.people.length ? record.people.map(safeInline).join("、") : "未说明";
-  const location = record.location ? safeInline(record.location) : "未说明";
-  const followUps = record.follow_ups.length ? record.follow_ups.map(item => `- ${safeLine(item)}`).join("\n") : "- 未说明";
-  const original = record.original_text.split(/\r?\n/).map(line => `> ${line}`).join("\n");
-  return `<!-- llw-record-start: ${id} ${sortKey} -->\n## 记录 ${number}｜${time}｜${safeInline(record.title)}\n\n> [!info] 关键信息\n> - 时间：${record.occurred_date}${record.occurred_time ? ` ${record.occurred_time}` : "（具体时间未说明）"}（北京时间）\n> - 人物：${people}\n> - 地点：${location}\n\n### 整理后记录\n\n${record.summary}\n\n### 后续事项\n\n${followUps}\n\n> [!quote]- 原始内容\n${original}\n\n<!-- llw-record-end: ${id} -->`;
-}
-
-function renumber(block, number) {
-  return block.replace(/^## 记录 \d+｜/m, `## 记录 ${number}｜`);
-}
-
-function safeInline(value) { return String(value).replace(/[\r\n|#]/g, " ").trim(); }
-function safeLine(value) { return String(value).replace(/[\r\n]/g, " ").trim(); }
 
 async function readOptional(path) {
   try { return await readFile(path, "utf8"); }
