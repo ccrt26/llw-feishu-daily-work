@@ -16,7 +16,7 @@ test("uses existing lark-cli event consumer and delivers NDJSON after ready", as
   const received = [];
   const listener = await startLarkListener({
     cliPath: fixture, profile: "llw-private", onEvent: async item => received.push(item),
-    environment: {...process.env, FAKE_LARK_ARGS: argsFile, FAKE_EVENTS: JSON.stringify([event])}
+    environment: {...process.env, PATH: "/usr/bin:/bin", FAKE_LARK_ARGS: argsFile, FAKE_EVENTS: JSON.stringify([event])}
   });
   await listener.done;
   assert.deepEqual(received, [event]);

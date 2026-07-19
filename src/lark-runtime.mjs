@@ -72,8 +72,10 @@ export async function sendLarkText({cliPath, profile, chatId, text, idempotencyK
 }
 
 function larkEnvironment(environment) {
+  const pathParts = ["/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin", ...(environment.PATH || "").split(":")];
   return {
     ...environment,
+    PATH: [...new Set(pathParts.filter(Boolean))].join(":"),
     LARK_CLI_NO_PROXY: "1",
     LARKSUITE_CLI_NO_UPDATE_NOTIFIER: "1",
     LARKSUITE_CLI_NO_SKILLS_NOTIFIER: "1"
