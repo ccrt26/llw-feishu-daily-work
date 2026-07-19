@@ -1,6 +1,6 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename } from "node:fs/promises";
 import { dirname } from "node:path";
-import { randomUUID } from "node:crypto";
 
 export class StateStore {
   constructor(file, data, maxOutcomes) {
@@ -10,17 +10,25 @@ export class StateStore {
   }
 
   static async open(file, {maxOutcomes = 1000} = {}) {
-    let data = {version: 1, pending: null, outcomes: {}};
+    let data = {version: 2, conversation: null, outcomes: {}};
+    let migrated = false;
     try {
       const parsed = JSON.parse(await readFile(file, "utf8"));
-      if (parsed?.version === 1 && parsed.outcomes && typeof parsed.outcomes === "object") data = parsed;
+      if (parsed?.version === 2 && parsed.outcomes && typeof parsed.outcomes === "object") {
+        data = {version: 2, conversation: parsed.conversation || null, outcomes: parsed.outcomes};
+      } else if (parsed?.version === 1 && parsed.outcomes && typeof parsed.outcomes === "object") {
+        data = {version: 2, conversation: migratePending(parsed.pending), outcomes: parsed.outcomes};
+        migrated = true;
+      }
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
     }
-    return new StateStore(file, data, maxOutcomes);
+    const store = new StateStore(file, data, maxOutcomes);
+    if (migrated) await store.persist();
+    return store;
   }
 
-  getPending() { return structuredClone(this.data.pending); }
+  getConversation() { return structuredClone(this.data.conversation); }
   hasOutcome(messageId) { return Object.hasOwn(this.data.outcomes, messageId); }
 
   unreplied() {
@@ -29,13 +37,14 @@ export class StateStore {
       .map(([messageId, outcome]) => ({messageId, ...structuredClone(outcome)}));
   }
 
-  async setPending(pending) {
-    this.data.pending = structuredClone(pending);
+  async setConversation(conversation) {
+    validateConversation(conversation);
+    this.data.conversation = structuredClone(conversation);
     await this.persist();
   }
 
-  async clearPending() {
-    this.data.pending = null;
+  async clearConversation() {
+    this.data.conversation = null;
     await this.persist();
   }
 
@@ -68,4 +77,31 @@ export class StateStore {
     }
     await rename(temporary, this.file);
   }
+}
+
+function migratePending(pending) {
+  if (!pending || typeof pending !== "object" || typeof pending.text !== "string" || !pending.text) return null;
+  const turns = [{role: "user", text: pending.text, createTime: Number(pending.createTime)}];
+  if (typeof pending.question === "string" && pending.question) turns.push({role: "assistant", text: pending.question});
+  return {
+    id: `legacy-${String(pending.messageId || "conversation")}`,
+    status: "open",
+    turns,
+    candidateIds: []
+  };
+}
+
+function validateConversation(conversation) {
+  if (!conversation || typeof conversation !== "object" || typeof conversation.id !== "string" || !conversation.id) {
+    throw new Error("invalid_conversation");
+  }
+  if (conversation.status !== "open" || !Array.isArray(conversation.turns) || !Array.isArray(conversation.candidateIds)) {
+    throw new Error("invalid_conversation");
+  }
+  for (const turn of conversation.turns) {
+    if (!turn || !["user", "assistant"].includes(turn.role) || typeof turn.text !== "string" || !turn.text) {
+      throw new Error("invalid_conversation_turn");
+    }
+  }
+  if (!conversation.candidateIds.every(id => /^[a-f0-9]{16}$/.test(id))) throw new Error("invalid_conversation_candidate");
 }
