@@ -1,13 +1,12 @@
+import { createHash } from "node:crypto";
 import { checkEvent } from "./policy.mjs";
 
-const YES = new Set(["是", "确认", "要", "需要"]);
-const NO = new Set(["否", "不是", "不要", "不需要"]);
-
 export class DailyWorkService {
-  constructor({binding, state, classify, writer, send}) {
+  constructor({binding, state, decide, catalog, writer, send}) {
     this.binding = binding;
     this.state = state;
-    this.classify = classify;
+    this.decide = decide;
+    this.catalog = catalog;
     this.writer = writer;
     this.send = send;
   }
@@ -22,95 +21,104 @@ export class DailyWorkService {
     }
     if (this.state.hasOutcome(checked.messageId)) return {handled: false, reason: "duplicate"};
 
-    const pending = this.state.getPending();
-    if (pending) return this.handleConfirmation(checked, pending);
-
-    const decision = await this.safeClassify(checked);
-    return this.applyDecision(checked, decision);
+    let candidates;
+    try {
+      candidates = await this.catalog.list({limit: 20});
+    } catch {
+      await this.finish(checked.messageId, "failed", "U盘知识库当前不可用，本条未入库；请连接U盘后重新发送。", []);
+      return {handled: true, status: "vault_unavailable"};
+    }
+    const message = {...checked};
+    const decision = await this.safeDecide({message, conversation: this.state.getConversation(), candidates});
+    if (decision.action === "unavailable") {
+      await this.finish(message.messageId, "failed", decision.question, []);
+      return {handled: true, status: "unavailable"};
+    }
+    switch (decision.action) {
+      case "create_record": return this.createRecord(message, decision);
+      case "supplement_record": return this.supplementRecord(message, decision, candidates);
+      case "ask_user": return this.askUser(message, decision, candidates);
+      case "ignore": return this.ignore(message, decision);
+      default:
+        await this.finish(message.messageId, "failed", "AI 返回了不支持的操作，本条未入库；请稍后重新发送。", []);
+        return {handled: true, status: "invalid_action"};
+    }
   }
 
   async resumeReplies() {
     for (const outcome of this.state.unreplied()) {
       await this.send({chatId: this.binding.chatId, text: outcome.reply, idempotencyKey: `reply:${outcome.messageId}`});
       await this.state.markReplied(outcome.messageId);
-      if (this.state.getPending()?.messageId === outcome.messageId) await this.state.clearPending();
     }
   }
 
-  async handleConfirmation(message, pending) {
-    const answer = message.text.trim();
-    if (YES.has(answer)) {
-      const decision = await this.safeClassify({...pending, forceDaily: true});
-      if (decision.intent === "unavailable") {
-        await this.state.clearPending();
-        await this.finish(pending.messageId, "ignored", decision.question, []);
-        return {handled: true, status: "unavailable"};
-      }
-      if (decision.intent !== "daily_work" || decision.confidence !== "high") {
-        const question = decision.question || "请补充要记录的具体工作事项和日期。";
-        await this.finish(message.messageId, "ignored", question, []);
-        return {handled: true, status: "still_uncertain"};
-      }
-      let result;
-      try {
-        result = await this.writer.commit({messageId: pending.messageId, createTime: pending.createTime, records: decision.records});
-      } catch {
-        await this.state.clearPending();
-        await this.finish(pending.messageId, "ignored", "U盘知识库当前不可用，本条未入库；请连接U盘后重新发送。", []);
-        return {handled: true, status: "vault_unavailable"};
-      }
-      const reply = committedReply(decision.records, result.files);
-      await this.state.saveOutcome(pending.messageId, {status: "committed", reply, recordIds: result.recordIds});
-      await this.state.clearPending();
-      await this.send({chatId: this.binding.chatId, text: reply, idempotencyKey: `reply:${pending.messageId}`});
-      await this.state.markReplied(pending.messageId);
-      return {handled: true, status: "committed"};
-    }
-    if (NO.has(answer)) {
-      const reply = "已确认，这段内容不作为工作记录入库。";
-      await this.state.saveOutcome(pending.messageId, {status: "ignored", reply, recordIds: []});
-      await this.state.clearPending();
-      await this.send({chatId: this.binding.chatId, text: reply, idempotencyKey: `reply:${pending.messageId}`});
-      await this.state.markReplied(pending.messageId);
-      return {handled: true, status: "ignored"};
-    }
-    await this.finish(message.messageId, "ignored", "请先回答上一条：回复“是”入库，回复“否”不入库。", []);
-    return {handled: true, status: "awaiting_confirmation"};
+  async safeDecide(input) {
+    try { return await this.decide(input); }
+    catch { return {action: "unavailable", question: "AI 暂时不可用，本条未入库；请稍后重新发送。"}; }
   }
 
-  async safeClassify(message) {
+  async createRecord(message, decision) {
+    let result;
     try {
-      return await this.classify({text: message.text, createTime: message.createTime, forceDaily: Boolean(message.forceDaily)});
+      result = await this.writer.create({messageId: message.messageId, createTime: message.createTime, records: decision.records});
     } catch {
-      return {intent: "unavailable", confidence: "low", question: "AI 暂时不可用，本条未入库；请稍后重新发送。", records: []};
+      await this.finish(message.messageId, "failed", "U盘知识库当前不可用，本条未入库；请连接U盘后重新发送。", []);
+      return {handled: true, status: "vault_unavailable"};
     }
+    await this.state.clearConversation();
+    const reply = committedReply("已入库", decision.records, result.files);
+    await this.finish(message.messageId, "committed", reply, result.recordIds);
+    return {handled: true, status: "committed"};
   }
 
-  async applyDecision(message, decision) {
-    if (decision.intent === "unavailable") {
-      await this.finish(message.messageId, "ignored", decision.question, []);
-      return {handled: true, status: "unavailable"};
+  async supplementRecord(message, decision, candidates) {
+    const candidate = candidates.find(item => item.record_id === decision.target_record_id);
+    if (!candidate || decision.records.length !== 1 || decision.records[0].occurred_date !== candidate.date) {
+      const reply = "补充目标已经变化或日期不一致，本条未写入；请重新说明要补充的记录。";
+      await this.finish(message.messageId, "failed", reply, []);
+      return {handled: true, status: "stale_target"};
     }
-    if (decision.intent === "daily_work" && decision.confidence === "high") {
-      let result;
-      try {
-        result = await this.writer.commit({messageId: message.messageId, createTime: message.createTime, records: decision.records});
-      } catch {
-        await this.finish(message.messageId, "ignored", "U盘知识库当前不可用，本条未入库；请连接U盘后重新发送。", []);
-        return {handled: true, status: "vault_unavailable"};
-      }
-      const reply = committedReply(decision.records, result.files);
-      await this.finish(message.messageId, "committed", reply, result.recordIds);
-      return {handled: true, status: "committed"};
+    let result;
+    try {
+      result = await this.writer.supplement({
+        messageId: message.messageId,
+        createTime: message.createTime,
+        targetRecordId: decision.target_record_id,
+        record: decision.records[0]
+      });
+    } catch {
+      await this.finish(message.messageId, "failed", "U盘知识库当前不可用或目标记录已变化，本条未写入；请稍后重新发送。", []);
+      return {handled: true, status: "vault_unavailable"};
     }
-    if (decision.intent === "other") {
-      await this.finish(message.messageId, "ignored", "这段内容未作为工作记录入库。", []);
-      return {handled: true, status: "ignored"};
-    }
-    const question = decision.question || "这段内容是否需要作为工作记录入库？";
-    await this.state.setPending({...message, question});
-    await this.send({chatId: this.binding.chatId, text: question, idempotencyKey: `question:${message.messageId}`});
-    return {handled: true, status: "awaiting_confirmation"};
+    await this.state.clearConversation();
+    const reply = committedReply("已补充到原记录", decision.records, result.files);
+    await this.finish(message.messageId, "committed", reply, result.recordIds);
+    return {handled: true, status: "committed"};
+  }
+
+  async askUser(message, decision, candidates) {
+    const current = this.state.getConversation();
+    const conversation = {
+      id: current?.id || conversationId(message.messageId),
+      status: "open",
+      turns: [
+        ...(current?.turns || []),
+        {role: "user", text: message.text, createTime: message.createTime},
+        {role: "assistant", text: decision.question}
+      ],
+      candidateIds: candidates.map(candidate => candidate.record_id)
+    };
+    await this.state.setConversation(conversation);
+    await this.finish(message.messageId, "awaiting_clarification", decision.question, []);
+    return {handled: true, status: "awaiting_clarification"};
+  }
+
+  async ignore(message, decision) {
+    await this.state.clearConversation();
+    const reason = String(decision.reason || "不是工作记录").trim();
+    const reply = `这段内容未作为工作记录入库。原因：${reason}`;
+    await this.finish(message.messageId, "ignored", reply, []);
+    return {handled: true, status: "ignored"};
   }
 
   async finish(messageId, status, reply, recordIds) {
@@ -120,8 +128,12 @@ export class DailyWorkService {
   }
 }
 
-function committedReply(records, files) {
-  const lines = ["已入库，整理内容如下："];
+function conversationId(messageId) {
+  return createHash("sha256").update(`conversation:${messageId}`).digest("hex").slice(0, 16);
+}
+
+function committedReply(prefix, records, files) {
+  const lines = [`${prefix}，整理内容如下：`];
   records.forEach((record, index) => lines.push(`${index + 1}. ${record.summary}`));
   lines.push(`位置：${files.join("、")}`);
   return lines.join("\n");

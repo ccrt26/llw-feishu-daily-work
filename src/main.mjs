@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 import { loadConfig } from "./config.mjs";
 import { StateStore } from "./state-store.mjs";
 import { VaultWriter } from "./vault-writer.mjs";
+import { RecordCatalog } from "./record-catalog.mjs";
 import { invokeCodex } from "./codex-client.mjs";
 import { DailyWorkService } from "./service.mjs";
 import { sendLarkText, startLarkListener } from "./lark-runtime.mjs";
@@ -13,14 +14,15 @@ const configFile = process.argv[2] || "/Users/ccrt/Library/Application Support/L
 const config = await loadConfig(configFile);
 const state = await StateStore.open(config.stateFile);
 const writer = new VaultWriter(config.vaultRoot);
-const classify = input => invokeCodex({
+const catalog = new RecordCatalog(config.vaultRoot);
+const decide = input => invokeCodex({
   codexPath: config.codexPath,
   workspaceRoot: config.vaultRoot,
   skillRoot: config.skillRoot,
   ...input
 });
 const send = message => sendLarkText({cliPath: config.cliPath, profile: config.profile, ...message});
-const service = new DailyWorkService({binding: {senderId: config.senderId, chatId: config.chatId}, state, classify, writer, send});
+const service = new DailyWorkService({binding: {senderId: config.senderId, chatId: config.chatId}, state, decide, catalog, writer, send});
 
 await service.resumeReplies();
 await heartbeat(config.heartbeatFile);
