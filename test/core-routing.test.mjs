@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { normalizeEvent } from "../src/core/event-normalizer.mjs";
 import { checkSecurity } from "../src/core/security-gate.mjs";
 import { createRouterMessage } from "../src/core/router-message.mjs";
+import { createFeishuIncomingMessage } from "../src/core/incoming-message.mjs";
 
 const raw = {
   event_id: "e1",
@@ -51,11 +52,11 @@ test("allows only the bound sender in the bound p2p chat", () => {
 
 test("builds minimal router messages without Feishu identifiers or resource keys", () => {
   const event = normalizeEvent(raw);
-  const image=createRouterMessage(event);
+  const image=createRouterMessage(createFeishuIncomingMessage(event));
   assert.deepEqual(image.attachment,{displayName:"飞书图片",extension:"",resourceType:"image"});
-  const file=createRouterMessage({...event,messageType:"file",content:'<file name="folder/发票.PDF" key="file_secret"/>'});
+  const file=createRouterMessage(createFeishuIncomingMessage({...event,messageType:"file",content:'<file name="folder/发票.PDF" key="file_secret"/>'}));
   assert.deepEqual(file.attachment,{displayName:"发票.PDF",extension:"pdf",resourceType:"file"});
-  const text=createRouterMessage({...event,messageType:"text",content:"今天完成评审"});
+  const text=createRouterMessage(createFeishuIncomingMessage({...event,messageType:"text",content:"今天完成评审"}));
   assert.equal(text.text,"今天完成评审");
   const serialized=JSON.stringify([image,file,text]);
   for (const secret of ["img_abc","file_secret","m1","u1","c1","folder/"]) assert.equal(serialized.includes(secret),false);

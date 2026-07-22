@@ -3,7 +3,12 @@ import assert from "node:assert/strict";
 import {createInvoiceCapability} from "../src/capabilities/invoice/capability.mjs";
 import {validateInvoiceDecision} from "../src/capabilities/invoice/decision-validator.mjs";
 
-const event={messageId:"m1",messageType:"image",content:"![Image](img_abc)",senderId:"u",chatId:"c",chatType:"p2p"};
+const event={
+  source:"feishu",sourceMessageId:"m1",userId:"u",conversationId:"c",receivedAt:"2026-07-19T02:00:00.000Z",
+  attachments:[{type:"image",sourceAttachmentId:"img_abc",displayName:"飞书图片",extension:""}],
+  replyTarget:{source:"feishu",sourceMessageId:"m1",conversationId:"c"}
+};
+const fileEvent={...event,attachments:[{type:"file",sourceAttachmentId:"file_abc",displayName:"发票.pdf",extension:"pdf"}]};
 
 function decision(action="archive_dining",format="png") {
   return {
@@ -18,9 +23,9 @@ function harness({kind="supported_image",raw,archive,failAt="",prepareCode="pdf_
   const extension=kind === "pdf" ? "pdf" : "png";
   const selectedRaw=raw ?? decision("archive_dining",format);
   const selectedArchive=archive ?? {status:"committed",relativePath:`亚信工作/日常发票/餐饮发票/2026年07月/290.00.${extension}`};
-  const calls={download:0,inspect:0,prepare:0,decide:0,write:0,cleanup:0,decideInput:null,writeInput:null};
+  const calls={download:0,inspect:0,prepare:0,decide:0,write:0,cleanup:0,downloadInput:null,decideInput:null,writeInput:null};
   const capability=createInvoiceCapability({
-    download:async () => {calls.download++; if(failAt==="download") throw new Error("secret download"); return {tempDir:"/tmp/job-safe",file:`/tmp/job-safe/invoice.${extension}`};},
+    download:async input => {calls.download++;calls.downloadInput=structuredClone(input);if(failAt==="download") throw new Error("secret download"); return {tempDir:"/tmp/job-safe",file:`/tmp/job-safe/invoice.${extension}`};},
     inspect:async () => {calls.inspect++; if(failAt==="inspect") throw new Error("secret inspect"); return {kind,format,extension,sizeBytes:10};},
     preparePdf:async ({file}) => {
       calls.prepare++;
@@ -41,14 +46,15 @@ test("committed and existing image archives get independent exact outcomes",asyn
   const first=await h.capability.handle(event);
   assert.equal(first.status,"committed"); assert.match(first.reply,/发票已归档\n/); assert.match(first.reply,/290.00 元/); assert.equal(first.artifacts.length,1); assert.equal(h.calls.cleanup,1);
   assert.equal(h.calls.prepare,0); assert.equal(h.calls.decideInput.analysisInput.pageImages.length,1);
+  assert.equal(h.calls.downloadInput.messageId,"m1");
   const secondHarness=harness({archive:{status:"existing",relativePath:"亚信工作/日常发票/餐饮发票/2026年07月/290.00.png"}});
-  const second=await secondHarness.capability.handle({...event,messageId:"m2",content:"![Image](img_def)"});
+  const second=await secondHarness.capability.handle({...event,sourceMessageId:"m2",attachments:[{type:"image",sourceAttachmentId:"img_def",displayName:"飞书图片",extension:""}]});
   assert.equal(second.status,"existing"); assert.match(second.reply,/文件已存在，未重复复制/); assert.equal(secondHarness.calls.cleanup,1);
 });
 
 test("PDF prepares every page input and archives only the original PDF",async () => {
   const h=harness({kind:"pdf"});
-  const result=await h.capability.handle({...event,messageType:"file",content:'<file key="file_abc"/>'});
+  const result=await h.capability.handle(fileEvent);
   assert.equal(result.status,"committed");
   assert.equal(h.calls.prepare,1); assert.equal(h.calls.decide,1); assert.equal(h.calls.write,1); assert.equal(h.calls.cleanup,1);
   assert.equal(h.calls.decideInput.analysisInput.detectedFormat,"pdf");
@@ -85,7 +91,7 @@ for (const [state,pattern] of [
 ]) test(`PDF document state ${state} gets a fixed clarification and never writes`,async () => {
   const raw=decision("needs_clarification","pdf"); raw.document_verification=state;
   const h=harness({kind:"pdf",raw});
-  const result=await h.capability.handle({...event,messageType:"file",content:'<file key="file_abc"/>'});
+  const result=await h.capability.handle(fileEvent);
   assert.equal(result.status,"awaiting_clarification"); assert.match(result.reply,pattern); assert.equal(h.calls.write,0); assert.equal(h.calls.cleanup,1);
 });
 
@@ -94,14 +100,14 @@ for (const [code,pattern] of [
   ["pdf_text_invalid",/页面无法完整呈现/], ["pdf_render_invalid",/页面无法完整呈现/], ["pdf_prepare_timeout",/页面处理超时/]
 ]) test(`PDF preparation error ${code} is safe and never reaches AI`,async () => {
   const h=harness({kind:"pdf",failAt:"prepare",prepareCode:code});
-  const result=await h.capability.handle({...event,messageType:"file",content:'<file key="file_abc"/>'});
+  const result=await h.capability.handle(fileEvent);
   assert.equal(result.status,code==="pdf_encrypted"||code==="pdf_page_limit"?"rejected":"failed");
   assert.match(result.reply,pattern); assert.equal(result.reply.includes("secret"),false);
   assert.equal(h.calls.decide,0); assert.equal(h.calls.write,0); assert.equal(h.calls.cleanup,1);
 });
 
 for (const kind of ["ofd","unsupported"]) test(`${kind} gets a fixed non-AI result`,async () => {
-  const h=harness({kind}); const result=await h.capability.handle({...event,messageType:"file",content:'<file key="file_abc"/>'});
+  const h=harness({kind}); const result=await h.capability.handle(fileEvent);
   assert.equal(result.status,"rejected"); assert.equal(h.calls.prepare,0); assert.equal(h.calls.decide,0); assert.equal(h.calls.write,0); assert.equal(h.calls.cleanup,1);
   assert.match(result.reply,kind==="ofd"?/OFD/:/不支持此附件格式/);
 });
@@ -113,6 +119,6 @@ for (const stage of ["download","inspect","decide","write"]) test(`${stage} fail
 });
 
 test("malformed resource marker is rejected before download",async () => {
-  const h=harness(); const result=await h.capability.handle({...event,content:"x![Image](img_abc)"});
+  const h=harness(); const result=await h.capability.handle({...event,attachments:[{type:"image",sourceAttachmentId:"bad",displayName:"飞书图片",extension:""}]});
   assert.equal(result.status,"failed"); assert.match(result.reply,/附件标识无法安全解析/); assert.equal(h.calls.download,0);
 });

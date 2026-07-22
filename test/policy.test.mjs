@@ -1,20 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { checkEvent } from "../src/policy.mjs";
+import { checkDailyWorkMessage } from "../src/policy.mjs";
 
-const binding = { senderId: "user-1", chatId: "chat-1" };
 const valid = {
-  sender_id: "user-1",
-  chat_id: "chat-1",
-  chat_type: "p2p",
-  message_type: "text",
-  message_id: "message-1",
-  create_time: "1784426400000",
-  content: "今天完成了方案评审"
+  source:"feishu",sourceMessageId:"message-1",userId:"user-1",conversationId:"chat-1",receivedAt:"2026-07-19T02:00:00.000Z",
+  text:"今天完成了方案评审",attachments:[],replyTarget:{source:"feishu",sourceMessageId:"message-1",conversationId:"chat-1"}
 };
 
-test("accepts bound user p2p text", () => {
-  assert.deepEqual(checkEvent(valid, binding), {
+test("accepts a secured internal text message", () => {
+  assert.deepEqual(checkDailyWorkMessage(valid), {
     ok: true,
     messageId: "message-1",
     createTime: 1784426400000,
@@ -22,17 +16,8 @@ test("accepts bound user p2p text", () => {
   });
 });
 
-test("rejects another sender without notification", () => {
-  assert.deepEqual(checkEvent({...valid, sender_id: "user-2"}, binding), {
-    ok: false,
-    reason: "sender_not_allowed",
-    notify: false
-  });
-});
-
-test("rejects groups and unsupported message types", () => {
-  assert.equal(checkEvent({...valid, chat_type: "group"}, binding).reason, "chat_not_p2p");
-  assert.deepEqual(checkEvent({...valid, message_type: "image"}, binding), {
+test("rejects unsupported attachments", () => {
+  assert.deepEqual(checkDailyWorkMessage({...valid,text:undefined,attachments:[{type:"image"}]}), {
     ok: false,
     reason: "unsupported_message_type",
     notify: true
@@ -40,7 +25,8 @@ test("rejects groups and unsupported message types", () => {
 });
 
 test("rejects malformed or oversized text", () => {
-  assert.equal(checkEvent({...valid, content: "   "}, binding).reason, "empty_text");
-  assert.equal(checkEvent({...valid, content: "x".repeat(12001)}, binding).reason, "text_too_long");
-  assert.equal(checkEvent({...valid, create_time: "bad"}, binding).reason, "invalid_event");
+  assert.equal(checkDailyWorkMessage({...valid, text: "   "}).reason, "empty_text");
+  assert.equal(checkDailyWorkMessage({...valid, text: "x".repeat(12001)}).reason, "text_too_long");
+  assert.equal(checkDailyWorkMessage({...valid, receivedAt: "bad"}).reason, "invalid_message");
+  assert.equal(checkDailyWorkMessage({...valid, sourceMessageId: ""}).reason, "invalid_message");
 });

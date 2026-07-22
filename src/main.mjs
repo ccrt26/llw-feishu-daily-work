@@ -4,14 +4,12 @@ import {loadConfig,validatePdfTools} from "./config.mjs";
 import {StateStore} from "./state-store.mjs";
 import {VaultWriter} from "./vault-writer.mjs";
 import {RecordCatalog} from "./record-catalog.mjs";
-import {invokeCodex} from "./codex-client.mjs";
 import {DailyWorkService} from "./service.mjs";
 import {startLarkListener} from "./lark-runtime.mjs";
 import {createDailyWorkCapability} from "./capabilities/daily-work/capability.mjs";
 import {buildCapabilityRegistry} from "./capabilities/index.mjs";
 import {createInvoiceCapability} from "./capabilities/invoice/capability.mjs";
 import {inspectInvoiceFile} from "./capabilities/invoice/file-inspector.mjs";
-import {invokeInvoiceDecision} from "./capabilities/invoice/decision-client.mjs";
 import {validateInvoiceDecision} from "./capabilities/invoice/decision-validator.mjs";
 import {InvoiceArchiveWriter} from "./capabilities/invoice/archive-writer.mjs";
 import {prepareInvoicePdf} from "./capabilities/invoice/pdf-preparer.mjs";
@@ -20,7 +18,8 @@ import {createLarkMessenger} from "./adapters/lark-reply.mjs";
 import {Dispatcher} from "./core/dispatcher.mjs";
 import {safeLog} from "./core/redaction.mjs";
 import {loadRoutingContract} from "./core/routing-contract.mjs";
-import {invokeIntentRouter,validateIntentRouterSkill} from "./core/intent-router-client.mjs";
+import {validateIntentRouterSkill} from "./core/intent-router-client.mjs";
+import {createRouterTextTask,createDailyWorkInterpretTask,createInvoiceVisualTask} from "./core/semantic-tasks.mjs";
 
 process.umask(0o077);
 
@@ -39,13 +38,14 @@ const messenger=createLarkMessenger({cliPath:config.cliPath,profile:config.profi
 
 const dailyWriter=new VaultWriter(config.vaultRoot);
 const catalog=new RecordCatalog(config.vaultRoot);
+const dailyWorkInterpret=createDailyWorkInterpretTask({codexPath:config.codexPath,workspaceRoot:config.vaultRoot,skillRoot:config.capabilities["daily-work"].skillRoot});
 const dailyService=new DailyWorkService({
-  binding,state,catalog,writer:dailyWriter,
-  decide:input => invokeCodex({codexPath:config.codexPath,workspaceRoot:config.vaultRoot,skillRoot:config.capabilities["daily-work"].skillRoot,...input})
+  state,catalog,writer:dailyWriter,decide:dailyWorkInterpret
 });
 const dailyCapability=createDailyWorkCapability({service:dailyService});
 
 const invoiceArchiveWriter=new InvoiceArchiveWriter({vaultRoot:config.vaultRoot,state});
+const invoiceVisual=createInvoiceVisualTask({codexPath:config.codexPath,workspaceRoot:config.vaultRoot,skillRoot:invoiceConfig.skillRoot,timeoutMs:invoiceConfig.aiTimeoutMs});
 const invoiceCapability=createInvoiceCapability({
   download:resource => downloadLarkResource({cliPath:config.cliPath,profile:config.profile,tempRoot:invoiceConfig.tempRoot,timeoutMs:invoiceConfig.aiTimeoutMs,...resource}),
   inspect:file => inspectInvoiceFile(file,{maxBytes:invoiceConfig.maxFileBytes}),
@@ -59,13 +59,14 @@ const invoiceCapability=createInvoiceCapability({
     maxRenderBytes:invoiceConfig.maxPdfRenderBytes,
     timeoutMs:invoiceConfig.pdfPrepareTimeoutMs
   }),
-  decide:input => invokeInvoiceDecision({codexPath:config.codexPath,workspaceRoot:config.vaultRoot,skillRoot:invoiceConfig.skillRoot,timeoutMs:invoiceConfig.aiTimeoutMs,...input}),
+  decide:invoiceVisual,
   validate:validateInvoiceDecision,
   writer:invoiceArchiveWriter
 });
 
 const capabilities=buildCapabilityRegistry({dailyWork:dailyCapability,invoice:invoiceCapability,contracts,enabled:{"daily-work":config.capabilities["daily-work"].enabled,invoice:invoiceConfig.enabled}});
-const intentRouter={decide:input=>invokeIntentRouter({codexPath:config.codexPath,workspaceRoot:config.vaultRoot,skillRoot:routerSkillRoot,input,timeoutMs:invoiceConfig.aiTimeoutMs})};
+const routerText=createRouterTextTask({codexPath:config.codexPath,workspaceRoot:config.vaultRoot,skillRoot:routerSkillRoot,timeoutMs:invoiceConfig.aiTimeoutMs});
+const intentRouter={decide:routerText};
 const dispatcher=new Dispatcher({binding,state,capabilities,intentRouter,messenger});
 
 await scavengeInvoiceTempRoot(invoiceConfig.tempRoot);

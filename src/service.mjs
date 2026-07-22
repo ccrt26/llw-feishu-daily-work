@@ -1,19 +1,18 @@
 import { createHash } from "node:crypto";
-import { checkEvent } from "./policy.mjs";
+import { checkDailyWorkMessage } from "./policy.mjs";
 
 export class DailyWorkService {
-  constructor({binding, state, decide, catalog, writer}) {
-    this.binding = binding;
+  constructor({state, decide, catalog, writer}) {
     this.state = state;
     this.decide = decide;
     this.catalog = catalog;
     this.writer = writer;
   }
 
-  async handleEvent(event) {
-    const checked = checkEvent(event, this.binding);
+  async handleMessage(message) {
+    const checked = checkDailyWorkMessage(message);
     if (!checked.ok) {
-      if (checked.notify && event?.message_id) return outcome("ignored", "当前工作记录第一版仅支持纯文字；该附件未下载、未交给 AI、未入库。");
+      if (checked.notify && message?.sourceMessageId) return outcome("ignored", "当前工作记录第一版仅支持纯文字；该附件未下载、未交给 AI、未入库。");
       return {handled: false, reason: checked.reason};
     }
 
@@ -23,16 +22,16 @@ export class DailyWorkService {
     } catch {
       return outcome("failed", "U盘知识库当前不可用，本条未入库；请连接U盘后重新发送。");
     }
-    const message = {...checked};
-    const decision = await this.safeDecide({message, conversation: this.state.getConversation(), candidates});
+    const checkedMessage = {...checked};
+    const decision = await this.safeDecide({message:checkedMessage, conversation: this.state.getConversation(), candidates});
     if (decision.action === "unavailable") {
       return outcome("failed", decision.question);
     }
     switch (decision.action) {
-      case "create_record": return this.createRecord(message, decision);
-      case "supplement_record": return this.supplementRecord(message, decision, candidates);
-      case "ask_user": return this.askUser(message, decision, candidates);
-      case "ignore": return this.ignore(message, decision);
+      case "create_record": return this.createRecord(checkedMessage, decision);
+      case "supplement_record": return this.supplementRecord(checkedMessage, decision, candidates);
+      case "ask_user": return this.askUser(checkedMessage, decision, candidates);
+      case "ignore": return this.ignore(checkedMessage, decision);
       default: return outcome("failed", "AI 返回了不支持的操作，本条未入库；请稍后重新发送。");
     }
   }

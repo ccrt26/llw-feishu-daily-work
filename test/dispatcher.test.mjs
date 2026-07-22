@@ -11,11 +11,11 @@ const contract=name=>({capability:name,purpose:name==="invoice"?"归档发票":"
 
 async function harness({decision,handle,status="committed",send}={}) {
   const dir=await mkdtemp(join(tmpdir(),"llw-dispatcher-")); const state=await StateStore.open(join(dir,"state.json"));
-  const routerCalls=[],runs=[],sends=[];
-  const capabilities=["daily-work","invoice"].map(name=>({name,routingContract:contract(name),handle:async event=>{runs.push(name);return handle?handle(name,event):{status,reply:status==="ignored"?null:`${name}完成`,artifacts:status==="committed"?["p"]:[]};}}));
+  const routerCalls=[],runs=[],messages=[],sends=[];
+  const capabilities=["daily-work","invoice"].map(name=>({name,routingContract:contract(name),handle:async message=>{runs.push(name);messages.push(structuredClone(message));return handle?handle(name,message):{status,reply:status==="ignored"?null:`${name}完成`,artifacts:status==="committed"?["p"]:[]};}}));
   const intentRouter={decide:async input=>{routerCalls.push(structuredClone(input));return typeof decision==="function"?decision(input):decision||{action:"route",capability:"invoice",confidence:"high",reasonCode:"attachment_match"};}};
   const dispatcher=new Dispatcher({binding:{senderId:"u1",chatId:"c1"},state,capabilities,intentRouter,messenger:{send:send|| (async message=>sends.push(message))}});
-  return {state,routerCalls,runs,sends,dispatcher};
+  return {state,routerCalls,runs,messages,sends,dispatcher};
 }
 
 test("routes once, invokes only the selected capability, persists before send and suppresses duplicates",async () => {
@@ -23,6 +23,12 @@ test("routes once, invokes only the selected capability, persists before send an
   const original=h.state.saveOutcome.bind(h.state); h.state.saveOutcome=async(...args)=>{order.push("save");return original(...args);};
   await h.dispatcher.handleRawEvent(raw); await h.dispatcher.handleRawEvent(raw);
   assert.equal(h.routerCalls.length,1); assert.deepEqual(h.runs,["invoice"]); assert.deepEqual(order,["invoice","save","send"]);
+  assert.deepEqual(h.messages[0],{
+    source:"feishu",sourceMessageId:"m1",userId:"u1",conversationId:"c1",receivedAt:"2026-07-19T02:00:00.000Z",
+    attachments:[{type:"image",sourceAttachmentId:"img_abc",displayName:"飞书图片",extension:""}],
+    replyTarget:{source:"feishu",sourceMessageId:"m1",conversationId:"c1"}
+  });
+  for (const field of ["message_id","sender_id","chat_id","message_type","content","messageId","senderId","chatId","messageType","createTimeMs"]) assert.equal(Object.hasOwn(h.messages[0],field),false);
 });
 
 test("security failures, empty text and duplicates never call the router",async () => {
@@ -35,7 +41,7 @@ test("security failures, empty text and duplicates never call the router",async 
 test("one unclear turn asks once and a second unclear answer lists capabilities then closes",async () => {
   const h=await harness({decision:{action:"clarify",question:"你希望记录工作，还是处理发票？"}});
   await h.dispatcher.handleRawEvent({...raw,message_type:"text",content:"帮我处理一下"});
-  assert.equal((await h.state.getRouterConversation()).attempts,1);
+  assert.equal((await h.state.getRouterConversation(Number(raw.create_time))).attempts,1);
   await h.dispatcher.handleRawEvent({...raw,message_id:"m2",message_type:"text",content:"就是这个"});
   assert.equal(await h.state.getRouterConversation(),null); assert.equal(h.runs.length,0); assert.equal(h.sends.length,2); assert.match(h.sends[1].text,/daily-work/); assert.match(h.sends[1].text,/invoice/);
 });
