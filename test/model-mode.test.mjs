@@ -54,3 +54,15 @@ test("refuses symlinked ancestors instead of replacing their target files",async
     await assert.rejects(()=>access(join(target,"model-state")));
   } finally { await rm(root,{recursive:true,force:true}); }
 });
+
+test("refuses a nested symlink ancestor without changing the protected target",async () => {
+  const root=await mkdtemp(join(tmpdir(),"llw-model-mode-nested-link-")); const target=join(root,"target"),nested=join(target,"nested"),alias=join(root,"alias");
+  try {
+    await mkdir(nested,{recursive:true,mode:0o700}); await symlink(target,alias);
+    const protectedFile=join(nested,"model-state"); await writeFile(protectedFile,"deepseek\n",{mode:0o600});
+    const mode=new ModelMode(join(alias,"nested","model-state"));
+    assert.equal(await mode.read(),"codex");
+    await assert.rejects(()=>mode.write("codex"),/unsafe_model_state_path/);
+    assert.equal(await readFile(protectedFile,"utf8"),"deepseek\n");
+  } finally { await rm(root,{recursive:true,force:true}); }
+});

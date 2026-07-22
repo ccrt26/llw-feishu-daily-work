@@ -24,7 +24,7 @@ export class DailyWorkService {
     }
     const checkedMessage = {...checked};
     const conversation=this.state.getConversation();
-    const taskModel=conversation?.model||model;
+    const taskModel=model;
     const decision = await this.safeDecide({message:checkedMessage, conversation, candidates,model:taskModel});
     if (decision.action === "unavailable") {
       return outcome("failed", decision.question);

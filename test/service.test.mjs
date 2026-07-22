@@ -89,6 +89,14 @@ test("natural-language clarification supplements the July 18 record instead of c
   assert.equal(h.state.getConversation(), null);
 });
 
+test("daily-work continuation obeys the dispatcher effective model over persisted state",async () => {
+  const calls=[];
+  const h=await harness(async input=>{calls.push(structuredClone(input));return {action:"ignore",confidence:"high",reason:"测试",question:"",source_text:input.message.text,target_record_id:"",records:[]};});
+  await h.state.setConversation({id:"c1",status:"open",turns:[{role:"assistant",text:"请补充"}],candidateIds:[],model:"deepseek"});
+  await h.service.handleMessage({...baseMessage,text:"继续任务"},{model:"codex"});
+  assert.equal(calls.length,1); assert.equal(calls[0].conversation.model,"deepseek"); assert.equal(calls[0].model,"codex");
+});
+
 test("every reply phrase is sent back to AI without program keyword handling", async () => {
   for (const [index, text] of ["是", "不是这场", "就是昨天那场"].entries()) {
     const calls = [];
@@ -141,15 +149,15 @@ test("missing Vault never falls back to a Mac directory", async () => {
 
 test("daily-work capability maps only an already-selected normalized event", async () => {
   const received = [];
-  const capability = createDailyWorkCapability({service:{handleMessage:async message => {
-    received.push(message);
+  const capability = createDailyWorkCapability({service:{handleMessage:async (message,context) => {
+    received.push({message,context});
     return {status:"ignored", reply:"未入库", artifacts:[]};
   }}});
   assert.equal(capability.name, "daily-work");
   assert.equal(Object.hasOwn(capability,"match"),false);
   const message={...baseMessage,text:"工作内容"};
-  const result = await capability.handle(message);
+  const result = await capability.handle(message,{model:"deepseek"});
   assert.equal(result.status, "ignored");
-  assert.deepEqual(received[0],message);
-  for (const field of ["message_id","sender_id","chat_id","message_type","content"]) assert.equal(Object.hasOwn(received[0],field),false);
+  assert.deepEqual(received[0],{message,context:{model:"deepseek"}});
+  for (const field of ["message_id","sender_id","chat_id","message_type","content"]) assert.equal(Object.hasOwn(received[0].message,field),false);
 });

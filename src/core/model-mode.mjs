@@ -1,6 +1,6 @@
 import {randomUUID} from "node:crypto";
 import {chmod,lstat,mkdir,open,readFile,rename,rm} from "node:fs/promises";
-import {dirname} from "node:path";
+import {dirname,join,parse,resolve} from "node:path";
 
 const MODES=new Set(["codex","deepseek"]);
 
@@ -46,9 +46,14 @@ export class ModelMode {
 }
 
 async function hasSymlinkIdentity(file) {
-  for (const value of [dirname(file),file]) {
-    try { if ((await lstat(value)).isSymbolicLink()) return true; }
-    catch (error) { if (error.code!=="ENOENT") throw error; }
+  const absolute=resolve(file),root=parse(absolute).root;
+  let current=root;
+  for (const part of absolute.slice(root.length).split("/").filter(Boolean)) {
+    current=join(current,part);
+    try {
+      const info=await lstat(current);
+      if (info.isSymbolicLink() && !(process.platform==="darwin"&&current==="/var")) return true;
+    } catch (error) { if (error.code==="ENOENT") return false; throw error; }
   }
   return false;
 }
