@@ -45,8 +45,11 @@ test("atomically migrates exact v3 to v4 without printing protected values",asyn
     assert.deepEqual(result,{code:0,stdout:"",stderr:""});
     const after=JSON.parse(await readFile(file,"utf8"));
     assert.equal(after.version,4);
+    assert.equal(after.modelStateFile,"/Users/test/model-state");
+    assert.equal(after.deepseekEnabled,false);
     assert.deepEqual(after.capabilities.invoice,{...before.capabilities.invoice,...pdfFields});
-    assert.deepEqual({...after,version:3,capabilities:{...after.capabilities,invoice:before.capabilities.invoice}},before);
+    const {modelStateFile,deepseekEnabled,...withoutModelFields}=after;
+    assert.deepEqual({...withoutModelFields,version:3,capabilities:{...after.capabilities,invoice:before.capabilities.invoice}},before);
     assert.equal((await stat(file)).mode & 0o777,0o600);
   } finally { await rm(dir,{recursive:true,force:true}); }
 });

@@ -10,6 +10,7 @@ function config(overrides = {}) {
     version: 4,
     vaultRoot: "/Volumes/test/LLW",
     stateFile: "/Users/test/state.json", heartbeatFile: "/Users/test/heartbeat.json",
+    modelStateFile: "/Users/test/model-state", deepseekEnabled: false,
     cliPath: "/Users/test/bin/lark-cli", codexPath: "/Applications/ChatGPT.app/codex",
     profile: "llw-private", senderId: "user-1", chatId: "chat-1",
     capabilities:{
@@ -33,6 +34,8 @@ test("saves mode-0600 config and validates required absolute paths", async () =>
   assert.deepEqual(await loadConfig(file), config());
   await assert.rejects(async () => saveConfig(file, config({vaultRoot: "relative"})), /invalid_config_path/);
   await assert.rejects(async () => saveConfig(file, config({version:3})), /invalid_config_version/);
+  await assert.rejects(async () => saveConfig(file, config({modelStateFile:"relative"})), /invalid_config_path:modelStateFile/);
+  await assert.rejects(async () => saveConfig(file, config({deepseekEnabled:"false"})), /invalid_deepseek_enabled/);
   await assert.rejects(async () => saveConfig(file, config({capabilities:{...config().capabilities,invoice:{...config().capabilities.invoice,maxFileBytes:20971521}}})), /invalid_max_file_bytes/);
   await assert.rejects(async () => saveConfig(file, config({capabilities:{...config().capabilities,invoice:{...config().capabilities.invoice,typo:true}}})), /unknown_capability_field/);
   await assert.rejects(async () => saveConfig(file, {...config(),token:"secret"}), /unknown_config_field/);

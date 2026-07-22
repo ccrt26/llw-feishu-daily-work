@@ -3,7 +3,7 @@ import {constants as fsConstants} from "node:fs";
 import {access,lstat,mkdir,open,readFile,rename} from "node:fs/promises";
 import {dirname,isAbsolute,join} from "node:path";
 
-const TOP_FIELDS=new Set(["version","vaultRoot","stateFile","heartbeatFile","cliPath","codexPath","profile","senderId","chatId","capabilities"]);
+const TOP_FIELDS=new Set(["version","vaultRoot","stateFile","heartbeatFile","modelStateFile","deepseekEnabled","cliPath","codexPath","profile","senderId","chatId","capabilities"]);
 const DAILY_FIELDS=new Set(["enabled","skillRoot"]);
 const INVOICE_FIELDS=new Set([
   "enabled","skillRoot","tempRoot","archiveRoot","maxFileBytes","aiTimeoutMs",
@@ -49,7 +49,8 @@ export async function validatePdfTools(invoice) {
 function validateConfig(config,requireBinding) {
   exact(config,TOP_FIELDS,"config");
   if (config.version !== 4) throw new Error("invalid_config_version");
-  for (const field of ["vaultRoot","stateFile","heartbeatFile","cliPath","codexPath"]) absolute(config[field],field);
+  for (const field of ["vaultRoot","stateFile","heartbeatFile","modelStateFile","cliPath","codexPath"]) absolute(config[field],field);
+  if (typeof config.deepseekEnabled!=="boolean") throw new Error("invalid_deepseek_enabled");
   if (typeof config.profile !== "string" || !config.profile) throw new Error("invalid_profile");
   for (const field of ["senderId","chatId"]) {
     if (config[field] !== null && (typeof config[field] !== "string" || !config[field])) throw new Error(`invalid_binding:${field}`);
