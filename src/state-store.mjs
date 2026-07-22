@@ -48,7 +48,7 @@ export class StateStore {
   getCapabilityState(name) { return structuredClone(this.data.capabilityState[name] || {}); }
 
   async getRouterConversation(nowMs=Date.now()) {
-    const conversation=this.data.capabilityState.router?.conversation || null;
+    const conversation=normalizeRouterConversation(this.data.capabilityState.router?.conversation);
     if (!conversation || conversation.status!=="open") return null;
     if (nowMs-Date.parse(conversation.startedAt) < 24*60*60*1000) return structuredClone(conversation);
     this.data.capabilityState.router.conversation=null;
@@ -57,8 +57,9 @@ export class StateStore {
   }
 
   async setRouterConversation(conversation) {
-    validateRouterConversation(conversation);
-    this.data.capabilityState.router={conversation:structuredClone(conversation)};
+    const normalized=normalizeRouterConversation(conversation);
+    validateRouterConversation(normalized);
+    this.data.capabilityState.router={conversation:normalized};
     await this.persist();
   }
 
@@ -116,7 +117,7 @@ export class StateStore {
     await this.persist();
   }
 
-  getConversation() { return structuredClone(this.data.capabilityState["daily-work"].conversation || null); }
+  getConversation() { return normalizeActivityConversation(this.data.capabilityState["daily-work"].conversation); }
   hasOutcome(messageId) { return Object.hasOwn(this.data.outcomes, messageId); }
 
   unreplied() {
@@ -126,8 +127,9 @@ export class StateStore {
   }
 
   async setConversation(conversation) {
-    validateConversation(conversation);
-    this.data.capabilityState["daily-work"].conversation = structuredClone(conversation);
+    const normalized=normalizeActivityConversation(conversation);
+    validateConversation(normalized);
+    this.data.capabilityState["daily-work"].conversation = normalized;
     await this.persist();
   }
 
@@ -190,10 +192,11 @@ function migratedState(conversation, outcomes) {
 }
 
 function validateRouterConversation(conversation) {
-  const fields=new Set(["capability","question","startedAt","attempts","status"]);
+  const fields=new Set(["capability","question","startedAt","attempts","status","model"]);
   if (!conversation || typeof conversation!=="object" || Array.isArray(conversation) || Object.keys(conversation).length!==fields.size || Object.keys(conversation).some(key=>!fields.has(key))) throw new Error("invalid_router_conversation");
   if (conversation.capability!==null && (typeof conversation.capability!=="string" || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(conversation.capability))) throw new Error("invalid_router_conversation");
   if (typeof conversation.question!=="string" || !conversation.question.trim() || [...conversation.question].length>200) throw new Error("invalid_router_conversation");
+  if (!["codex","deepseek"].includes(conversation.model)) throw new Error("invalid_router_conversation");
   if (!Number.isFinite(Date.parse(conversation.startedAt)) || conversation.attempts!==1 || !["open","superseded","cancelled"].includes(conversation.status)) throw new Error("invalid_router_conversation");
 }
 
@@ -216,12 +219,23 @@ function validateConversation(conversation) {
   if (conversation.status !== "open" || !Array.isArray(conversation.turns) || !Array.isArray(conversation.candidateIds)) {
     throw new Error("invalid_conversation");
   }
+  if (!["codex","deepseek"].includes(conversation.model)) throw new Error("invalid_conversation_model");
   for (const turn of conversation.turns) {
     if (!turn || !["user", "assistant"].includes(turn.role) || typeof turn.text !== "string" || !turn.text) {
       throw new Error("invalid_conversation_turn");
     }
   }
   if (!conversation.candidateIds.every(id => /^[a-f0-9]{16}$/.test(id))) throw new Error("invalid_conversation_candidate");
+}
+
+function normalizeRouterConversation(conversation) {
+  if (!conversation || typeof conversation!=="object" || conversation.status!=="open") return null;
+  return structuredClone({...conversation,model:conversation.model==="deepseek"?"deepseek":"codex"});
+}
+
+function normalizeActivityConversation(conversation) {
+  if (!conversation || typeof conversation!=="object") return null;
+  return structuredClone({...conversation,model:conversation.model==="deepseek"?"deepseek":"codex"});
 }
 
 function pruneTransactions(transactions) {

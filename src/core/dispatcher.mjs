@@ -2,7 +2,7 @@ import {normalizeEvent} from "./event-normalizer.mjs";
 import {checkSecurity} from "./security-gate.mjs";
 import {createRouterMessage} from "./router-message.mjs";
 import {createFeishuIncomingMessage,createReplyTarget} from "./incoming-message.mjs";
-import {handleModelCommand} from "./model-command.mjs";
+import {effectiveModel,handleModelCommand} from "./model-command.mjs";
 
 export class Dispatcher {
   constructor({binding,state,capabilities,intentRouter,messenger,modelMode,deepseekEnabled}) {
@@ -18,9 +18,11 @@ export class Dispatcher {
     if (!security.ok) return {handled:false,reason:security.reason};
     if (event.messageType==="text"&&!event.content.trim()) return {handled:false,reason:"empty_text"};
     if (this.state.hasOutcome(event.messageId)) return {handled:false,reason:"duplicate"};
-    const command=await handleModelCommand(event.content,{modelMode:this.modelMode,deepseekEnabled:this.deepseekEnabled});
-    if (command) return this.persistAndSend(fallbackMessage(event),"model",command);
-    const model=await this.modelMode.read();
+    if (event.messageType==="text") {
+      const command=await handleModelCommand(event.content,{modelMode:this.modelMode,deepseekEnabled:this.deepseekEnabled});
+      if (command) return this.persistAndSend(fallbackMessage(event),"model",command);
+    }
+    const model=effectiveModel(await this.modelMode.read(),this.deepseekEnabled);
     let capabilityName="router",draft,message;
     try {
       message=createFeishuIncomingMessage(event);
@@ -44,30 +46,32 @@ export class Dispatcher {
       await this.state.clearRouterConversation();
       return {capabilityName:"router",draft:{status:"rejected",reply:decision.reason,artifacts:[]}};
     }
-    if (decision.action==="clarify") return {capabilityName:"router",draft:await this.routeClarification(message,conversation,decision.question)};
+    if (decision.action==="clarify") return {capabilityName:"router",draft:await this.routeClarification(message,conversation,decision.question,conversation?.model||model)};
     if (decision.action!=="route"||decision.confidence!=="high") throw new Error("invalid_route");
     const capability=this.capabilities.find(item=>item.name===decision.capability);
     if (!capability) throw new Error("unknown_capability");
-    if (conversation&&(decision.reasonCode==="new_task"||decision.capability!==conversation.capability)) {
+    const newTask=decision.reasonCode==="new_task"||(conversation?.capability&&decision.capability!==conversation.capability);
+    const taskModel=conversation&&!newTask?conversation.model:model;
+    if (conversation&&newTask) {
       await this.state.closeRouterConversation("superseded");
       if (conversation.capability==="daily-work") await this.state.clearConversation();
     }
-    let draft=await capability.handle(message,{state:this.state,model});
+    let draft=await capability.handle(message,{state:this.state,model:taskModel});
     if (draft?.status==="not_applicable") draft={status:"awaiting_clarification",reply:"我暂时无法确定你希望进行的操作，请告诉我你希望我处理什么。",artifacts:[]};
     if (draft?.status==="awaiting_clarification") {
-      await this.state.setRouterConversation({capability:capability.name,question:draft.reply,startedAt:conversation?.startedAt||message.receivedAt,attempts:1,status:"open"});
+      await this.state.setRouterConversation({capability:capability.name,question:draft.reply,startedAt:conversation?.startedAt||message.receivedAt,attempts:1,status:"open",model:taskModel});
     } else await this.state.clearRouterConversation();
     return {capabilityName:capability.name,draft};
   }
 
-  async routeClarification(message,conversation,question) {
+  async routeClarification(message,conversation,question,model) {
     if (conversation) {
       await this.state.clearRouterConversation();
       if (conversation.capability==="daily-work") await this.state.clearConversation();
       const lines=["当前可用能力：",...this.capabilities.map(item=>`- ${item.name}：${item.routingContract.purpose}`)];
       return {status:"awaiting_clarification",reply:lines.join("\n"),artifacts:[]};
     }
-    await this.state.setRouterConversation({capability:null,question,startedAt:message.receivedAt,attempts:1,status:"open"});
+    await this.state.setRouterConversation({capability:null,question,startedAt:message.receivedAt,attempts:1,status:"open",model});
     return {status:"awaiting_clarification",reply:question,artifacts:[]};
   }
 

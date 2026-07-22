@@ -9,14 +9,14 @@ import {StateStore} from "../src/state-store.mjs";
 const raw={event_id:"e1",message_id:"m1",sender_id:"u1",chat_id:"c1",chat_type:"p2p",message_type:"image",content:"![Image](img_abc)",create_time:"1784426400000"};
 const contract=name=>({capability:name,purpose:name==="invoice"?"归档发票":"记录工作",accepts:name==="invoice"?["image","file"]:["text"],positive_examples:["正例"],negative_examples:["反例"],supports_continuation:name==="daily-work"});
 
-async function harness({decision,handle:capabilityHandler,status="committed",send,model="codex"}={}) {
+async function harness({decision,handle:capabilityHandler,status="committed",send,model="codex",deepseekEnabled=true}={}) {
   const dir=await mkdtemp(join(tmpdir(),"llw-dispatcher-")); const state=await StateStore.open(join(dir,"state.json"));
   const routerCalls=[],runs=[],messages=[],contexts=[],sends=[];
-  const capabilities=["daily-work","invoice"].map(name=>({name,routingContract:contract(name),handle:async (message,context)=>{runs.push(name);messages.push(structuredClone(message));contexts.push({model:context.model});return capabilityHandler?capabilityHandler(name,message):{status,reply:status==="ignored"?null:`${name}完成`,artifacts:status==="committed"?["p"]:[]};}}));
+  const capabilities=["daily-work","invoice"].map(name=>({name,routingContract:contract(name),handle:async (message,context)=>{runs.push(name);messages.push(structuredClone(message));contexts.push({model:context.model});return capabilityHandler?capabilityHandler(name,message,context):{status,reply:status==="ignored"?null:`${name}完成`,artifacts:status==="committed"?["p"]:[]};}}));
   const intentRouter={decide:async input=>{routerCalls.push(structuredClone(input));return typeof decision==="function"?decision(input):decision||{action:"route",capability:"invoice",confidence:"high",reasonCode:"attachment_match"};}};
   const modes=[],writes=[]; let selected=model;
   const modelMode={read:async()=>{modes.push(selected);return selected;},write:async value=>{writes.push(value);selected=value;}};
-  const dispatcher=new Dispatcher({binding:{senderId:"u1",chatId:"c1"},state,capabilities,intentRouter,messenger:{send:send|| (async message=>sends.push(message))},modelMode,deepseekEnabled:true});
+  const dispatcher=new Dispatcher({binding:{senderId:"u1",chatId:"c1"},state,capabilities,intentRouter,messenger:{send:send|| (async message=>sends.push(message))},modelMode,deepseekEnabled});
   return {state,routerCalls,runs,messages,contexts,sends,modes,writes,dispatcher};
 }
 
@@ -55,6 +55,21 @@ test("each new task snapshots its model once before routing",async () => {
   assert.deepEqual(h.modes,["deepseek"]);
 });
 
+test("disabled DeepSeek makes persisted DeepSeek state effectively Codex",async () => {
+  const h=await harness({model:"deepseek",deepseekEnabled:false});
+  await h.dispatcher.handleRawEvent({...raw,message_type:"text",content:"/llw-model status"});
+  await h.dispatcher.handleRawEvent({...raw,message_id:"m2",message_type:"text",content:"记录今天工作"});
+  assert.equal(h.sends[0].text,"当前模型：Codex\n切换方式：手工");
+  assert.deepEqual(h.contexts.map(context=>context.model),["codex"]);
+  assert.deepEqual(h.modes,["deepseek","deepseek"]);
+});
+
+test("model commands are ignored for non-text events",async () => {
+  const h=await harness();
+  await h.dispatcher.handleRawEvent({...raw,content:"/llw-model deepseek"});
+  assert.equal(h.routerCalls.length,0); assert.deepEqual(h.writes,[]); assert.deepEqual(h.modes,["codex"]);
+});
+
 test("a switch changes the model snapshot of the next new task only",async () => {
   const h=await harness();
   await h.dispatcher.handleRawEvent({...raw,message_type:"text",content:"记录第一项工作"});
@@ -63,6 +78,19 @@ test("a switch changes the model snapshot of the next new task only",async () =>
   assert.deepEqual(h.writes,["deepseek"]);
   assert.deepEqual(h.modes,["codex","deepseek"]);
   assert.deepEqual(h.contexts.map(context=>context.model),["codex","deepseek"]);
+});
+
+test("an open router task retains its captured model until a genuinely new task",async () => {
+  const h=await harness({
+    decision:input=>input.message.text==="新任务"?{action:"route",capability:"daily-work",confidence:"high",reasonCode:"new_task"}:{action:"route",capability:"daily-work",confidence:"high",reasonCode:"continuation"},
+    handle:async (_name,message)=>message.sourceMessageId==="m4"?{status:"committed",reply:"完成",artifacts:["p"]}:{status:"awaiting_clarification",reply:"请补充细节",artifacts:[]}
+  });
+  await h.dispatcher.handleRawEvent({...raw,message_type:"text",content:"开始任务"});
+  assert.equal((await h.state.getRouterConversation(Number(raw.create_time))).model,"codex");
+  await h.dispatcher.handleRawEvent({...raw,message_id:"m2",message_type:"text",content:"/llw-model deepseek"});
+  await h.dispatcher.handleRawEvent({...raw,message_id:"m3",message_type:"text",content:"继续任务"});
+  await h.dispatcher.handleRawEvent({...raw,message_id:"m4",message_type:"text",content:"新任务"});
+  assert.deepEqual(h.contexts.map(context=>context.model),["codex","codex","deepseek"]);
 });
 
 test("one unclear turn asks once and a second unclear answer lists capabilities then closes",async () => {

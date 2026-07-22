@@ -24,6 +24,7 @@ test("reports exact status and confirmation copy while respecting the DeepSeek f
   assert.deepEqual(await handleModelCommand("/llw-model deepseek",{modelMode,deepseekEnabled:true}),{status:"existing",reply:DEEPSEEK_SWITCH,artifacts:[]});
   assert.deepEqual(await handleModelCommand("/llw-model status",{modelMode,deepseekEnabled:true}),{status:"existing",reply:"当前模型：DeepSeek\n切换方式：手工\n发票视觉任务：不可用",artifacts:[]});
   assert.deepEqual(await handleModelCommand("/llw-model deepseek",{modelMode,deepseekEnabled:false}),{status:"rejected",reply:"DeepSeek 模型当前未启用。",artifacts:[]});
+  assert.deepEqual(await handleModelCommand("/llw-model status",{modelMode:{read:async()=>"deepseek"},deepseekEnabled:false}),{status:"existing",reply:"当前模型：Codex\n切换方式：手工",artifacts:[]});
   assert.deepEqual(writes,["codex","deepseek"]);
   assert.equal(await handleModelCommand("自然语言切换",{modelMode,deepseekEnabled:true}),null);
 });

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {mkdtemp,readFile,rm,stat,writeFile} from "node:fs/promises";
+import {access,chmod,mkdtemp,mkdir,readFile,rm,stat,writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {ModelMode} from "../src/core/model-mode.mjs";
@@ -28,5 +28,19 @@ test("missing or corrupt model mode recovers to Codex",async () => {
     assert.equal(await mode.read(),"codex");
     await writeFile(file,"hybrid\n",{mode:0o600});
     assert.equal(await mode.read(),"codex");
+  } finally { await rm(root,{recursive:true,force:true}); }
+});
+
+test("unsafe state parents recover to Codex and failed replacement removes its temporary file",async () => {
+  const root=await mkdtemp(join(tmpdir(),"llw-model-mode-safe-"));
+  const parent=join(root,"private"); const file=join(parent,"model");
+  try {
+    await mkdir(parent,{mode:0o700}); await writeFile(file,"deepseek\n",{mode:0o600}); await chmod(parent,0o755);
+    assert.equal(await new ModelMode(file).read(),"codex");
+    await chmod(parent,0o700);
+    let temporary;
+    const mode=new ModelMode(file,{renameFile:async source=>{temporary=source;throw new Error("rename_failed");}});
+    await assert.rejects(()=>mode.write("codex"),/rename_failed/);
+    await assert.rejects(()=>access(temporary));
   } finally { await rm(root,{recursive:true,force:true}); }
 });

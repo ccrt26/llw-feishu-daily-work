@@ -9,7 +9,7 @@ export class DailyWorkService {
     this.writer = writer;
   }
 
-  async handleMessage(message) {
+  async handleMessage(message,{model="codex"}={}) {
     const checked = checkDailyWorkMessage(message);
     if (!checked.ok) {
       if (checked.notify && message?.sourceMessageId) return outcome("ignored", "当前工作记录第一版仅支持纯文字；该附件未下载、未交给 AI、未入库。");
@@ -23,14 +23,16 @@ export class DailyWorkService {
       return outcome("failed", "U盘知识库当前不可用，本条未入库；请连接U盘后重新发送。");
     }
     const checkedMessage = {...checked};
-    const decision = await this.safeDecide({message:checkedMessage, conversation: this.state.getConversation(), candidates});
+    const conversation=this.state.getConversation();
+    const taskModel=conversation?.model||model;
+    const decision = await this.safeDecide({message:checkedMessage, conversation, candidates,model:taskModel});
     if (decision.action === "unavailable") {
       return outcome("failed", decision.question);
     }
     switch (decision.action) {
       case "create_record": return this.createRecord(checkedMessage, decision);
       case "supplement_record": return this.supplementRecord(checkedMessage, decision, candidates);
-      case "ask_user": return this.askUser(checkedMessage, decision, candidates);
+      case "ask_user": return this.askUser(checkedMessage, decision, candidates,taskModel);
       case "ignore": return this.ignore(checkedMessage, decision);
       default: return outcome("failed", "AI 返回了不支持的操作，本条未入库；请稍后重新发送。");
     }
@@ -75,7 +77,7 @@ export class DailyWorkService {
     return outcome("committed", reply, result.files);
   }
 
-  async askUser(message, decision, candidates) {
+  async askUser(message, decision, candidates,model) {
     const current = this.state.getConversation();
     const conversation = {
       id: current?.id || conversationId(message.messageId),
@@ -85,7 +87,8 @@ export class DailyWorkService {
         {role: "user", text: message.text, createTime: message.createTime},
         {role: "assistant", text: decision.question}
       ],
-      candidateIds: candidates.map(candidate => candidate.record_id)
+      candidateIds: candidates.map(candidate => candidate.record_id),
+      model
     };
     await this.state.setConversation(conversation);
     return outcome("awaiting_clarification", decision.question);

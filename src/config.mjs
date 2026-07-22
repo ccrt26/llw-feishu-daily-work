@@ -1,7 +1,7 @@
 import {randomUUID} from "node:crypto";
 import {constants as fsConstants} from "node:fs";
 import {access,lstat,mkdir,open,readFile,rename} from "node:fs/promises";
-import {dirname,isAbsolute,join} from "node:path";
+import {dirname,isAbsolute,join,resolve} from "node:path";
 
 const TOP_FIELDS=new Set(["version","vaultRoot","stateFile","heartbeatFile","modelStateFile","deepseekEnabled","cliPath","codexPath","profile","senderId","chatId","capabilities"]);
 const DAILY_FIELDS=new Set(["enabled","skillRoot"]);
@@ -13,13 +13,13 @@ const INVOICE_FIELDS=new Set([
 export async function loadConfig(file,{requireBinding=true}={}) {
   const info=await lstat(file);
   if (!info.isFile() || info.isSymbolicLink() || info.uid !== process.getuid() || (info.mode & 0o077) !== 0) throw new Error("unsafe_config_file");
-  const config=JSON.parse(await readFile(file,"utf8"));
-  validateConfig(config,requireBinding);
+  const config=normalizeLoadedConfig(JSON.parse(await readFile(file,"utf8")));
+  validateConfig(config,requireBinding,file);
   return config;
 }
 
 export async function saveConfig(file,config,{requireBinding=true}={}) {
-  validateConfig(config,requireBinding);
+  validateConfig(config,requireBinding,file);
   await mkdir(dirname(file),{recursive:true,mode:0o700});
   const temporary=`${file}.${randomUUID()}.tmp`;
   const handle=await open(temporary,"wx",0o600);
@@ -46,7 +46,7 @@ export async function validatePdfTools(invoice) {
   }
 }
 
-function validateConfig(config,requireBinding) {
+function validateConfig(config,requireBinding,configFile) {
   exact(config,TOP_FIELDS,"config");
   if (config.version !== 4) throw new Error("invalid_config_version");
   for (const field of ["vaultRoot","stateFile","heartbeatFile","modelStateFile","cliPath","codexPath"]) absolute(config[field],field);
@@ -63,6 +63,8 @@ function validateConfig(config,requireBinding) {
   absolute(daily.skillRoot,"daily-work.skillRoot");
   for (const field of ["skillRoot","tempRoot","archiveRoot"]) absolute(invoice[field],`invoice.${field}`);
   for (const field of ["pdfInfoPath","pdfToTextPath","pdfToPpmPath"]) absolute(invoice[field],`invoice.${field}`);
+  const protectedPaths=[configFile,config.vaultRoot,config.stateFile,config.heartbeatFile,config.cliPath,config.codexPath,daily.skillRoot,invoice.skillRoot,invoice.tempRoot,invoice.archiveRoot,invoice.pdfInfoPath,invoice.pdfToTextPath,invoice.pdfToPpmPath];
+  if (protectedPaths.filter(value=>typeof value==="string").some(value=>resolve(value)===resolve(config.modelStateFile))) throw new Error("invalid_model_state_file_alias");
   if (invoice.archiveRoot !== join(config.vaultRoot,"亚信工作","日常发票","餐饮发票")) throw new Error("invalid_invoice_archive_root");
   if (invoice.maxFileBytes !== 20 * 1024 * 1024) throw new Error("invalid_max_file_bytes");
   if (invoice.aiTimeoutMs !== 120_000) throw new Error("invalid_ai_timeout");
@@ -70,6 +72,14 @@ function validateConfig(config,requireBinding) {
   if (invoice.maxPdfTextBytes !== 262_144) throw new Error("invalid_max_pdf_text_bytes");
   if (invoice.maxPdfRenderBytes !== 100 * 1024 * 1024) throw new Error("invalid_max_pdf_render_bytes");
   if (invoice.pdfPrepareTimeoutMs !== 60_000) throw new Error("invalid_pdf_prepare_timeout");
+}
+
+function normalizeLoadedConfig(config) {
+  if (!config || typeof config!=="object" || Array.isArray(config)) return config;
+  const normalized={...config};
+  if (!Object.hasOwn(normalized,"modelStateFile") && typeof normalized.stateFile==="string" && isAbsolute(normalized.stateFile)) normalized.modelStateFile=join(dirname(normalized.stateFile),"model-state");
+  if (!Object.hasOwn(normalized,"deepseekEnabled")) normalized.deepseekEnabled=false;
+  return normalized;
 }
 
 function exact(value,fields,label) {

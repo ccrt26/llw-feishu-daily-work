@@ -36,9 +36,22 @@ test("saves mode-0600 config and validates required absolute paths", async () =>
   await assert.rejects(async () => saveConfig(file, config({version:3})), /invalid_config_version/);
   await assert.rejects(async () => saveConfig(file, config({modelStateFile:"relative"})), /invalid_config_path:modelStateFile/);
   await assert.rejects(async () => saveConfig(file, config({deepseekEnabled:"false"})), /invalid_deepseek_enabled/);
+  for (const modelStateFile of [config().stateFile,config().heartbeatFile,config().cliPath,config().codexPath,config().capabilities.invoice.pdfInfoPath]) {
+    await assert.rejects(async () => saveConfig(file, config({modelStateFile})), /invalid_model_state_file_alias/);
+  }
   await assert.rejects(async () => saveConfig(file, config({capabilities:{...config().capabilities,invoice:{...config().capabilities.invoice,maxFileBytes:20971521}}})), /invalid_max_file_bytes/);
   await assert.rejects(async () => saveConfig(file, config({capabilities:{...config().capabilities,invoice:{...config().capabilities.invoice,typo:true}}})), /unknown_capability_field/);
   await assert.rejects(async () => saveConfig(file, {...config(),token:"secret"}), /unknown_config_field/);
+});
+
+test("loads deployed version-4 config without model fields using safe normalized defaults",async () => {
+  const dir=await mkdtemp(join(tmpdir(),"llw-config-legacy-v4-")); const file=join(dir,"config.json");
+  try {
+    const {modelStateFile,deepseekEnabled,...legacy}=config();
+    await writeFile(file,`${JSON.stringify(legacy)}\n`,{mode:0o600});
+    assert.deepEqual(await loadConfig(file),{...legacy,modelStateFile:"/Users/test/model-state",deepseekEnabled:false});
+    await assert.rejects(()=>saveConfig(file,legacy),/missing_config_field/);
+  } finally { await rm(dir,{recursive:true,force:true}); }
 });
 
 test("version 4 requires exact PDF limits and absolute tool paths", async () => {

@@ -12,11 +12,13 @@ export function parseLocalModelCommand(argumentsList) {
   return LOCAL_COMMANDS.has(argumentsList[0])?argumentsList[0]:null;
 }
 
+export function effectiveModel(mode,deepseekEnabled) { return deepseekEnabled&&mode==="deepseek"?"deepseek":"codex"; }
+
 export async function handleModelCommand(content,{modelMode,deepseekEnabled}) {
   const command=parseModelCommand(content);
   if (!command) return null;
   if (command==="deepseek"&&!deepseekEnabled) return draft("rejected","DeepSeek 模型当前未启用。");
-  if (command==="status") return draft("existing",statusReply(await modelMode.read()));
+  if (command==="status") return draft("existing",statusReply(effectiveModel(await modelMode.read(),deepseekEnabled)));
   await modelMode.write(command);
   return draft("existing",command==="codex"
     ?"模型已切换为 Codex。\n生效范围：下一条新任务。\n当前处理中任务不受影响。"

@@ -18,7 +18,8 @@ function conversation() {
       {role: "user", text: "我补充一下……", createTime: 1784445972514},
       {role: "assistant", text: "补充哪一场会议？"}
     ],
-    candidateIds: ["90f29b02eb9ec9bb"]
+    candidateIds: ["90f29b02eb9ec9bb"],
+    model:"codex"
   };
 }
 
@@ -49,7 +50,8 @@ test("migrates version-1 pending data without preserving forceDaily semantics", 
       {role: "user", text: "这个后面再说", createTime: 1784426400000},
       {role: "assistant", text: "要记录什么事项？"}
     ],
-    candidateIds: []
+    candidateIds: [],
+    model:"codex"
   });
   const persisted = JSON.parse(await readFile(file, "utf8"));
   assert.equal(persisted.version, 4);
@@ -129,6 +131,21 @@ test("expires router conversations after 24 hours and preserves one attempt",asy
   assert.equal(await store.getRouterConversation(Date.parse(started)+24*60*60*1000),null);
   assert.deepEqual((await StateStore.open(file)).getCapabilityState("router"),{conversation:null});
   await assert.rejects(()=>store.setRouterConversation({capability:null,question:"x",startedAt:started,attempts:2,status:"open"}),/invalid_router_conversation/);
+});
+
+test("persists task model snapshots while legacy version-4 conversations default to Codex",async () => {
+  const {file}=await fresh(); const store=await StateStore.open(file);
+  const started="2026-07-18T12:00:00.000Z";
+  await store.setRouterConversation({capability:"daily-work",question:"这是补充哪一场？",startedAt:started,attempts:1,status:"open",model:"deepseek"});
+  await store.setConversation({...conversation(),model:"deepseek"});
+  const reopened=await StateStore.open(file);
+  assert.equal((await reopened.getRouterConversation(Date.parse(started))).model,"deepseek");
+  assert.equal(reopened.getConversation().model,"deepseek");
+  const {model,...legacyConversation}=conversation();
+  await writeFile(file,JSON.stringify({version:4,capabilityState:{"daily-work":{conversation:{...legacyConversation,model:"hybrid"}},invoice:{},router:{conversation:{capability:null,question:"要处理什么？",startedAt:started,attempts:1,status:"open",model:"hybrid"}}},outcomes:{}}));
+  const legacy=await StateStore.open(file);
+  assert.equal((await legacy.getRouterConversation(Date.parse(started))).model,"codex");
+  assert.equal(legacy.getConversation().model,"codex");
 });
 
 test("silent outcomes are persisted but never resumed or sent",async () => {
