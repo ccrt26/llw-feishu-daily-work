@@ -15,6 +15,7 @@ export async function loadConfig(file,{requireBinding=true}={}) {
   if (!info.isFile() || info.isSymbolicLink() || info.uid !== process.getuid() || (info.mode & 0o077) !== 0) throw new Error("unsafe_config_file");
   const config=normalizeLoadedConfig(JSON.parse(await readFile(file,"utf8")));
   validateConfig(config,requireBinding,file);
+  if (await hasSymlinkIdentity(config.modelStateFile)) throw new Error("unsafe_model_state_path");
   return config;
 }
 
@@ -64,7 +65,8 @@ function validateConfig(config,requireBinding,configFile) {
   for (const field of ["skillRoot","tempRoot","archiveRoot"]) absolute(invoice[field],`invoice.${field}`);
   for (const field of ["pdfInfoPath","pdfToTextPath","pdfToPpmPath"]) absolute(invoice[field],`invoice.${field}`);
   const protectedPaths=[configFile,config.vaultRoot,config.stateFile,config.heartbeatFile,config.cliPath,config.codexPath,daily.skillRoot,invoice.skillRoot,invoice.tempRoot,invoice.archiveRoot,invoice.pdfInfoPath,invoice.pdfToTextPath,invoice.pdfToPpmPath];
-  if (protectedPaths.filter(value=>typeof value==="string").some(value=>resolve(value)===resolve(config.modelStateFile))) throw new Error("invalid_model_state_file_alias");
+  if (protectedPaths.filter(value=>typeof value==="string").some(value=>foldedPath(value)===foldedPath(config.modelStateFile))) throw new Error("invalid_model_state_file_alias");
+  if (resolve(config.modelStateFile)!==resolve(join(dirname(config.stateFile),"model-state"))) throw new Error("invalid_model_state_file");
   if (invoice.archiveRoot !== join(config.vaultRoot,"亚信工作","日常发票","餐饮发票")) throw new Error("invalid_invoice_archive_root");
   if (invoice.maxFileBytes !== 20 * 1024 * 1024) throw new Error("invalid_max_file_bytes");
   if (invoice.aiTimeoutMs !== 120_000) throw new Error("invalid_ai_timeout");
@@ -80,6 +82,15 @@ function normalizeLoadedConfig(config) {
   if (!Object.hasOwn(normalized,"modelStateFile") && typeof normalized.stateFile==="string" && isAbsolute(normalized.stateFile)) normalized.modelStateFile=join(dirname(normalized.stateFile),"model-state");
   if (!Object.hasOwn(normalized,"deepseekEnabled")) normalized.deepseekEnabled=false;
   return normalized;
+}
+
+function foldedPath(value) { return resolve(value).toLocaleLowerCase("en-US"); }
+async function hasSymlinkIdentity(file) {
+  for (const value of [dirname(file),file]) {
+    try { if ((await lstat(value)).isSymbolicLink()) return true; }
+    catch (error) { if (error.code!=="ENOENT") throw error; }
+  }
+  return false;
 }
 
 function exact(value,fields,label) {

@@ -22,13 +22,17 @@ export class Dispatcher {
       const command=await handleModelCommand(event.content,{modelMode:this.modelMode,deepseekEnabled:this.deepseekEnabled});
       if (command) return this.persistAndSend(fallbackMessage(event),"model",command);
     }
-    const model=effectiveModel(await this.modelMode.read(),this.deepseekEnabled);
+    const conversation=await this.state.getRouterConversation(event.createTimeMs);
+    const dailyConversation=this.state.getConversation();
+    const activeSnapshot=conversation?.model||dailyConversation?.model||null;
+    let globalModel;
+    const readGlobalModel=async()=>globalModel||=effectiveModel(await this.modelMode.read(),this.deepseekEnabled);
+    const model=activeSnapshot?effectiveModel(activeSnapshot,this.deepseekEnabled):await readGlobalModel();
     let capabilityName="router",draft,message;
     try {
       message=createFeishuIncomingMessage(event);
-      const conversation=await this.state.getRouterConversation(Date.parse(message.receivedAt));
       const decision=await this.intentRouter.decide({message:createRouterMessage(message),conversation:conversation?publicConversation(conversation):null,capabilities:this.capabilities.map(item=>structuredClone(item.routingContract))});
-      ({capabilityName,draft}=await this.applyDecision(message,conversation,decision,model));
+      ({capabilityName,draft}=await this.applyDecision(message,conversation,decision,model,{dailyActive:!!dailyConversation,readGlobalModel}));
     } catch {
       draft={status:"failed",reply:"暂时无法判断你希望进行的操作，请告诉我你希望我处理什么。",artifacts:[]};
     }
@@ -36,7 +40,7 @@ export class Dispatcher {
     return this.persistAndSend(message,capabilityName,draft);
   }
 
-  async applyDecision(message,conversation,decision,model) {
+  async applyDecision(message,conversation,decision,model,{dailyActive,readGlobalModel}) {
     if (decision.action==="unsupported") {
       if (decision.reason==="cancelled"&&conversation) {
         await this.state.closeRouterConversation("cancelled");
@@ -51,11 +55,12 @@ export class Dispatcher {
     const capability=this.capabilities.find(item=>item.name===decision.capability);
     if (!capability) throw new Error("unknown_capability");
     const newTask=decision.reasonCode==="new_task"||(conversation?.capability&&decision.capability!==conversation.capability);
-    const taskModel=conversation&&!newTask?conversation.model:model;
+    const taskModel=newTask?await readGlobalModel():model;
     if (conversation&&newTask) {
       await this.state.closeRouterConversation("superseded");
       if (conversation.capability==="daily-work") await this.state.clearConversation();
     }
+    else if (newTask&&dailyActive) await this.state.clearConversation();
     let draft=await capability.handle(message,{state:this.state,model:taskModel});
     if (draft?.status==="not_applicable") draft={status:"awaiting_clarification",reply:"我暂时无法确定你希望进行的操作，请告诉我你希望我处理什么。",artifacts:[]};
     if (draft?.status==="awaiting_clarification") {

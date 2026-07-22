@@ -9,6 +9,7 @@ export class ModelMode {
 
   async read() {
     try {
+      if (await hasSymlinkIdentity(this.file)) return "codex";
       const directoryInfo=await lstat(dirname(this.file));
       if (!directoryInfo.isDirectory() || directoryInfo.isSymbolicLink() || directoryInfo.uid!==process.getuid() || (directoryInfo.mode&0o077)!==0) return "codex";
       const info=await lstat(this.file);
@@ -21,9 +22,13 @@ export class ModelMode {
   async write(mode) {
     if (!MODES.has(mode)) throw new Error("invalid_model_mode");
     const directory=dirname(this.file);
+    if (await hasSymlinkIdentity(this.file)) throw new Error("unsafe_model_state_path");
     await mkdir(directory,{recursive:true,mode:0o700});
+    if (await hasSymlinkIdentity(this.file)) throw new Error("unsafe_model_state_path");
     const directoryInfo=await lstat(directory);
     if (!directoryInfo.isDirectory() || directoryInfo.isSymbolicLink() || directoryInfo.uid!==process.getuid()) throw new Error("unsafe_model_state_directory");
+    try { if ((await lstat(this.file)).isSymbolicLink()) throw new Error("unsafe_model_state_path"); }
+    catch (error) { if (error.code!=="ENOENT") throw error; }
     await chmod(directory,0o700);
     const temporary=`${this.file}.${randomUUID()}.tmp`;
     let replaced=false;
@@ -38,4 +43,12 @@ export class ModelMode {
       if (!replaced) await rm(temporary,{force:true}).catch(()=>{});
     }
   }
+}
+
+async function hasSymlinkIdentity(file) {
+  for (const value of [dirname(file),file]) {
+    try { if ((await lstat(value)).isSymbolicLink()) return true; }
+    catch (error) { if (error.code!=="ENOENT") throw error; }
+  }
+  return false;
 }

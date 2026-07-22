@@ -54,6 +54,20 @@ test("loads deployed version-4 config without model fields using safe normalized
   } finally { await rm(dir,{recursive:true,force:true}); }
 });
 
+test("requires the fixed state-directory model path and rejects case-folded or symlinked aliases",async () => {
+  const dir=await mkdtemp(join(tmpdir(),"llw-config-model-path-")); const file=join(dir,"config.json");
+  const stateDir=join(dir,"state"); const target=join(dir,"target"); const alias=join(dir,"alias");
+  try {
+    await mkdir(stateDir,{mode:0o700}); await mkdir(target,{mode:0o700}); await symlink(target,alias);
+    const base=config({stateFile:join(stateDir,"state.json"),heartbeatFile:join(stateDir,"heartbeat.json"),modelStateFile:join(stateDir,"model-state")});
+    await assert.rejects(()=>saveConfig(file,{...base,modelStateFile:join(stateDir,"other-model")}),/invalid_model_state_file/);
+    await assert.rejects(()=>saveConfig(file,{...base,heartbeatFile:join(stateDir,"MODEL-STATE")}),/invalid_model_state_file_alias/);
+    const linked={...base,stateFile:join(alias,"state.json"),heartbeatFile:join(alias,"heartbeat.json"),modelStateFile:join(alias,"model-state")};
+    await writeFile(file,`${JSON.stringify(linked)}\n`,{mode:0o600});
+    await assert.rejects(()=>loadConfig(file),/unsafe_model_state_path/);
+  } finally { await rm(dir,{recursive:true,force:true}); }
+});
+
 test("version 4 requires exact PDF limits and absolute tool paths", async () => {
   const dir = await mkdtemp(join(tmpdir(), "llw-config-pdf-"));
   const file = join(dir, "config.json");

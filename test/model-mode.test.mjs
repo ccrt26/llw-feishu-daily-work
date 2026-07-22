@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {access,chmod,mkdtemp,mkdir,readFile,rm,stat,writeFile} from "node:fs/promises";
+import {access,chmod,mkdtemp,mkdir,readFile,rm,stat,symlink,writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {ModelMode} from "../src/core/model-mode.mjs";
@@ -42,5 +42,15 @@ test("unsafe state parents recover to Codex and failed replacement removes its t
     const mode=new ModelMode(file,{renameFile:async source=>{temporary=source;throw new Error("rename_failed");}});
     await assert.rejects(()=>mode.write("codex"),/rename_failed/);
     await assert.rejects(()=>access(temporary));
+  } finally { await rm(root,{recursive:true,force:true}); }
+});
+
+test("refuses symlinked ancestors instead of replacing their target files",async () => {
+  const root=await mkdtemp(join(tmpdir(),"llw-model-mode-link-")); const target=join(root,"target"),alias=join(root,"alias");
+  try {
+    await mkdir(target,{mode:0o700}); await symlink(target,alias);
+    const file=join(alias,"model-state");
+    await assert.rejects(()=>new ModelMode(file).write("deepseek"),/unsafe_model_state_path/);
+    await assert.rejects(()=>access(join(target,"model-state")));
   } finally { await rm(root,{recursive:true,force:true}); }
 });

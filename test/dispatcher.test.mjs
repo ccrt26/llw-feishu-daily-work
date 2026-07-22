@@ -9,15 +9,15 @@ import {StateStore} from "../src/state-store.mjs";
 const raw={event_id:"e1",message_id:"m1",sender_id:"u1",chat_id:"c1",chat_type:"p2p",message_type:"image",content:"![Image](img_abc)",create_time:"1784426400000"};
 const contract=name=>({capability:name,purpose:name==="invoice"?"归档发票":"记录工作",accepts:name==="invoice"?["image","file"]:["text"],positive_examples:["正例"],negative_examples:["反例"],supports_continuation:name==="daily-work"});
 
-async function harness({decision,handle:capabilityHandler,status="committed",send,model="codex",deepseekEnabled=true}={}) {
-  const dir=await mkdtemp(join(tmpdir(),"llw-dispatcher-")); const state=await StateStore.open(join(dir,"state.json"));
+async function harness({decision,handle:capabilityHandler,status="committed",send,model="codex",deepseekEnabled=true,modelMode:providedModelMode}={}) {
+  const dir=await mkdtemp(join(tmpdir(),"llw-dispatcher-")); const file=join(dir,"state.json"); const state=await StateStore.open(file);
   const routerCalls=[],runs=[],messages=[],contexts=[],sends=[];
   const capabilities=["daily-work","invoice"].map(name=>({name,routingContract:contract(name),handle:async (message,context)=>{runs.push(name);messages.push(structuredClone(message));contexts.push({model:context.model});return capabilityHandler?capabilityHandler(name,message,context):{status,reply:status==="ignored"?null:`${name}完成`,artifacts:status==="committed"?["p"]:[]};}}));
   const intentRouter={decide:async input=>{routerCalls.push(structuredClone(input));return typeof decision==="function"?decision(input):decision||{action:"route",capability:"invoice",confidence:"high",reasonCode:"attachment_match"};}};
   const modes=[],writes=[]; let selected=model;
-  const modelMode={read:async()=>{modes.push(selected);return selected;},write:async value=>{writes.push(value);selected=value;}};
+  const modelMode=providedModelMode||{read:async()=>{modes.push(selected);return selected;},write:async value=>{writes.push(value);selected=value;}};
   const dispatcher=new Dispatcher({binding:{senderId:"u1",chatId:"c1"},state,capabilities,intentRouter,messenger:{send:send|| (async message=>sends.push(message))},modelMode,deepseekEnabled});
-  return {state,routerCalls,runs,messages,contexts,sends,modes,writes,dispatcher};
+  return {file,state,routerCalls,runs,messages,contexts,sends,modes,writes,dispatcher};
 }
 
 test("routes once, invokes only the selected capability, persists before send and suppresses duplicates",async () => {
@@ -91,6 +91,32 @@ test("an open router task retains its captured model until a genuinely new task"
   await h.dispatcher.handleRawEvent({...raw,message_id:"m3",message_type:"text",content:"继续任务"});
   await h.dispatcher.handleRawEvent({...raw,message_id:"m4",message_type:"text",content:"新任务"});
   assert.deepEqual(h.contexts.map(context=>context.model),["codex","codex","deepseek"]);
+});
+
+test("an active continuation never rereads global model state",async () => {
+  let reads=0;
+  const h=await harness({
+    modelMode:{read:async()=>{reads++;throw new Error("must_not_read");},write:async()=>{}},
+    decision:{action:"route",capability:"daily-work",confidence:"high",reasonCode:"continuation"}
+  });
+  await h.state.setRouterConversation({capability:"daily-work",question:"请补充",startedAt:new Date(Number(raw.create_time)).toISOString(),attempts:1,status:"open",model:"codex"});
+  await h.dispatcher.handleRawEvent({...raw,message_type:"text",content:"继续任务"});
+  assert.equal(reads,0); assert.deepEqual(h.contexts.map(context=>context.model),["codex"]);
+});
+
+test("disabled DeepSeek gates persisted router and daily snapshots without rereading global state",async () => {
+  let reads=0;
+  const modelMode={read:async()=>{reads++;throw new Error("must_not_read");},write:async()=>{}};
+  const decision={action:"route",capability:"daily-work",confidence:"high",reasonCode:"continuation"};
+  const router=await harness({modelMode,deepseekEnabled:false,decision});
+  await router.state.setRouterConversation({capability:"daily-work",question:"请补充",startedAt:new Date(Number(raw.create_time)).toISOString(),attempts:1,status:"open",model:"deepseek"});
+  router.dispatcher.state=await StateStore.open(router.file);
+  await router.dispatcher.handleRawEvent({...raw,message_type:"text",content:"继续任务"});
+  const daily=await harness({modelMode,deepseekEnabled:false,decision});
+  await daily.state.setConversation({id:"c1",status:"open",turns:[{role:"user",text:"开始",createTime:1}],candidateIds:[],model:"deepseek"});
+  daily.dispatcher.state=await StateStore.open(daily.file);
+  await daily.dispatcher.handleRawEvent({...raw,message_type:"text",content:"继续任务"});
+  assert.equal(reads,0); assert.deepEqual(router.contexts.map(context=>context.model),["codex"]); assert.deepEqual(daily.contexts.map(context=>context.model),["codex"]);
 });
 
 test("one unclear turn asks once and a second unclear answer lists capabilities then closes",async () => {
