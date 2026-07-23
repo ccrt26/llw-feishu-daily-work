@@ -28,6 +28,11 @@ test("daily-work Skill exposes the complete V3 business contract and versioned e
     "9. 异常与安全失败","10. 示例和评测","11. 权限与禁止行为","12. 验收标准"
   ]) assert.equal(skill.includes(`## ${section}`),true);
   for (const marker of ["[AI]","[程序]","[确认]","daily-work.interpret","Codex","DeepSeek"]) assert.equal(skill.includes(marker),true);
+  assert.match(skill,/Codex.*`low`/);
+  assert.match(skill,/DeepSeek V4 Pro.*非思考模式.*`temperature=0`/);
+  assert.match(skill,/推理设置由本 Skill 声明.*程序固定执行.*用户输入和模型输出不得覆盖/);
+  assert.match(skill,/候选只有一条不等于目标必然匹配/);
+  assert.match(skill,/具体取得了什么进展/);
   assert.deepEqual(routing.capability,"daily-work");
   assert.deepEqual(routing.accepts,["text"]);
   assert.deepEqual(schema.properties.action.enum,["create_record","supplement_record","ask_user","ignore"]);
@@ -110,6 +115,7 @@ test("daily-work Skill exposes the complete V3 business contract and versioned e
     "daily-positive-multiturn-clarified-supplement"
   ]);
   const timed=byId.get("daily-positive-unique-timed-supplement");
+  assert.match(timed.input.message.text,/昨天的标品订单RV会议/);
   assert.match(timed.input.message.text,/下午4点30.*下午5点30/);
   assert.equal(timed.input.candidates.length,1);
   assert.equal(timed.input.candidates[0].record_id,timed.expected.target_record_id);

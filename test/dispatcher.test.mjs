@@ -168,6 +168,15 @@ test("explicit cancellation becomes a silent idempotent outcome",async () => {
   assert.equal(result.status,"ignored"); assert.equal(h.runs.length,0); assert.equal(h.sends.length,0); assert.deepEqual(h.state.unreplied(),[]);
 });
 
+test("a cancelled sentinel without an active conversation returns a visible deterministic rejection",async () => {
+  const h=await harness({decision:{action:"unsupported",reason:"cancelled"}});
+  const result=await h.dispatcher.handleRawEvent({...raw,message_type:"text",content:"取消"});
+  assert.equal(result.status,"rejected");
+  assert.equal(h.runs.length,0);
+  assert.equal(h.sends.length,1);
+  assert.equal(h.sends[0].text,"当前没有待取消任务。");
+});
+
 test("business ignored is silent and not_applicable asks once without trying another capability",async () => {
   const ignored=await harness({status:"ignored"}); await ignored.dispatcher.handleRawEvent(raw); assert.equal(ignored.sends.length,0); assert.deepEqual(ignored.runs,["invoice"]);
   const no=await harness({handle:async()=>({status:"not_applicable",reply:null,artifacts:[]})}); await no.dispatcher.handleRawEvent(raw); assert.deepEqual(no.runs,["invoice"]); assert.equal(no.sends.length,1); assert.match(no.sends[0].text,/无法确定/);

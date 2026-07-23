@@ -11,7 +11,7 @@ function config(overrides = {}) {
     vaultRoot: "/Volumes/test/LLW",
     stateFile: "/Users/test/state.json", heartbeatFile: "/Users/test/heartbeat.json",
     modelStateFile: "/Users/test/model-state", deepseekEnabled: false,
-    deepseekModel:"deepseek-v4-flash",deepseekKeychainService:"com.llw.deepseek-api",deepseekKeychainAccount:"llw-assistant",
+    deepseekModel:"deepseek-v4-pro",deepseekKeychainService:"com.llw.deepseek-api",deepseekKeychainAccount:"llw-assistant",
     cliPath: "/Users/test/bin/lark-cli", codexPath: "/Applications/ChatGPT.app/codex",
     profile: "llw-private", senderId: "user-1", chatId: "chat-1",
     capabilities:{
@@ -37,6 +37,7 @@ test("saves mode-0600 config and validates required absolute paths", async () =>
   await assert.rejects(async () => saveConfig(file, config({version:3})), /invalid_config_version/);
   await assert.rejects(async () => saveConfig(file, config({modelStateFile:"relative"})), /invalid_config_path:modelStateFile/);
   await assert.rejects(async () => saveConfig(file, config({deepseekEnabled:"false"})), /invalid_deepseek_enabled/);
+  await assert.rejects(async () => saveConfig(file, config({deepseekModel:"deepseek-v4-flash"})), /invalid_deepseek_model/);
   await assert.rejects(async () => saveConfig(file, config({deepseekModel:"deepseek-chat"})), /invalid_deepseek_model/);
   await assert.rejects(async () => saveConfig(file, config({deepseekKeychainService:""})), /invalid_deepseek_keychain_name/);
   await assert.rejects(async () => saveConfig(file, {...config(),deepseekBaseUrl:"https:\/\/example.com"}), /unknown_config_field/);
@@ -53,7 +54,7 @@ test("loads deployed version-4 config without model or DeepSeek connection field
   try {
     const {modelStateFile,deepseekEnabled,deepseekModel,deepseekKeychainService,deepseekKeychainAccount,...legacy}=config();
     await writeFile(file,`${JSON.stringify(legacy)}\n`,{mode:0o600});
-    assert.deepEqual(await loadConfig(file),{...legacy,modelStateFile:"/Users/test/model-state",deepseekEnabled:false,deepseekModel:"deepseek-v4-flash",deepseekKeychainService:"com.llw.deepseek-api",deepseekKeychainAccount:"llw-assistant"});
+    assert.deepEqual(await loadConfig(file),{...legacy,modelStateFile:"/Users/test/model-state",deepseekEnabled:false,deepseekModel:"deepseek-v4-pro",deepseekKeychainService:"com.llw.deepseek-api",deepseekKeychainAccount:"llw-assistant"});
     await writeFile(file,`${JSON.stringify({...legacy,deepseekEnabled:true})}\n`,{mode:0o600});
     assert.equal((await loadConfig(file)).deepseekEnabled,false);
     await assert.rejects(()=>saveConfig(file,legacy),/missing_config_field/);

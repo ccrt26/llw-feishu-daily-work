@@ -47,7 +47,7 @@ test("atomically migrates exact v3 to v4 without printing protected values",asyn
     assert.equal(after.version,4);
     assert.equal(after.modelStateFile,"/Users/test/model-state");
     assert.equal(after.deepseekEnabled,false);
-    assert.equal(after.deepseekModel,"deepseek-v4-flash");
+    assert.equal(after.deepseekModel,"deepseek-v4-pro");
     assert.equal(after.deepseekKeychainService,"com.llw.deepseek-api");
     assert.equal(after.deepseekKeychainAccount,"llw-assistant");
     assert.deepEqual(after.capabilities.invoice,{...before.capabilities.invoice,...pdfFields});

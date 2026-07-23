@@ -26,7 +26,14 @@ export function prepareGuardedAiInput(task,input) {
     let prepared;
     if (task==="router.text") {
       validateRouter(input);
-      prepared={context:structuredClone(input),validation:{enabledNames:input.capabilities.map(item=>item.capability)}};
+      prepared={
+        context:structuredClone(input),
+        validation:{
+          enabledNames:input.capabilities.map(item=>item.capability),
+          hasConversation:input.conversation!==null,
+          conversationCapability:input.conversation?.capability??null
+        }
+      };
     }
     else if (task==="daily-work.interpret") prepared=prepareDaily(input);
     else reject();

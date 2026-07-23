@@ -23,7 +23,7 @@ try {
     version:4,
     modelStateFile:join(dirname(current.stateFile),"model-state"),
     deepseekEnabled:false,
-    deepseekModel:"deepseek-v4-flash",
+    deepseekModel:"deepseek-v4-pro",
     deepseekKeychainService:"com.llw.deepseek-api",
     deepseekKeychainAccount:"llw-assistant",
     capabilities:{

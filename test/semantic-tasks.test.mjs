@@ -87,7 +87,7 @@ test("a DeepSeek client failure never invokes the Codex client",async()=>{
   let codexCalls=0,deepseekCalls=0;
   const router=createRouterTextTask({
     invoke:async()=>{codexCalls++;},invokeDeepSeekClient:async()=>{deepseekCalls++;throw new Error("deepseek_timeout");},
-    deepseekEnabled:true,deepseekModel:"deepseek-v4-flash",deepseekKeychainService:"com.llw.deepseek-api",deepseekKeychainAccount:"llw-assistant"
+    deepseekEnabled:true,deepseekModel:"deepseek-v4-pro",deepseekKeychainService:"com.llw.deepseek-api",deepseekKeychainAccount:"llw-assistant"
   });
   await assert.rejects(()=>router({model:"deepseek",message:{type:"text",text:"记录工作",beijingTime:"2026-07-23 09:30:00"},conversation:null,capabilities:[]}),/deepseek_timeout/);
   assert.equal(deepseekCalls,1); assert.equal(codexCalls,0);

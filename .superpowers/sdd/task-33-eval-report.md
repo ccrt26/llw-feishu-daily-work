@@ -1,4 +1,6 @@
-# V3.0 Phase 3 Task 3.3 non-sensitive eval report
+# Phase 3 Task 3.3 non-sensitive eval report
+
+> V3.2 current note: this report records the historical construction of the fixed 10 Router and 12 daily-work cases. The final real evaluation now uses `deepseek-v4-pro`, the formal Skills, non-thinking mode and explicit `temperature: 0`, and passed 22/22 in one complete run: Router 10/10 and daily-work 12/12. The model's official 1M context capability does not change the current tasks' bounded inputs. The earlier 18/22 V4 Flash run remains diagnostic only. Statements below that no real model eval had run were true when this task report was written.
 
 ## Status
 

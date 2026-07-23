@@ -55,7 +55,7 @@ function responseFor(content=routerDecision,finishReason="stop") {
 
 async function call({endpoint,keyReader=async()=>"not-a-real-key",input=routerInput,...overrides}={}) {
   return invokeDeepSeek({
-    task:"router.text",model:"deepseek-v4-flash",keychainService:"com.llw.deepseek-api",
+    task:"router.text",model:"deepseek-v4-pro",keychainService:"com.llw.deepseek-api",
     keychainAccount:"llw-assistant",skillRoot:await skillRoot(),input,keyReader,testEndpoint:endpoint,...overrides
   });
 }
@@ -70,13 +70,47 @@ test("posts one bounded non-streaming JSON request to the explicit loopback fake
     assert.equal(request.method,"POST"); assert.equal(request.url,"/chat/completions");
     assert.equal(request.headers.authorization,"Bearer not-a-real-key");
     assert.equal(request.headers["content-type"],"application/json");
-    assert.equal(body.model,"deepseek-v4-flash"); assert.equal(body.stream,false);
+    assert.equal(body.model,"deepseek-v4-pro"); assert.equal(body.stream,false);
     assert.deepEqual(body.thinking,{type:"disabled"});
+    assert.equal(body.temperature,0);
     assert.deepEqual(body.response_format,{type:"json_object"});
     assert.equal(body.max_tokens,4096); assert.equal(body.messages.length,2);
     assert.match(body.messages[0].content,/SKILL_MD/); assert.match(body.messages[0].content,/JSON.*结构示例/s);
     assert.match(body.messages[1].content,/CONTEXT_JSON/); assert.match(body.messages[1].content,/今天完成方案评审/);
     assert.equal(request.body.includes("not-a-real-key"),false);
+  } finally { await fake.close(); }
+});
+
+test("normalizes router cancellation according to the guarded conversation state",async()=>{
+  const cancelled={action:"unsupported",capability:"",confidence:"",reason_code:"",question:"",reason:"cancelled"};
+  const fake=await server(async (_request,response)=>{response.writeHead(200,{"content-type":"application/json"});response.end(responseFor(cancelled));});
+  try {
+    const withoutConversation=await call({endpoint:fake.endpoint});
+    assert.deepEqual(withoutConversation,{action:"unsupported",reason:"当前没有待取消任务。"});
+    const activeInput={
+      ...routerInput,
+      conversation:{capability:"daily-work",question:"这是补充哪一场会议？",startedAt:"2026-07-23T01:56:00.000Z"}
+    };
+    const withConversation=await call({endpoint:fake.endpoint,input:activeInput});
+    assert.deepEqual(withConversation,{action:"unsupported",reason:"cancelled"});
+    assert.equal(fake.requests.length,2);
+  } finally { await fake.close(); }
+});
+
+test("normalizes a capability change during an active conversation as a new task",async()=>{
+  const invoiceRoute={action:"route",capability:"invoice",confidence:"high",reason_code:"attachment_match",question:"",reason:""};
+  const fake=await server(async (_request,response)=>{response.writeHead(200,{"content-type":"application/json"});response.end(responseFor(invoiceRoute));});
+  try {
+    const input={
+      ...routerInput,
+      conversation:{capability:"daily-work",question:"这是补充哪一场会议？",startedAt:"2026-07-23T01:56:00.000Z"},
+      capabilities:[
+        ...routerInput.capabilities,
+        {capability:"invoice",purpose:"处理发票附件",accepts:["file","image"],positive_examples:["发送发票PDF"],negative_examples:["普通文档"],supports_continuation:false}
+      ]
+    };
+    const result=await call({endpoint:fake.endpoint,input});
+    assert.deepEqual(result,{action:"route",capability:"invoice",confidence:"high",reasonCode:"new_task"});
   } finally { await fake.close(); }
 });
 
@@ -213,7 +247,7 @@ test("rejects malformed daily input and an oversized request before key or netwo
 
 test("rejects legacy models and non-loopback test endpoints before key access",async()=>{
   let reads=0; const root=await skillRoot();
-  for (const [model,testEndpoint] of [["deepseek-chat","http://127.0.0.1:1/chat/completions"],["deepseek-v4-pro","https://example.com/chat/completions"]]) {
+  for (const [model,testEndpoint] of [["deepseek-chat","http://127.0.0.1:1/chat/completions"],["deepseek-v4-flash","http://127.0.0.1:1/chat/completions"],["deepseek-v4-pro","https://example.com/chat/completions"]]) {
     await assert.rejects(()=>invokeDeepSeek({task:"router.text",model,keychainService:"com.llw.deepseek-api",keychainAccount:"llw-assistant",skillRoot:root,input:routerInput,keyReader:async()=>{reads++;return "not-a-real-key";},testEndpoint}),/deepseek_configuration_invalid/);
   }
   assert.equal(reads,0);

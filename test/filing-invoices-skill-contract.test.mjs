@@ -16,6 +16,9 @@ test("invoice Skill is the explicit source for PDF document verification semanti
     "9. 异常与安全失败","10. 示例和评测","11. 权限与禁止行为","12. 验收标准"
   ]) assert.equal(skill.includes(`## ${section}`),true);
   for (const marker of ["[AI]","[程序]","[确认]","invoice.visual","Codex","DeepSeek"]) assert.equal(skill.includes(marker),true);
+  assert.match(skill,/Codex.*`medium`/);
+  assert.match(skill,/DeepSeek.*禁止/);
+  assert.match(skill,/推理设置由本 Skill 声明.*程序固定执行.*用户输入和模型输出不得覆盖/);
   for (const value of ["single_invoice","multiple_invoices","conflicting_fields","unclear"]) assert.match(skill,new RegExp(`\\b${value}\\b`));
   assert.match(skill,/只有.*single_invoice.*归档/s);
   assert.match(skill,/(?:多张发票|两张或更多独立发票).*拆分/s);

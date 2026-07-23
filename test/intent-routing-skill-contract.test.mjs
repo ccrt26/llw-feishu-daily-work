@@ -22,6 +22,10 @@ test("router Skill and business routing contracts expose one strict routing boun
     "9. 异常与安全失败","10. 示例和评测","11. 权限与禁止行为","12. 验收标准"
   ]) assert.match(skill,new RegExp(`## ${section.replace(/[.*+?^${}()|[\\]\\]/g,"\\$&")}`));
   for (const marker of ["[AI]","[程序]","[确认]","router.text","Codex","DeepSeek"]) assert.equal(skill.includes(marker),true);
+  assert.match(skill,/Codex.*`low`/);
+  assert.match(skill,/DeepSeek V4 Pro.*非思考模式.*`temperature=0`/);
+  assert.match(skill,/推理设置由本 Skill 声明.*程序固定执行.*用户输入和模型输出不得覆盖/);
+  assert.match(skill,/活动对话.*附件.*完整的新任务.*`new_task`.*`attachment_match`/);
   assert.equal(schema.additionalProperties,false);
   assert.deepEqual(schema.required,["action","capability","confidence","reason_code","question","reason"]);
   assert.deepEqual(schema.properties.action.enum,["route","clarify","unsupported"]);

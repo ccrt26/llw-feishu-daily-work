@@ -50,10 +50,13 @@ export class Dispatcher {
 
   async applyDecision(message,conversation,decision,model,{dailyActive,readGlobalModel}) {
     if (decision.action==="unsupported") {
-      if (decision.reason==="cancelled"&&conversation) {
-        await this.state.closeRouterConversation("cancelled");
-        if (conversation.capability==="daily-work") await this.state.clearConversation();
-        return {capabilityName:"router",draft:{status:"ignored",reply:null,artifacts:[]}};
+      if (decision.reason==="cancelled") {
+        if (conversation) {
+          await this.state.closeRouterConversation("cancelled");
+          if (conversation.capability==="daily-work") await this.state.clearConversation();
+          return {capabilityName:"router",draft:{status:"ignored",reply:null,artifacts:[]}};
+        }
+        return {capabilityName:"router",draft:{status:"rejected",reply:"当前没有待取消任务。",artifacts:[]}};
       }
       await this.state.clearRouterConversation();
       return {capabilityName:"router",draft:{status:"rejected",reply:decision.reason,artifacts:[]}};

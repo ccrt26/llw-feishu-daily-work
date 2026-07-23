@@ -37,6 +37,32 @@ test("retries one transient Codex failure and returns the second valid decision"
   assert.equal(await readFile(attempts,"utf8"),"2");
 });
 
+test("normalizes cancellation according to the supplied conversation state",async () => {
+  await chmod(fixture,0o700);
+  const cancelled={action:"unsupported",capability:"",confidence:"",reason_code:"",question:"",reason:"cancelled"};
+  const environment={...process.env,FAKE_RESPONSE:JSON.stringify(cancelled)};
+  const withoutConversation=await invokeIntentRouter({codexPath:fixture,workspaceRoot:"/tmp",skillRoot,input,environment});
+  assert.deepEqual(withoutConversation,{action:"unsupported",reason:"当前没有待取消任务。"});
+  const activeInput={...input,conversation:{capability:"daily-work",question:"这是补充哪一场会议？",startedAt:"2026-07-23T01:56:00.000Z"}};
+  const withConversation=await invokeIntentRouter({codexPath:fixture,workspaceRoot:"/tmp",skillRoot,input:activeInput,environment});
+  assert.deepEqual(withConversation,{action:"unsupported",reason:"cancelled"});
+});
+
+test("normalizes a capability change during an active conversation as a new task",async()=>{
+  await chmod(fixture,0o700);
+  const activeInput={
+    ...input,
+    conversation:{capability:"daily-work",question:"这是补充哪一场会议？",startedAt:"2026-07-23T01:56:00.000Z"},
+    capabilities:[...input.capabilities,{capability:"invoice"}]
+  };
+  const invoiceRoute={action:"route",capability:"invoice",confidence:"high",reason_code:"attachment_match",question:"",reason:""};
+  const result=await invokeIntentRouter({
+    codexPath:fixture,workspaceRoot:"/tmp",skillRoot,input:activeInput,
+    environment:{...process.env,FAKE_RESPONSE:JSON.stringify(invoiceRoute)}
+  });
+  assert.deepEqual(result,{action:"route",capability:"invoice",confidence:"high",reasonCode:"new_task"});
+});
+
 test("validates the router Skill before startup and rejects any extra context field",async () => {
   await assert.doesNotReject(()=>validateIntentRouterSkill(skillRoot));
   await assert.rejects(()=>validateIntentRouterSkill("/private/tmp/missing-router-skill"),/unsafe_intent_router_skill/);

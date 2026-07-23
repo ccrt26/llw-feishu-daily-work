@@ -4,7 +4,7 @@ import {access,lstat,mkdir,open,readFile,rename} from "node:fs/promises";
 import {dirname,isAbsolute,join,parse,resolve} from "node:path";
 
 const TOP_FIELDS=new Set(["version","vaultRoot","stateFile","heartbeatFile","modelStateFile","deepseekEnabled","deepseekModel","deepseekKeychainService","deepseekKeychainAccount","cliPath","codexPath","profile","senderId","chatId","capabilities"]);
-const DEEPSEEK_MODELS=new Set(["deepseek-v4-flash","deepseek-v4-pro"]);
+const DEEPSEEK_MODELS=new Set(["deepseek-v4-pro"]);
 const DAILY_FIELDS=new Set(["enabled","skillRoot"]);
 const INVOICE_FIELDS=new Set([
   "enabled","skillRoot","tempRoot","archiveRoot","maxFileBytes","aiTimeoutMs",
@@ -85,7 +85,7 @@ function normalizeLoadedConfig(config) {
   if (!Object.hasOwn(normalized,"modelStateFile") && typeof normalized.stateFile==="string" && isAbsolute(normalized.stateFile)) normalized.modelStateFile=join(dirname(normalized.stateFile),"model-state");
   const missingDeepSeek=["deepseekModel","deepseekKeychainService","deepseekKeychainAccount"].some(field=>!Object.hasOwn(normalized,field));
   if (!Object.hasOwn(normalized,"deepseekEnabled")||missingDeepSeek) normalized.deepseekEnabled=false;
-  if (!Object.hasOwn(normalized,"deepseekModel")) normalized.deepseekModel="deepseek-v4-flash";
+  if (!Object.hasOwn(normalized,"deepseekModel")) normalized.deepseekModel="deepseek-v4-pro";
   if (!Object.hasOwn(normalized,"deepseekKeychainService")) normalized.deepseekKeychainService="com.llw.deepseek-api";
   if (!Object.hasOwn(normalized,"deepseekKeychainAccount")) normalized.deepseekKeychainAccount="llw-assistant";
   return normalized;
