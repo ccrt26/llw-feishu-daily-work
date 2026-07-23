@@ -8,76 +8,69 @@ const DAILY_CONVERSATION=new Set(["id","status","turns","candidateIds","model"])
 const DAILY_TURN=new Set(["role","text","createTime"]);
 const DAILY_CANDIDATE=new Set(["record_id","date","occurred_time","occurred_end_time","title","people","location","summary","follow_ups"]);
 
-const FORBIDDEN_PATTERNS=[
+const ASSIGNMENT_OR_DISCLOSURE=[
+  /(?:[:=：]|(?:的)?(?:值|内容)?\s*(?:是|为|等于|如下))\s*(?!什么[？?]?)/iu,
+  /\b(?:value\s*)?(?:is|equals)\s*\S+/iu
+];
+const SECRET_DISCLOSURE_ACTIONS=/(?:包含|含有|附上)/u;
+const SECRET_PRESENTATION_CONTEXT=[/(?:在这里|原始配置文件)/u];
+const IDENTITY_ACCESS_TERMS=[
+  /(?:密码|passwd|password|pwd|登录口令|凭证|凭据|credentials?|认证信息|恢复码|恢复代码|验证码|otp|访问令牌|刷新令牌|令牌|access[_ -]?token|refresh[_ -]?token|token|会话\s*cookie|session[_ -]?cookie|私钥|private[_ -]?key|api[_ -]?(?:key|密钥)|client[_ -]?secret|ssh[_ -]?(?:key|密钥)|mfa[_ -]?(?:secret|key)|mfa\s*[密秘]钥|多因素认证(?:种子|密钥|秘钥)|authorization)/iu
+];
+const PAYMENT_CONTROL_TERMS=[
+  /(?:银行卡(?:号|卡号|\s*pin\s*码?)?|信用卡(?:号码|卡号)?|卡号|card[_ -]?number|cvv|cvc|\bpin\b|security\s+code|安全码|校验码|卡背面.{0,6}(?:数字|码)|付款码|支付码|(?:付款|支付|收款)?二维码|支付密码|支付凭证|转账口令|支付授权信息|转账.{0,4}授权代码|网银登录信息)/iu
+];
+const PAYMENT_OPERATION_CONTEXT=[/(?:扫码|扫描|直接|自动).{0,12}(?:支付|转账|扣款|扣费|付款)|(?:支付|转账|扣款|扣费|付款).{0,12}(?:扫码|扫描|直接|自动)/u];
+
+const IDENTITY_MATERIAL_TERMS=[
+  /(?:身份证|护照|驾驶证|驾驶执照|驾照|社保卡|社会保障卡|银行卡|借记卡|刷脸|人脸|指纹|虹膜|声纹|生物识别)/u
+];
+const IDENTITY_MATERIAL_CONTEXT=[
+  /(?:正面和背面|正反(?:两)?面|前后(?:两)?面|正[、,，和]\s*反面|正面|完整页|整页|全页|资料页|个人信息页|第一页|原图|原始图片|照片|扫描件|扫描图|影像|截图|视频|材料|素材|模板|样本|数据|base64)/iu,
+  /(?:用于|用作|供).{0,8}(?:身份|实名)?(?:核验|认证)|(?:身份|实名)(?:核验|认证)用/u,
+  /(?:请处理|请识别|附上|在这里)/u
+];
+const IDENTITY_DEVELOPMENT_CONTEXT=[
+  /(?:识别|核验|认证|模板).{0,8}(?:功能|算法|流程|方案).{0,12}(?:开发|评审|测试|完成)/u,
+  /(?:设计|开发|评审|编写).{0,20}(?:身份证|护照|人脸|指纹|虹膜|声纹|模板).{0,20}(?:算法|功能|流程|单元测试|测试)/u
+];
+const IDENTITY_PRESENTATION_CONTEXT=[/(?:原图|照片|扫描件|截图|视频|材料|素材|样本|数据|附上|在这里|请处理|请识别|用于.{0,8}(?:核验|认证))/u];
+
+const CLASSIFICATION_TERMS=[/(?:绝密|机密|秘密|保密)/u];
+const CLASSIFICATION_CONTEXT=[
+  /(?:密级|等级|标记|标注|注明|标明|标有|属于)/u,
+  /(?:绝密|机密|秘密|保密)(?:级|等级)?的?(?:项目|资料|文件|内容|原文|合同|信息)/u,
+  /(?:【|\[)(?:绝密|机密|秘密|保密)(?:】|\])/u
+];
+const RESTRICTION_TERMS=[/(?:仅限内部|内部禁止外发|(?:内部|公司内部).{0,4}(?:资料|材料|文件)|保密协议|\bnda\b|监管|合同|公司制度|保密义务|无权授权|未经.{0,12}(?:授权|许可)|第三方.{0,8}(?:没有|未)授权|没有得到第三方授权|未授权第三方|明确限制)/iu];
+const NO_EXFILTRATION_CONTEXT=[/(?:不得|不能|禁止|严禁|不允许|请勿|无权|没有授权|未授权|明确限制).{0,18}(?:外发|对外披露|交给|提供|发送|传播|处理|原文|材料|资料|外部\s*(?:ai|模型)|模型)|(?:原文|材料|资料).{0,18}(?:不得|不能|禁止|严禁|不允许|请勿)/iu];
+const CONFIDENTIAL_MATERIAL_TERMS=[/(?:文档|原文|材料|资料|文件|内容|外部\s*(?:ai|模型)|模型)/iu];
+const NEGATED_NO_EXFILTRATION=[
+  /(?:不是|并非|不属于|未标记为|未标注为|未注明为).{0,8}(?:绝密|机密|秘密|保密)(?:资料|文件|内容|项目)?/u,
+  /(?:已)?(?:取消|撤销).{0,12}(?:(?:绝密|机密|秘密|保密).{0,4}(?:标记|标注|密级)|禁止外发(?:要求)?)/u
+];
+
+const BULK_QUANTIFIERS=[/(?:整个|全部|全量|所有|每封|每一个|一次性|一口气|批量|递归|打包|从头到尾|完整|一万|\d{4,}|过去.{0,8}年|往年|历年|历史|旧|全(?=发|交|上传|提交))/u];
+const BULK_RESOURCES=[/(?:obsidian\s*vault|vault|邮箱|邮件|客户目录|客户文件夹|客户资料库|项目目录|项目文件夹|工程目录|项目资料|目录|文件夹|历史资料|历史消息|旧资料|往年资料|历年资料|对话|聊天记录|聊天备份|记录|附件|文件)/iu];
+const BULK_ACTIONS=/(?:上传|提交|读取|扫描|导入|发送|发给|交给|打包|提供|给(?=\s*(?:ai|模型)))/iu;
+
+const SYSTEM_QUALIFIERS=[/(?:完整|全部|原始|原样|未脱敏|未经脱敏|导出|转储|备份|dump-keychain|崩溃\s*dump|crash\s*dump|core\s*dump|\bdump\b)/iu];
+const SYSTEM_MATERIAL_TERMS=[/(?:环境变量|\benv\b|\.env\b|系统日志|应用日志|syslog|journald\s*日志|浏览器配置|浏览器用户配置目录|浏览器.{0,8}cookie|(?:chrome|safari|firefox).{0,8}(?:用户数据目录|cookie\s*数据)|browser.{0,8}cookie|keychain|钥匙串|凭证目录|凭证文件夹|secrets?\s*(?:目录|文件夹|仓库|repository)|token\s*存储目录|core\s*dump|crash\s*dump|崩溃\s*(?:转储|dump))/iu];
+const INHERENT_RAW_SYSTEM_TERMS=[/(?:浏览器配置|浏览器用户配置目录|浏览器.{0,8}cookie|(?:chrome|safari|firefox).{0,8}(?:用户数据目录|cookie\s*数据)|browser.{0,8}cookie)/iu];
+const SYSTEM_DISCLOSURE_CONTEXT=[/(?:如下|这是|在下面|在后文|文件|数据库|目录|仓库|中有|里有|包含|含有|contains|发送|上传|提交|导出|读取|粘贴|提供|打包)/iu];
+const SYSTEM_DEVELOPMENT_CONTEXT=[/(?:编写|开发|设计|调研|评审).{0,40}(?:检测|单元测试|测试|解析|加载器|api)/iu];
+const SYSTEM_PRESENTATION_CONTEXT=[
+  /(?:如下|这是|附上|在这里|在下面|在后文|导出文件|备份文件|用户数据目录|数据库|仓库|中有|里有|包含|含有|contains|现在执行)/iu,
+  /(?:请|把|将|帮我).{0,24}(?:发送|上传|提交|交给|导出|读取|提供|粘贴|打包)/u
+];
+
+const HARD_FORBIDDEN_PATTERNS=[
   /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/iu,
-  /\bBearer\s+(?!(?:Token\s*)?(?:是什么|的(?:格式|含义|用途)是什么)[？?]?\s*$)[^\s]+/iu,
-  /\bAuthorization\s*:\s*(?:Bearer|Token|Basic)\s+(?!(?:Token\s*)?(?:是什么|的(?:格式|含义|用途)是什么)[？?]?\s*$)\S+/iu,
-  /\b(?:api[_ -]?key|client[_ -]?secret|token|access[_ -]?token|refresh[_ -]?token|credential(?:s)?|private[_ -]?key|session[_ -]?cookie|ssh[_ -]?key|mfa[_ -]?(?:secret|key)|recovery[_ -]?code|otp|password|passwd|pwd)(?:[_\s-]?value)?\b\s*(?:[:=：]|is|equals|是|为|等于)\s*(?!什么[？?]?\s*$)\S+/iu,
-  /(?:密码|凭证|凭据|口令|恢复码|恢复代码|动态验证码|验证码|访问令牌|刷新令牌|会话\s*Cookie|私钥|API\s*密钥|SSH\s*(?:Key|密钥)|MFA\s*[密秘]钥|多因素认证(?:种子|密钥|秘钥)|支付密码|转账口令|授权信息|网银登录信息)\s*(?:内容\s*)?(?:[:=：]|是|为|等于|如下)\s*(?!什么[？?]?\s*$)\S+/iu,
-  /(?:微信|飞书|邮箱|云服务|云平台)(?:的)?(?:登录|认证)(?:凭证|凭据|密码|信息)\s*(?:[:=：]|是|为|等于|如下)\s*(?!什么[？?]?\s*$)\S+/u,
-  /登录(?:微信|飞书|邮箱|云服务|云平台)用的(?:令牌|凭证|口令)\s*(?:[:=：]|是|为|等于)\s*\S+/u,
-  /(?:我的)?(?:登录)?密码\s*(?:是|为|等于)\s*(?!什么[？?]?\s*$)\S+/u,
-  /(?:短信|动态)?验证码\s*(?:是|为)\s*\d{4,8}\b/u,
-  /(?:银行卡(?:完整)?卡号|银行卡号|信用卡(?:完整)?(?:号码|卡号)|卡号|credit\s*card)\s*(?:[:=：]|是|为|等于)?\s*(?:\d[ -]?){13,19}/iu,
-  /\bcard[_ -]?number\s*[:=]\s*(?:\d[ -]?){13,19}\b/iu,
-  /(?:我的)?银行卡(?:号)?\s*(?:是|为|[:=：])?\s*(?:\d[ -]?){13,19}/u,
-  /\b(?:cvv|cvc|pin)\b\s*(?:[:=：]|是|为|等于)\s*\d{3,8}\b/iu,
-  /银行卡\s*PIN\s*码?\s*(?:[:=：]|是|为|等于)\s*\d{3,8}\b/iu,
-  /安全码\s*(?:[:=：]|是|为|等于)\s*\d{3,8}\b/u,
-  /\bsecurity\s+code\s*[:=]\s*\d{3,8}\b/iu,
-  /卡背面(?:的)?三位安全数字\s*(?:[:=：]|是|为|等于)\s*\d{3}\b/u,
-  /转账的?授权代码\s*(?:[:=：]|是|为|等于)\s*\S+/u,
-  /(?:密级\s*[:=：]\s*(?:绝密|机密|秘密|保密)|内部禁止外发|禁止外发)/u,
-  /密级\s*(?:[:=：]|是|为|等于)\s*[“”"']?(?:绝密|机密|秘密|保密)[“”"']?/u,
-  /(?:【(?:绝密|机密|秘密|保密)】|\[(?:绝密|机密|秘密|保密)\])/u,
-  /(?<!不是)(?<!并非)(?<!不属于)(?:绝密|机密|秘密|保密)(?:级|等级)?的?(?:项目|资料|文件|内容|原文|合同|信息)/u,
-  /(?:文档|资料|文件|项目|合同|内容)\s*标有\s*(?:绝密|机密|秘密|保密)字样/u,
-  /(?:文档|资料|文件|项目|合同|内容)\s*(?:已)?(?:标记|标注|注明)为\s*(?:绝密|机密|秘密|保密)/u,
-  /(?:本文档|文档|资料|文件)\s*(?:注明|标明|标注)\s*[:=：]?\s*(?:绝密|机密|秘密|保密)/u,
-  /(?:文档|资料|文件|项目|合同|内容)\s*(?:密级\s*)?(?:是|为|等于|属于)\s*(?:绝密|机密|秘密|保密)(?:资料|文件|内容)?/u,
-  /(?:内部|公司|客户|项目|第三方)?资料\s*(?:不得|禁止|严禁)\s*(?:对外|向外部\s*AI\s*)?外发/u,
-  /(?:禁止|不得|严禁)(?:将)?(?:此|该|本)?资料(?:对外|向外部\s*AI)?(?:提供|发送|传播|披露)/u,
-  /(?:公司制度明确禁止交给外部\s*AI|(?:用户)?无权授权(?:处理(?:这份)?)?的?第三方资料|受(?:合同保密义务|监管义务|保密义务|合同|监管)(?:[、，或和](?:合同保密义务|监管义务|保密义务|合同|监管)){0,2}明确限制的原文)/u,
-  /(?:根据合同不得向外部\s*AI\s*提供(?:这段)?原文|监管(?:规定|要求)(?:不允许|不得|禁止)外发|客户资料未经授权不得交给外部\s*AI|第三方(?:没有|未)授权(?:我)?处理)/u,
-  /(?:保密协议要求原文(?:不能|不得|禁止)外发|监管要求不得把原文发给(?:外部\s*AI|模型)|没有得到第三方授权[，,]?请勿处理)/u,
-  /(?:依据|根据)?\s*NDA[，,]?(?:这些)?内容(?:不得|不能|禁止)对外披露/iu,
-  /监管限制\s*[:=：]?(?:禁止|不得|不允许)把原文发送给\s*(?:AI|模型)/u,
-  /未经资料所有者(?:授权|许可)[，,]?(?:不能|不得|禁止)交给外部(?:\s*AI|模型)/u,
-  /(?:security\s+dump-keychain|keychain\s+(?:export|导出)|keychain\s*导出文件|导出(?:登录)?钥匙串|导出\s*keychain|钥匙串导出|钥匙串备份文件|导出\s*macOS\s*钥匙串数据库|(?:发送|上传|读取|导出|粘贴|提供)系统环境变量|未脱敏(?:的)?(?:完整)?环境变量|(?:发送|上传|读取|导出|粘贴|提供)(?:全部|完整)环境变量|完整的?环境变量清单(?:如下|内容)|\benv\b.{0,12}(?:全部|完整)(?:内容|变量)|\.env\s*文件.{0,12}(?:原样|完整).{0,8}(?:发送|发|交给)(?:给)?\s*(?:AI|模型)|未脱敏(?:的)?(?:系统)?日志|(?:发送|上传|读取|粘贴|提供)完整系统日志|原始\s*syslog\s*(?:内容)?(?:如下|[:=：])|(?:发送|上传|读取|导出|提供)\s*(?:浏览器配置|(?:Chrome|Safari|Firefox)\s*(?:用户数据目录|Cookie\s*数据))|浏览器用户配置目录(?:打包|导出|发送)|未脱敏(?:的)?\s*(?:core|crash)\s*dump|(?:core|crash|崩溃)\s*dump.{0,12}(?:中有|里有|含有|包含)\s*(?:Token|密钥|密码)|(?:core|crash)\s*dump\s+contains\s+(?:API\s*key|token|password)|(?:包含|含有)\s*(?:Token|密钥|密码)\s*的?\s*(?:崩溃转储|(?:core|crash)\s*dump)|(?:发送|上传|读取|提供)原始\s*(?:凭证|secrets?)\s*(?:目录|文件夹)|读取原始\s*token\s*存储目录)/iu,
-  /(?:包含|含有)(?:访问令牌|刷新令牌|Token|API\s*Key|密码|私钥|凭证)(?:信息)?的?原始配置文件/iu,
-  /(?:可直接)?(?:完成)?(?:支付|转账)的?(?:支付)?二维码/u,
-  /(?:收款|付款|支付)?二维码.{0,12}(?:就能|可以|可)(?:直接)?(?:完成|进行)?(?:支付|转账|扣款)/u,
-  /(?:付款码|支付码).{0,12}(?:可以|可|能够)?直接(?:扣款|付款|支付|转账)/u,
-  /(?:付款|支付|收款)二维码.{0,12}扫码后?(?:自动|直接)(?:扣费|扣款|支付|转账)/u,
   /(?:^|\n)(?:PATH|HOME|USER|SHELL|AWS_[A-Z0-9_]*|OPENAI_[A-Z0-9_]*|ANTHROPIC_[A-Z0-9_]*|DEEPSEEK_[A-Z0-9_]*)=/u,
   /(?:^|\n)\s*(?:\d{4}-\d{2}-\d{2}[T ][^\n]{0,60}\b(?:INFO|WARN|ERROR|DEBUG)\b|\[(?:INFO|WARN|ERROR|DEBUG)\])/iu,
-  /(?:身份证正反面原图|护照完整页|驾驶证完整页|社保卡原图|银行卡原图|身份认证(?:人脸|指纹)|生物识别材料)/u,
-  /(?:身份证(?:的)?(?:正面和背面|正反(?:两)?面)|完整身份证正反面)(?:原图|照片|扫描件)/u,
-  /身份证正\s*[、,，和]?\s*反面(?:的)?(?:高清)?(?:图|照片|扫描件|原图)/u,
-  /(?:整页护照|护照(?:完整页|整页|资料页))(?:原图|照片|扫描件)?/u,
-  /(?:驾驶证|驾驶执照|驾照)(?:完整页|整页|全页)(?:原图|照片|扫描件|截图)?/u,
-  /(?:社保卡|社会保障卡|银行卡)(?:的)?(?:正反面)?(?:原图|照片|扫描件)|完整的?银行卡(?:原图|照片|扫描件)/u,
-  /(?:刷脸|人脸(?:识别)?)(?:身份|实名)?认证(?:材料|素材|视频|照片)|用于实名认证的?人脸(?:材料|素材|视频|照片)|(?:用于)?认证(?:的)?指纹(?:材料|模板|数据)|(?:虹膜|声纹)认证(?:材料|素材|样本|模板|数据)/u,
   /(?:(?<![A-Za-z0-9_:/])\/(?!\/)\S+|(?<![A-Za-z0-9_])[A-Za-z]:[\\/]\S+|\\\\[^\\\s]+\\[^\\\s]+|(?<!:)\/\/[^/\s]+\/\S+)/u,
   /\b(?:sender|chat|message|event|resource|file|image)[_-]?(?:id|key)\s*(?:[:=：]|\s+是)\s*\S+/iu,
-  /\b(?:ou|oc|om|on|cli|file|img)_[A-Za-z0-9][A-Za-z0-9_-]{5,}\b/iu,
-  /(?:整个|全部|全量|所有)(?:\s*Obsidian\s*Vault|\s*Vault|邮箱|客户目录|项目目录|目录|文件夹|历史资料|历史消息|文件)/iu,
-  /(?:与当前任务无关|无关当前任务)的?(?:批量|大量)(?:文件|资料)/u,
-  /(?:邮件|邮箱).{0,12}(?:全部|所有).{0,12}(?:发送|交给)(?:给)?\s*(?:外部\s*)?(?:AI|模型)/iu,
-  /整个(?:邮件|邮箱)(?:账户|账号)?\s*(?:发送|交给)(?:给)?\s*(?:AI|模型)/iu,
-  /邮箱.{0,8}每封邮件.{0,8}(?:都)?(?:给|发送给|交给)\s*(?:AI|模型)/iu,
-  /(?:客户文件夹|客户目录).{0,12}(?:所有|全部|整个)内容/u,
-  /(?:客户文件夹|客户目录).{0,12}(?:每一个|所有|全部)(?:文件|内容)/u,
-  /递归(?:读取|扫描|导入)(?:整个)?客户(?:目录|文件夹)/u,
-  /项目资料\s*(?:全部|全|全量)\s*(?:发送|发|交给)(?:给)?(?:AI|模型)/u,
-  /项目(?:目录|文件夹).{0,8}(?:打包|全部|整个).{0,8}(?:交给|发送给|给)(?:AI|模型)/u,
-  /(?:一次性)?上传(?:我)?(?:所有|全部)的?(?:旧资料|历史资料|历史消息)/u,
-  /(?:所有|全部)(?:旧|历史)(?:聊天记录|资料|消息).{0,12}(?:一次|一次性).{0,12}(?:AI|模型)/u,
-  /(?:导入|上传|发送)(?:全部|所有)(?:往年|历年|历史|旧)(?:资料|消息|文件)/u,
-  /导入过去.{0,8}年的?(?:全部|所有)(?:记录|资料|消息|文件)/u,
-  /(?:一口气|一次性)上传(?:全部|所有)(?:聊天备份|聊天记录备份|历史备份)/u,
-  /Vault\s*根目录(?:的)?(?:全部|所有|整个)内容/iu,
-  /(?:一万|\d{4,})个?(?:与当前任务无关|与任务无关)的?(?:附件|文件)/u
+  /\b(?:ou|oc|om|on|cli|file|img)_[A-Za-z0-9][A-Za-z0-9_-]{5,}\b/iu
 ];
 
 export function guardAiInput(task,input) {
@@ -96,12 +89,81 @@ export function prepareGuardedAiInput(task,input) {
     else reject();
     const serialized=JSON.stringify(prepared.context);
     if (Buffer.byteLength(serialized,"utf8")>MAX_INPUT_BYTES) reject();
-    for (const value of strings(prepared.context)) for (const pattern of FORBIDDEN_PATTERNS) if (pattern.test(value)) reject();
+    for (const value of strings(prepared.context)) if (isForbiddenAiText(value)) reject();
     return prepared;
   } catch (error) {
     if (error?.message==="ai_input_rejected") throw error;
     reject();
   }
+}
+
+function isForbiddenAiText(value) {
+  return matchesAny(value,HARD_FORBIDDEN_PATTERNS)
+    || isIdentityAccessDisclosure(value)
+    || isPaymentControlDisclosure(value)
+    || isIdentityMaterial(value)
+    || isNoExfiltrationMaterial(value)
+    || isUnboundedBulkDisclosure(value)
+    || isRawSystemMaterial(value);
+}
+
+function isIdentityAccessDisclosure(value) {
+  if (!matchesAny(value,IDENTITY_ACCESS_TERMS)) return false;
+  if (/\bauthorization\s*:\s*(?:bearer|token|basic)\s+(?:的)?(?:格式|含义|用途|是什么)/iu.test(value)) return false;
+  if (/\bauthorization\s*:\s*(?:bearer|token|basic)\s+\S+/iu.test(value)) return true;
+  if (/\bbearer\s+(?!token\s*(?:是什么|的(?:格式|含义|用途)))[A-Za-z0-9._~+/-]{4,}/iu.test(value)) return true;
+  return matchesAny(value,ASSIGNMENT_OR_DISCLOSURE)
+    || matchesAny(value,SECRET_PRESENTATION_CONTEXT)
+    || hasAffirmativeAction(value,SECRET_DISCLOSURE_ACTIONS);
+}
+
+function isPaymentControlDisclosure(value) {
+  return matchesAny(value,PAYMENT_CONTROL_TERMS)
+    && (matchesAny(value,ASSIGNMENT_OR_DISCLOSURE)||matchesAny(value,PAYMENT_OPERATION_CONTEXT));
+}
+
+function isIdentityMaterial(value) {
+  if (!matchesAny(value,IDENTITY_MATERIAL_TERMS)||!matchesAny(value,IDENTITY_MATERIAL_CONTEXT)) return false;
+  const developmentOnly=matchesAny(value,IDENTITY_DEVELOPMENT_CONTEXT)&&!matchesAny(value,IDENTITY_PRESENTATION_CONTEXT);
+  return !developmentOnly;
+}
+
+function isNoExfiltrationMaterial(value) {
+  const activeValue=withoutLocalNegations(value,NEGATED_NO_EXFILTRATION);
+  const explicitRestriction=matchesAny(activeValue,NO_EXFILTRATION_CONTEXT)
+    && (matchesAny(activeValue,RESTRICTION_TERMS)||matchesAny(activeValue,CONFIDENTIAL_MATERIAL_TERMS));
+  if (explicitRestriction) return true;
+  return matchesAny(activeValue,CLASSIFICATION_TERMS)&&matchesAny(activeValue,CLASSIFICATION_CONTEXT);
+}
+
+function isUnboundedBulkDisclosure(value) {
+  return matchesAny(value,BULK_QUANTIFIERS)
+    && matchesAny(value,BULK_RESOURCES)
+    && hasAffirmativeAction(value,BULK_ACTIONS);
+}
+
+function isRawSystemMaterial(value) {
+  if (!matchesAny(value,SYSTEM_MATERIAL_TERMS)) return false;
+  if (!matchesAny(value,SYSTEM_QUALIFIERS)&&!matchesAny(value,INHERENT_RAW_SYSTEM_TERMS)) return false;
+  const developmentOnly=matchesAny(value,SYSTEM_DEVELOPMENT_CONTEXT)&&!matchesAny(value,SYSTEM_PRESENTATION_CONTEXT);
+  if (developmentOnly) return false;
+  return matchesAny(value,SYSTEM_DISCLOSURE_CONTEXT)||hasAffirmativeAction(value,/(?:发送|上传|提交|导出|读取|粘贴|提供)/u);
+}
+
+function hasAffirmativeAction(value,pattern) {
+  const matcher=new RegExp(pattern.source,`${pattern.flags.replace("g","")}g`);
+  for (const match of value.matchAll(matcher)) {
+    const prefix=value.slice(Math.max(0,match.index-10),match.index);
+    if (!/(?:不要|不能|不得|禁止|避免|无需|不再|请勿|没有|未)[^，。；,;]{0,5}$/u.test(prefix)) return true;
+  }
+  return false;
+}
+
+function matchesAny(value,patterns) { return patterns.some(pattern=>pattern.test(value)); }
+function withoutLocalNegations(value,patterns) {
+  let active=value;
+  for (const pattern of patterns) active=active.replace(new RegExp(pattern.source,`${pattern.flags.replace("g","")}g`),"");
+  return active;
 }
 
 function validateRouter(input) {
