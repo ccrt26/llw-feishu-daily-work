@@ -1,7 +1,7 @@
 import {extname} from "node:path";
 
 const SOURCES=new Set(["feishu","wechat"]);
-const IMAGE_MARKER=/^!\[Image\]\((img_[A-Za-z0-9_-]+)\)$/;
+const IMAGE_MARKER=/^(?:!\[Image\]\((img_[A-Za-z0-9_-]+)\)|\[Image: (img_[A-Za-z0-9_-]+)\])$/;
 const FILE_MARKER=/^<file\b[^<>]*\/>$/;
 
 export function createReplyTarget({source,sourceMessageId,conversationId}) {
@@ -28,7 +28,7 @@ function createAttachment(event) {
   if (event.messageType==="image") {
     const match=IMAGE_MARKER.exec(content);
     if (!match) throw new Error("invalid_incoming_message");
-    return {type:"image",sourceAttachmentId:match[1],displayName:"飞书图片",extension:""};
+    return {type:"image",sourceAttachmentId:match[1]||match[2],displayName:"飞书图片",extension:""};
   }
   if (event.messageType==="file") {
     if (!FILE_MARKER.test(content)) throw new Error("invalid_incoming_message");

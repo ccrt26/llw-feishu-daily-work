@@ -74,7 +74,7 @@ test("disabled DeepSeek makes persisted DeepSeek state effectively Codex",async 
 
 test("DeepSeek invoice is rejected before capability work without switching models",async()=>{
   const h=await harness({model:"deepseek",decision:{action:"route",capability:"invoice",confidence:"high",reasonCode:"attachment_match"}});
-  const result=await h.dispatcher.handleRawEvent(raw);
+  const result=await h.dispatcher.handleRawEvent({...raw,content:"[Image: img_current-123]"});
   assert.equal(result.status,"rejected"); assert.deepEqual(h.routerCalls,[]); assert.deepEqual(h.runs,[]); assert.deepEqual(h.writes,[]); assert.deepEqual(h.modes,["deepseek"]);
   assert.equal(h.sends.length,1);
   assert.equal(h.sends[0].text,"当前模型为 DeepSeek，但发票图片/PDF需要 Codex 视觉判断。\n本次未调用模型、未归档文件、未写入 Obsidian。\n请先发送：/llw-model codex\n然后重新提交发票。");
