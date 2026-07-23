@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {readFile} from "node:fs/promises";
+import {guardAiInput} from "../src/ai/ai-input-guard.mjs";
 
 const skillRoot="/Volumes/ZHUTONG/LLW的私人助手/LLW/.agents/skills/feishu-daily-work";
 
@@ -33,13 +34,17 @@ test("daily-work Skill exposes the complete V3 business contract and versioned e
     assert.equal(Number.isFinite(item.input?.message?.createTime),true);
     assert.equal(Array.isArray(item.input?.candidates),true);
     assert.equal(item.input.candidates.length<=20,true);
+    assert.doesNotThrow(()=>guardAiInput(item.task,item.input),`guard rejected ${item.id}`);
+    for (const candidate of item.input.candidates) assert.deepEqual(Object.keys(candidate).sort(),[
+      "date","follow_ups","location","occurred_end_time","occurred_time","people","record_id","summary","title"
+    ]);
     assert.equal(typeof item.expected?.action,"string");
   }
   const byId=new Map(cases.map(item=>[item.id,item]));
   const required={
     "daily-positive-unique-timed-supplement":{
       kind:"positive",
-      expected:{action:"supplement_record",confidence:"high",target_record_id:"3333333333333333",occurred_date:"2026-07-22",occurred_time:"16:30",occurred_end_time:"17:30"}
+      expected:{action:"supplement_record",confidence:"high",target_record_id:"3333333333333333",records:[{occurred_date:"2026-07-22",occurred_time:"16:30",occurred_end_time:"17:30"}]}
     },
     "daily-boundary-target-outside-candidates":{
       kind:"boundary",
@@ -47,7 +52,7 @@ test("daily-work Skill exposes the complete V3 business contract and versioned e
     },
     "daily-positive-multiturn-clarified-supplement":{
       kind:"positive",
-      expected:{action:"supplement_record",confidence:"high",target_record_id:"5555555555555555",source_text:"是周二的订单评审会",original_text:"我补充一下，参会人员还有华东区销售"}
+      expected:{action:"supplement_record",confidence:"high",target_record_id:"5555555555555555",source_text:"是周二的订单评审会"}
     },
     "daily-negative-active-cancel":{
       kind:"negative",
@@ -55,15 +60,15 @@ test("daily-work Skill exposes the complete V3 business contract and versioned e
     },
     "daily-positive-beijing-yesterday":{
       kind:"positive",
-      expected:{action:"create_record",confidence:"high",occurred_date:"2026-07-23"}
+      expected:{action:"create_record",confidence:"high",records:[{occurred_date:"2026-07-23"}]}
     },
     "daily-positive-explicit-date-precedence":{
       kind:"positive",
-      expected:{action:"create_record",confidence:"high",occurred_date:"2026-07-21"}
+      expected:{action:"create_record",confidence:"high",records:[{occurred_date:"2026-07-21"}]}
     },
     "daily-positive-two-independent-records":{
       kind:"positive",
-      expected:{action:"create_record",confidence:"high",records_count:2}
+      expected:{action:"create_record",confidence:"high",records:[{occurred_date:"2026-07-24"},{occurred_date:"2026-07-24"}]}
     },
     "daily-negative-knowledge-question":{
       kind:"negative",
@@ -82,10 +87,38 @@ test("daily-work Skill exposes the complete V3 business contract and versioned e
     assert.deepEqual(item.expected,contract.expected);
   }
   assert.equal(cases.length>=12,true);
-  assert.equal(byId.get("daily-positive-unique-timed-supplement").input.candidates.length,1);
-  assert.equal(byId.get("daily-boundary-target-outside-candidates").input.candidates.some(item=>item.title==="供应商沟通会"),false);
+  const timed=byId.get("daily-positive-unique-timed-supplement");
+  assert.match(timed.input.message.text,/下午4点30.*下午5点30/);
+  assert.equal(timed.input.candidates.length,1);
+  assert.equal(timed.input.candidates[0].record_id,timed.expected.target_record_id);
+  assert.equal(timed.input.candidates[0].date,timed.expected.records[0].occurred_date);
+  const outside=byId.get("daily-boundary-target-outside-candidates");
+  assert.match(outside.input.message.text,/供应商沟通会/);
+  assert.equal(outside.input.candidates.some(item=>item.title==="供应商沟通会"),false);
+  assert.equal(outside.expected.target_record_id,"");
   const multiturn=byId.get("daily-positive-multiturn-clarified-supplement");
-  assert.equal(multiturn.input.conversation.turns.at(-2).text,multiturn.expected.original_text);
+  const priorFact=multiturn.input.conversation.turns.find(turn=>turn.role==="user");
+  assert.ok(priorFact);
+  assert.match(priorFact.text,/参会人员/);
   assert.equal(multiturn.input.message.text,multiturn.expected.source_text);
-  assert.equal(byId.get("daily-negative-active-cancel").input.conversation.turns.at(-1).role,"assistant");
+  assert.equal(multiturn.input.candidates.some(item=>item.record_id===multiturn.expected.target_record_id),true);
+  const activeCancel=byId.get("daily-negative-active-cancel");
+  assert.match(activeCancel.input.message.text,/取消/);
+  assert.equal(activeCancel.input.conversation.turns.at(-1).role,"assistant");
+  const yesterday=byId.get("daily-positive-beijing-yesterday");
+  assert.match(yesterday.input.message.text,/昨天/);
+  assert.equal(yesterday.expected.records[0].occurred_date,"2026-07-23");
+  const explicitDate=byId.get("daily-positive-explicit-date-precedence");
+  assert.match(explicitDate.input.message.text,/7月21日/);
+  assert.equal(explicitDate.expected.records[0].occurred_date,"2026-07-21");
+  const twoRecords=byId.get("daily-positive-two-independent-records");
+  assert.equal(twoRecords.input.message.text.split("；").length,2);
+  assert.equal(twoRecords.expected.records.length,2);
+  const knowledge=byId.get("daily-negative-knowledge-question");
+  assert.match(knowledge.input.message.text,/什么是.*？/);
+  assert.equal(knowledge.input.conversation,null);
+  assert.deepEqual(knowledge.input.candidates,[]);
+  const vague=byId.get("daily-boundary-vague-fact");
+  assert.match(vague.input.message.text,/有些进展/);
+  assert.equal(vague.expected.action,"ask_user");
 });
