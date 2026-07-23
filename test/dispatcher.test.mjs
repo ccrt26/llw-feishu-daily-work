@@ -5,6 +5,7 @@ import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {Dispatcher} from "../src/core/dispatcher.mjs";
 import {StateStore} from "../src/state-store.mjs";
+import {DailyWorkService} from "../src/service.mjs";
 
 const raw={event_id:"e1",message_id:"m1",sender_id:"u1",chat_id:"c1",chat_type:"p2p",message_type:"image",content:"![Image](img_abc)",create_time:"1784426400000"};
 const contract=name=>({capability:name,purpose:name==="invoice"?"归档发票":"记录工作",accepts:name==="invoice"?["image","file"]:["text"],positive_examples:["正例"],negative_examples:["反例"],supports_continuation:name==="daily-work"});
@@ -53,6 +54,7 @@ test("each new task snapshots its model once before routing",async () => {
   const h=await harness({model:"deepseek"});
   await h.dispatcher.handleRawEvent({...raw,message_type:"text",content:"记录今天工作"});
   assert.deepEqual(h.modes,["deepseek"]);
+  assert.equal(h.routerCalls[0].model,"deepseek");
 });
 
 test("disabled DeepSeek makes persisted DeepSeek state effectively Codex",async () => {
@@ -61,13 +63,40 @@ test("disabled DeepSeek makes persisted DeepSeek state effectively Codex",async 
   await h.dispatcher.handleRawEvent({...raw,message_id:"m2",message_type:"text",content:"记录今天工作"});
   assert.equal(h.sends[0].text,"当前模型：Codex\n切换方式：手工");
   assert.deepEqual(h.contexts.map(context=>context.model),["codex"]);
+  assert.equal(h.routerCalls[0].model,"codex");
   assert.deepEqual(h.modes,["deepseek","deepseek"]);
+});
+
+test("DeepSeek invoice is rejected before capability work without switching models",async()=>{
+  const h=await harness({model:"deepseek",decision:{action:"route",capability:"invoice",confidence:"high",reasonCode:"attachment_match"}});
+  const result=await h.dispatcher.handleRawEvent(raw);
+  assert.equal(result.status,"rejected"); assert.deepEqual(h.routerCalls,[]); assert.deepEqual(h.runs,[]); assert.deepEqual(h.writes,[]); assert.deepEqual(h.modes,["deepseek"]);
+  assert.equal(h.sends.length,1);
+  assert.equal(h.sends[0].text,"当前模型为 DeepSeek，但发票图片/PDF需要 Codex 视觉判断。\n本次未调用模型、未归档文件、未写入 Obsidian。\n请先发送：/llw-model codex\n然后重新提交发票。");
+});
+
+test("attachment new tasks use the current global model instead of an active conversation snapshot",async()=>{
+  const reject=await harness({model:"deepseek",decision:{action:"route",capability:"invoice",confidence:"high",reasonCode:"new_task"}});
+  await reject.state.setRouterConversation({capability:"daily-work",question:"请补充",startedAt:new Date(Number(raw.create_time)).toISOString(),attempts:1,status:"open",model:"codex"});
+  assert.equal((await reject.dispatcher.handleRawEvent(raw)).status,"rejected");
+  assert.deepEqual(reject.routerCalls,[]); assert.deepEqual(reject.runs,[]); assert.deepEqual(reject.modes,["deepseek"]);
+
+  const allow=await harness({model:"codex",decision:{action:"route",capability:"invoice",confidence:"high",reasonCode:"new_task"}});
+  await allow.state.setRouterConversation({capability:"daily-work",question:"请补充",startedAt:new Date(Number(raw.create_time)).toISOString(),attempts:1,status:"open",model:"deepseek"});
+  assert.equal((await allow.dispatcher.handleRawEvent(raw)).status,"committed");
+  assert.equal(allow.routerCalls[0].model,"codex"); assert.deepEqual(allow.runs,["invoice"]); assert.deepEqual(allow.contexts,[{model:"codex"}]); assert.deepEqual(allow.modes,["codex"]);
+});
+
+test("malformed attachments keep existing validation behavior in DeepSeek mode",async()=>{
+  const h=await harness({model:"deepseek"});
+  const result=await h.dispatcher.handleRawEvent({...raw,content:"not-a-resource-marker"});
+  assert.equal(result.status,"failed"); assert.equal(h.routerCalls.length,0); assert.equal(h.runs.length,0); assert.match(h.sends[0].text,/暂时无法判断/); assert.doesNotMatch(h.sends[0].text,/发票图片/);
 });
 
 test("model commands are ignored for non-text events",async () => {
   const h=await harness();
-  await h.dispatcher.handleRawEvent({...raw,content:"/llw-model deepseek"});
-  assert.equal(h.routerCalls.length,0); assert.deepEqual(h.writes,[]); assert.deepEqual(h.modes,["codex"]);
+  const result=await h.dispatcher.handleRawEvent({...raw,content:"/llw-model deepseek"});
+  assert.equal(result.status,"failed"); assert.equal(h.routerCalls.length,0); assert.deepEqual(h.writes,[]); assert.deepEqual(h.modes,[]);
 });
 
 test("a switch changes the model snapshot of the next new task only",async () => {
@@ -141,7 +170,23 @@ test("business ignored is silent and not_applicable asks once without trying ano
 
 test("unsupported and router failure invoke no capability and send one safe reply",async () => {
   const unsupported=await harness({decision:{action:"unsupported",reason:"目前没有相应能力"}}); await unsupported.dispatcher.handleRawEvent(raw); assert.equal(unsupported.runs.length,0); assert.equal(unsupported.sends.length,1);
-  const failed=await harness({decision:()=>{throw new Error("secret");}}); await failed.dispatcher.handleRawEvent(raw); assert.equal(failed.runs.length,0); assert.equal(failed.sends.length,1); assert.match(failed.sends[0].text,/暂时无法判断/);
+  const failed=await harness({model:"deepseek",decision:()=>{throw new Error("secret");}}); await failed.dispatcher.handleRawEvent({...raw,message_type:"text",content:"记录工作"});
+  assert.equal(failed.runs.length,0); assert.equal(failed.sends.length,1); assert.match(failed.sends[0].text,/暂时无法判断/); assert.deepEqual(failed.writes,[]); assert.deepEqual(failed.modes,["deepseek"]);
+});
+
+test("DeepSeek daily-work failure writes neither business data nor model state",async()=>{
+  let service,businessWrites=0,decisions=0;
+  const h=await harness({
+    model:"deepseek",decision:{action:"route",capability:"daily-work",confidence:"high",reasonCode:"direct_match"},
+    handle:(_name,message,context)=>service.handleMessage(message,context)
+  });
+  service=new DailyWorkService({
+    state:h.state,catalog:{list:async()=>[]},
+    decide:async input=>{decisions++;assert.equal(input.model,"deepseek");throw new Error("deepseek_timeout");},
+    writer:{create:async()=>{businessWrites++;},supplement:async()=>{businessWrites++;}}
+  });
+  const result=await h.dispatcher.handleRawEvent({...raw,message_type:"text",content:"今天完成评审"});
+  assert.equal(result.status,"failed"); assert.equal(decisions,1); assert.equal(businessWrites,0); assert.deepEqual(h.writes,[]); assert.deepEqual(h.modes,["deepseek"]); assert.equal(h.state.getConversation(),null);
 });
 
 test("send failure resumes the same reply without rerunning router or capability",async () => {

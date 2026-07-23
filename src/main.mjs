@@ -37,10 +37,16 @@ const state=await StateStore.open(config.stateFile);
 const modelMode=new ModelMode(config.modelStateFile);
 const binding={senderId:config.senderId,chatId:config.chatId};
 const messenger=createLarkMessenger({cliPath:config.cliPath,profile:config.profile,boundChatId:config.chatId});
+const deepseekTextConfiguration={
+  deepseekEnabled:config.deepseekEnabled,
+  deepseekModel:config.deepseekModel,
+  deepseekKeychainService:config.deepseekKeychainService,
+  deepseekKeychainAccount:config.deepseekKeychainAccount
+};
 
 const dailyWriter=new VaultWriter(config.vaultRoot);
 const catalog=new RecordCatalog(config.vaultRoot);
-const dailyWorkInterpret=createDailyWorkInterpretTask({codexPath:config.codexPath,workspaceRoot:config.vaultRoot,skillRoot:config.capabilities["daily-work"].skillRoot});
+const dailyWorkInterpret=createDailyWorkInterpretTask({codexPath:config.codexPath,workspaceRoot:config.vaultRoot,skillRoot:config.capabilities["daily-work"].skillRoot,...deepseekTextConfiguration});
 const dailyService=new DailyWorkService({
   state,catalog,writer:dailyWriter,decide:dailyWorkInterpret
 });
@@ -67,7 +73,7 @@ const invoiceCapability=createInvoiceCapability({
 });
 
 const capabilities=buildCapabilityRegistry({dailyWork:dailyCapability,invoice:invoiceCapability,contracts,enabled:{"daily-work":config.capabilities["daily-work"].enabled,invoice:invoiceConfig.enabled}});
-const routerText=createRouterTextTask({codexPath:config.codexPath,workspaceRoot:config.vaultRoot,skillRoot:routerSkillRoot,timeoutMs:invoiceConfig.aiTimeoutMs});
+const routerText=createRouterTextTask({codexPath:config.codexPath,workspaceRoot:config.vaultRoot,skillRoot:routerSkillRoot,timeoutMs:invoiceConfig.aiTimeoutMs,...deepseekTextConfiguration});
 const intentRouter={decide:routerText};
 const dispatcher=new Dispatcher({binding,state,capabilities,intentRouter,messenger,modelMode,deepseekEnabled:config.deepseekEnabled});
 

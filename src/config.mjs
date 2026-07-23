@@ -3,7 +3,8 @@ import {constants as fsConstants} from "node:fs";
 import {access,lstat,mkdir,open,readFile,rename} from "node:fs/promises";
 import {dirname,isAbsolute,join,parse,resolve} from "node:path";
 
-const TOP_FIELDS=new Set(["version","vaultRoot","stateFile","heartbeatFile","modelStateFile","deepseekEnabled","cliPath","codexPath","profile","senderId","chatId","capabilities"]);
+const TOP_FIELDS=new Set(["version","vaultRoot","stateFile","heartbeatFile","modelStateFile","deepseekEnabled","deepseekModel","deepseekKeychainService","deepseekKeychainAccount","cliPath","codexPath","profile","senderId","chatId","capabilities"]);
+const DEEPSEEK_MODELS=new Set(["deepseek-v4-flash","deepseek-v4-pro"]);
 const DAILY_FIELDS=new Set(["enabled","skillRoot"]);
 const INVOICE_FIELDS=new Set([
   "enabled","skillRoot","tempRoot","archiveRoot","maxFileBytes","aiTimeoutMs",
@@ -52,6 +53,8 @@ function validateConfig(config,requireBinding,configFile) {
   if (config.version !== 4) throw new Error("invalid_config_version");
   for (const field of ["vaultRoot","stateFile","heartbeatFile","modelStateFile","cliPath","codexPath"]) absolute(config[field],field);
   if (typeof config.deepseekEnabled!=="boolean") throw new Error("invalid_deepseek_enabled");
+  if (!DEEPSEEK_MODELS.has(config.deepseekModel)) throw new Error("invalid_deepseek_model");
+  for (const field of ["deepseekKeychainService","deepseekKeychainAccount"]) if (typeof config[field]!=="string"||!/^[A-Za-z0-9._@-]{1,128}$/.test(config[field])) throw new Error("invalid_deepseek_keychain_name");
   if (typeof config.profile !== "string" || !config.profile) throw new Error("invalid_profile");
   for (const field of ["senderId","chatId"]) {
     if (config[field] !== null && (typeof config[field] !== "string" || !config[field])) throw new Error(`invalid_binding:${field}`);
@@ -80,7 +83,11 @@ function normalizeLoadedConfig(config) {
   if (!config || typeof config!=="object" || Array.isArray(config)) return config;
   const normalized={...config};
   if (!Object.hasOwn(normalized,"modelStateFile") && typeof normalized.stateFile==="string" && isAbsolute(normalized.stateFile)) normalized.modelStateFile=join(dirname(normalized.stateFile),"model-state");
-  if (!Object.hasOwn(normalized,"deepseekEnabled")) normalized.deepseekEnabled=false;
+  const missingDeepSeek=["deepseekModel","deepseekKeychainService","deepseekKeychainAccount"].some(field=>!Object.hasOwn(normalized,field));
+  if (!Object.hasOwn(normalized,"deepseekEnabled")||missingDeepSeek) normalized.deepseekEnabled=false;
+  if (!Object.hasOwn(normalized,"deepseekModel")) normalized.deepseekModel="deepseek-v4-flash";
+  if (!Object.hasOwn(normalized,"deepseekKeychainService")) normalized.deepseekKeychainService="com.llw.deepseek-api";
+  if (!Object.hasOwn(normalized,"deepseekKeychainAccount")) normalized.deepseekKeychainAccount="llw-assistant";
   return normalized;
 }
 

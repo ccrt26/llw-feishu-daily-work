@@ -20,6 +20,10 @@ test("main validates business routing contracts and injects one read-only intent
   assert.match(source,/import \{validateIntentRouterSkill\} from "\.\/core\/intent-router-client\.mjs"/);
   assert.match(source,/import \{createRouterTextTask,createDailyWorkInterpretTask,createInvoiceVisualTask\} from "\.\/core\/semantic-tasks\.mjs"/);
   assert.match(source,/import \{ModelMode\} from "\.\/core\/model-mode\.mjs"/);
+  assert.match(source,/deepseekModel:config\.deepseekModel/);
+  assert.match(source,/deepseekKeychainService:config\.deepseekKeychainService/);
+  assert.match(source,/deepseekKeychainAccount:config\.deepseekKeychainAccount/);
+  assert.match(source,/deepseekEnabled:config\.deepseekEnabled/);
   assert.match(source,/feishu-intent-router/);
   assert.ok(source.indexOf("await validateIntentRouterSkill(routerSkillRoot)")<source.indexOf("StateStore.open"));
   assert.match(source,/loadRoutingContract\(config\.capabilities\["daily-work"\]\.skillRoot,"daily-work"\)/);

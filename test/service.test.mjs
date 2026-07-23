@@ -132,7 +132,7 @@ test("unsupported attachment is not sent to daily-work AI", async () => {
 
 test("temporary AI failure does not create a false conversation", async () => {
   const h = await harness(async () => { throw new Error("model_capacity"); });
-  const result = await h.service.handleMessage(baseMessage);
+  const result = await h.service.handleMessage(baseMessage,{model:"deepseek"});
   assert.equal(h.creates.length, 0);
   assert.equal(h.state.getConversation(), null);
   assert.equal(result.reply, "AI 暂时不可用，本条未入库；请稍后重新发送。");
