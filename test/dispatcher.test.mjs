@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {mkdtemp} from "node:fs/promises";
+import {mkdtemp,readFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {Dispatcher} from "../src/core/dispatcher.mjs";
@@ -179,6 +179,86 @@ test("unsupported and model-specific router failures invoke no capability and se
     const failed=await harness({model,decision:()=>{throw new Error("secret");}}); await failed.dispatcher.handleRawEvent({...raw,message_type:"text",content:"记录工作"});
     assert.equal(failed.runs.length,0); assert.equal(failed.sends.length,1); assert.equal(failed.sends[0].text,reply); assert.deepEqual(failed.writes,[]); assert.deepEqual(failed.modes,[model]);
   }
+});
+
+test("a DeepSeek failure leaves the next Codex task independent after an explicit manual switch",async () => {
+  let businessWrites=0;
+  const h=await harness({
+    model:"deepseek",
+    decision:input=>{
+      if (input.message.text==="第一条任务") throw new Error("deepseek_timeout");
+      return {action:"route",capability:"daily-work",confidence:"high",reasonCode:"direct_match"};
+    },
+    handle:async name=>{
+      businessWrites++;
+      return {status:"committed",reply:`${name}完成`,artifacts:["p"]};
+    }
+  });
+
+  const failed=await h.dispatcher.handleRawEvent({...raw,message_type:"text",content:"第一条任务"});
+  assert.equal(failed.status,"failed");
+  assert.equal(h.routerCalls.length,1);
+  assert.equal(h.routerCalls[0].model,"deepseek");
+  assert.deepEqual(h.runs,[]);
+  assert.equal(businessWrites,0);
+  assert.deepEqual(h.writes,[]);
+  assert.deepEqual(h.modes,["deepseek"]);
+  assert.equal(h.sends[0].text,DEEPSEEK_FAILURE_REPLY);
+
+  const switched=await h.dispatcher.handleRawEvent({...raw,message_id:"m2",message_type:"text",content:"/llw-model codex"});
+  assert.equal(switched.status,"existing");
+  assert.deepEqual(h.writes,["codex"]);
+  assert.equal(h.routerCalls.length,1);
+  assert.deepEqual(h.runs,[]);
+  assert.equal(businessWrites,0);
+
+  const succeeded=await h.dispatcher.handleRawEvent({...raw,message_id:"m3",message_type:"text",content:"第二条新任务"});
+  assert.equal(succeeded.status,"committed");
+  assert.equal(h.routerCalls.length,2);
+  assert.equal(h.routerCalls[1].model,"codex");
+  assert.deepEqual(h.runs,["daily-work"]);
+  assert.deepEqual(h.contexts,[{model:"codex"}]);
+  assert.equal(businessWrites,1);
+  assert.deepEqual(h.writes,["codex"]);
+  assert.deepEqual(h.modes,["deepseek","codex"]);
+});
+
+test("a replied outcome suppresses the same raw message after StateStore and Dispatcher restart",async () => {
+  const first=await harness({decision:{action:"route",capability:"invoice",confidence:"high",reasonCode:"attachment_match"}});
+  assert.equal((await first.dispatcher.handleRawEvent(raw)).status,"committed");
+  assert.equal(first.routerCalls.length,1);
+  assert.deepEqual(first.runs,["invoice"]);
+  assert.equal(first.sends.length,1);
+
+  const persisted=JSON.parse(await readFile(first.file,"utf8"));
+  assert.equal(persisted.outcomes[raw.message_id].status,"committed");
+  assert.equal(persisted.outcomes[raw.message_id].replied,true);
+
+  const reopenedState=await StateStore.open(first.file);
+  const routerCalls=[],capabilityCalls=[],messengerCalls=[],modelReads=[],modelWrites=[];
+  const restarted=new Dispatcher({
+    binding:{senderId:"u1",chatId:"c1"},
+    state:reopenedState,
+    capabilities:["daily-work","invoice"].map(name=>({
+      name,
+      routingContract:contract(name),
+      handle:async()=>{capabilityCalls.push(name);return {status:"committed",reply:`${name}完成`,artifacts:["p"]};}
+    })),
+    intentRouter:{decide:async input=>{routerCalls.push(input);return {action:"route",capability:"invoice",confidence:"high",reasonCode:"attachment_match"};}},
+    messenger:{send:async message=>messengerCalls.push(message)},
+    modelMode:{read:async()=>{modelReads.push("read");return "codex";},write:async value=>modelWrites.push(value)},
+    deepseekEnabled:true
+  });
+
+  const duplicate=await restarted.handleRawEvent(structuredClone(raw));
+  assert.deepEqual(duplicate,{handled:false,reason:"duplicate"});
+  assert.equal(reopenedState.hasOutcome(raw.message_id),true);
+  assert.deepEqual(reopenedState.unreplied(),[]);
+  assert.deepEqual(routerCalls,[]);
+  assert.deepEqual(capabilityCalls,[]);
+  assert.deepEqual(messengerCalls,[]);
+  assert.deepEqual(modelReads,[]);
+  assert.deepEqual(modelWrites,[]);
 });
 
 test("router input rejection uses the V3.1 fixed reply for both models with zero AI follow-up, business write or model write",async()=>{
