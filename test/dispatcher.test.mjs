@@ -11,7 +11,7 @@ import {FORBIDDEN_AI_INPUTS} from "./fixtures/forbidden-ai-inputs.mjs";
 
 const raw={event_id:"e1",message_id:"m1",sender_id:"u1",chat_id:"c1",chat_type:"p2p",message_type:"image",content:"![Image](img_abc)",create_time:"1784426400000"};
 const contract=name=>({capability:name,purpose:name==="invoice"?"归档发票":"记录工作",accepts:name==="invoice"?["image","file"]:["text"],positive_examples:["正例"],negative_examples:["反例"],supports_continuation:name==="daily-work"});
-const SENSITIVE_REPLY="检测到本任务包含不允许发送给 AI 的身份凭证或密钥信息。\n系统未调用 Codex 或 DeepSeek，也未保存该敏感内容。\n请删除或遮盖敏感字段后重新提交。";
+const SENSITIVE_REPLY="检测到可能包含实际密钥、登录凭证或支付控制信息。\n系统没有把本次内容发送给 Codex 或 DeepSeek，也没有写入业务记录。\n请删除或遮盖相关值后重新提交。";
 const CODEX_FAILURE_REPLY="当前模型 Codex 本次调用失败。\n系统没有切换模型，也没有执行写入。\n如需使用 DeepSeek，请手工发送：/llw-model deepseek";
 const DEEPSEEK_FAILURE_REPLY="当前模型 DeepSeek 本次调用失败。\n系统没有切换模型，也没有执行写入。\n如需使用 Codex，请手工发送：/llw-model codex";
 
@@ -181,7 +181,7 @@ test("unsupported and model-specific router failures invoke no capability and se
   }
 });
 
-test("router input rejection uses the V3 sensitive-data reply for both models with zero AI follow-up or model write",async()=>{
+test("router input rejection uses the V3.1 fixed reply for both models with zero AI follow-up, business write or model write",async()=>{
   for (const model of ["codex","deepseek"]) {
     let aiCalls=0;
     const guardedRouter=createRouterTextTask({invoke:async()=>{aiCalls++;},invokeDeepSeekClient:async()=>{aiCalls++;},deepseekEnabled:true});

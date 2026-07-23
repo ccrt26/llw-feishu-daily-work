@@ -124,15 +124,15 @@ test("keychain and guard failures happen before any network request",async t=>{
       assert.equal(fake.requests.length,0);
     } finally { await fake.close(); }
   });
-  await t.test("guard",async()=>{
+  await t.test("guard has zero Keychain, network and Skill reads",async()=>{
     const fake=await server(async (_request,response)=>response.end(responseFor())); let keyReads=0;
     try {
       const prohibited=FORBIDDEN_AI_INPUTS.map(item=>item.text);
-      for (const text of ["Authorization: Bearer not-real","Authorization: Token not-real","token: not-real","client_secret: not-real","凭证：not-real","otp: 123456","支付凭证：not-real","/tmp/private.txt","/root/private.txt","路径：/root/private.txt","path=/mnt/private.txt","打开，/srv/private.txt","Z:/private/file.txt","配置:C:\\private\\file.txt","\\\\server\\private\\file.txt","share=\\\\server\\private\\file.txt","ou_not_a_real_id","file_not_a_real_key",...prohibited]) {
+      for (const text of prohibited) {
         await assert.rejects(()=>call({endpoint:fake.endpoint,input:{...routerInput,message:{...routerInput.message,text}},keyReader:async()=>{keyReads++;return "not-a-real-key";}}),error=>error.message==="ai_input_rejected");
       }
       const dailySkillRoot=await skillRoot("feishu-daily-work");
-      for (const text of ["凭证：not-real","路径：/root/private.txt",...prohibited]) await assert.rejects(()=>invokeDeepSeek({
+      for (const text of prohibited) await assert.rejects(()=>invokeDeepSeek({
           task:"daily-work.interpret",model:"deepseek-v4-pro",keychainService:"com.llw.deepseek-api",keychainAccount:"llw-assistant",
           skillRoot:dailySkillRoot,input:{message:{text,createTime:1784426400000},conversation:null,candidates:[]},
           keyReader:async()=>{keyReads++;return "not-a-real-key";},testEndpoint:fake.endpoint

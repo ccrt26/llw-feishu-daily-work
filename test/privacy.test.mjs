@@ -4,6 +4,7 @@ import {safeLog} from "../src/core/redaction.mjs";
 import {createRouterMessage} from "../src/core/router-message.mjs";
 import {createFeishuIncomingMessage} from "../src/core/incoming-message.mjs";
 import {guardAiInput} from "../src/ai/ai-input-guard.mjs";
+import {classifyAiFailure} from "../src/core/ai-failure.mjs";
 
 test("safe logs contain only allowlisted scalars and a one-way correlation",() => {
   const secrets=["om_secret","ou_secret","oc_secret","img_secret","123456789012","亚信科技（成都）有限公司","成都餐厅","290.00","token-secret","票面全文"];
@@ -21,7 +22,10 @@ test("AI guard errors never echo rejected user content",()=>{
   try { guardAiInput("router.text",{message:{type:"text",text:secret,beijingTime:"2026-07-23 09:30:00"},conversation:null,capabilities:[]}); }
   catch (caught) { error=caught; }
   assert.equal(error?.message,"ai_input_rejected");
+  assert.equal(error?.reasonCode,"credential");
   assert.equal(String(error).includes(secret),false);
+  assert.deepEqual(classifyAiFailure(error,"codex"),{status:"rejected",reasonCode:"credential",reply:"检测到可能包含实际密钥、登录凭证或支付控制信息。\n系统没有把本次内容发送给 Codex 或 DeepSeek，也没有写入业务记录。\n请删除或遮盖相关值后重新提交。"});
+  assert.deepEqual(classifyAiFailure({message:"ai_input_rejected",reasonCode:"unexpected"},"codex"),{status:"rejected",reply:"检测到可能包含实际密钥、登录凭证或支付控制信息。\n系统没有把本次内容发送给 Codex 或 DeepSeek，也没有写入业务记录。\n请删除或遮盖相关值后重新提交。"});
 });
 
 test("router attachment summaries never include resource keys or Feishu identifiers",() => {

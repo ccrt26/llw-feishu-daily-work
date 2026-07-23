@@ -60,7 +60,7 @@ test("disabled DeepSeek fails closed without calling either client",async()=>{
   assert.equal(codexCalls,0); assert.equal(deepseekCalls,0);
 });
 
-test("a common guard rejects prohibited router and daily text before either AI client",async()=>{
+test("a common guard rejects credential and payment values at all Codex and DeepSeek text entries before either AI client",async()=>{
   let codexCalls=0,deepseekCalls=0;
   const configuration={
     invoke:async()=>{codexCalls++;},invokeDeepSeekClient:async()=>{deepseekCalls++;},deepseekEnabled:true,

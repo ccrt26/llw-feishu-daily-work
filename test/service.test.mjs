@@ -13,7 +13,7 @@ const baseMessage = {
   source:"feishu",sourceMessageId:"m1",userId:"user-1",conversationId:"chat-1",receivedAt:"2026-07-19T02:00:00.000Z",
   text:"今天完成了方案评审",attachments:[],replyTarget:{source:"feishu",sourceMessageId:"m1",conversationId:"chat-1"}
 };
-const SENSITIVE_REPLY="检测到本任务包含不允许发送给 AI 的身份凭证或密钥信息。\n系统未调用 Codex 或 DeepSeek，也未保存该敏感内容。\n请删除或遮盖敏感字段后重新提交。";
+const SENSITIVE_REPLY="检测到可能包含实际密钥、登录凭证或支付控制信息。\n系统没有把本次内容发送给 Codex 或 DeepSeek，也没有写入业务记录。\n请删除或遮盖相关值后重新提交。";
 const DEEPSEEK_FAILURE_REPLY="当前模型 DeepSeek 本次调用失败。\n系统没有切换模型，也没有执行写入。\n如需使用 Codex，请手工发送：/llw-model codex";
 const candidate = {record_id: "90f29b02eb9ec9bb", date: "2026-07-18", occurred_time: "", occurred_end_time: "", title: "标品订单RV会议", people: [], location: "线上", summary: "公司线上召开标品订单RV会议。", follow_ups: ["下周完成EDR安装部署。"]};
 
@@ -143,7 +143,7 @@ test("temporary AI failure does not create a false conversation", async () => {
   assert.equal(h.sends.length, 0);
 });
 
-test("daily-work input rejection uses the V3 sensitive-data reply for both models and never writes",async()=>{
+test("daily-work input rejection uses the V3.1 fixed reply for both models and never writes",async()=>{
   for (const model of ["codex","deepseek"]) {
     let aiCalls=0;
     const decide=createDailyWorkInterpretTask({invoke:async()=>{aiCalls++;},invokeDeepSeekClient:async()=>{aiCalls++;},deepseekEnabled:true});
