@@ -1,17 +1,28 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, stat } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { bindingFromEvent, loadConfig, saveConfig } from "../src/config.mjs";
+import { bindingFromEvent, loadConfig, saveConfig, validatePdfTools } from "../src/config.mjs";
 
 function config(overrides = {}) {
-  return {
-    vaultRoot: "/Volumes/test/LLW", skillRoot: "/Volumes/test/LLW/.agents/skills/feishu-daily-work",
+  const base = {
+    version: 4,
+    vaultRoot: "/Volumes/test/LLW",
     stateFile: "/Users/test/state.json", heartbeatFile: "/Users/test/heartbeat.json",
     cliPath: "/Users/test/bin/lark-cli", codexPath: "/Applications/ChatGPT.app/codex",
-    profile: "llw-private", senderId: "user-1", chatId: "chat-1", ...overrides
+    profile: "llw-private", senderId: "user-1", chatId: "chat-1",
+    capabilities:{
+      "daily-work":{enabled:true,skillRoot:"/Volumes/test/LLW/.agents/skills/feishu-daily-work"},
+      invoice:{
+        enabled:true,skillRoot:"/Volumes/test/LLW/.agents/skills/filing-invoices",tempRoot:"/Users/test/tmp/invoices",
+        archiveRoot:"/Volumes/test/LLW/亚信工作/日常发票/餐饮发票",maxFileBytes:20971520,aiTimeoutMs:120000,
+        pdfInfoPath:"/Users/test/bin/pdfinfo",pdfToTextPath:"/Users/test/bin/pdftotext",pdfToPpmPath:"/Users/test/bin/pdftoppm",
+        maxPdfPages:10,maxPdfTextBytes:262144,maxPdfRenderBytes:104857600,pdfPrepareTimeoutMs:60000
+      }
+    }
   };
+  return {...base,...overrides};
 }
 
 test("saves mode-0600 config and validates required absolute paths", async () => {
@@ -21,6 +32,49 @@ test("saves mode-0600 config and validates required absolute paths", async () =>
   assert.equal((await stat(file)).mode & 0o777, 0o600);
   assert.deepEqual(await loadConfig(file), config());
   await assert.rejects(async () => saveConfig(file, config({vaultRoot: "relative"})), /invalid_config_path/);
+  await assert.rejects(async () => saveConfig(file, config({version:3})), /invalid_config_version/);
+  await assert.rejects(async () => saveConfig(file, config({capabilities:{...config().capabilities,invoice:{...config().capabilities.invoice,maxFileBytes:20971521}}})), /invalid_max_file_bytes/);
+  await assert.rejects(async () => saveConfig(file, config({capabilities:{...config().capabilities,invoice:{...config().capabilities.invoice,typo:true}}})), /unknown_capability_field/);
+  await assert.rejects(async () => saveConfig(file, {...config(),token:"secret"}), /unknown_config_field/);
+});
+
+test("version 4 requires exact PDF limits and absolute tool paths", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "llw-config-pdf-"));
+  const file = join(dir, "config.json");
+  try {
+    await assert.doesNotReject(() => saveConfig(file, config()));
+    for (const [field,value,code] of [
+      ["maxPdfPages",11,"invalid_max_pdf_pages"],
+      ["maxPdfTextBytes",262143,"invalid_max_pdf_text_bytes"],
+      ["maxPdfRenderBytes",104857599,"invalid_max_pdf_render_bytes"],
+      ["pdfPrepareTimeoutMs",59999,"invalid_pdf_prepare_timeout"]
+    ]) {
+      const invoice={...config().capabilities.invoice,[field]:value};
+      await assert.rejects(() => saveConfig(file,config({capabilities:{...config().capabilities,invoice}})),new RegExp(code));
+    }
+    const invoice={...config().capabilities.invoice,pdfInfoPath:"pdfinfo"};
+    await assert.rejects(() => saveConfig(file,config({capabilities:{...config().capabilities,invoice}})),/invalid_config_path/);
+  } finally { await rm(dir,{recursive:true,force:true}); }
+});
+
+test("PDF tools must be executable regular files and never symbolic links", async () => {
+  const dir=await mkdtemp(join(tmpdir(),"llw-pdf-tools-"));
+  const executable=join(dir,"tool");
+  const noExecute=join(dir,"no-execute");
+  const directory=join(dir,"directory");
+  const link=join(dir,"link");
+  try {
+    await writeFile(executable,"#!/bin/sh\nexit 0\n",{mode:0o700});
+    await writeFile(noExecute,"x",{mode:0o600});
+    await mkdir(directory);
+    await symlink(executable,link);
+    await assert.doesNotReject(() => validatePdfTools({pdfInfoPath:executable,pdfToTextPath:executable,pdfToPpmPath:executable}));
+    for (const unsafe of [noExecute,directory,link]) {
+      await assert.rejects(() => validatePdfTools({pdfInfoPath:unsafe,pdfToTextPath:executable,pdfToPpmPath:executable}),/unsafe_pdf_tool/);
+    }
+    await chmod(executable,0o600);
+    await assert.rejects(() => validatePdfTools({pdfInfoPath:executable,pdfToTextPath:executable,pdfToPpmPath:executable}),/unsafe_pdf_tool/);
+  } finally { await rm(dir,{recursive:true,force:true}); }
 });
 
 test("requires binding only for service startup", async () => {

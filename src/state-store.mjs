@@ -10,16 +10,32 @@ export class StateStore {
   }
 
   static async open(file, {maxOutcomes = 1000} = {}) {
-    let data = {version: 2, conversation: null, outcomes: {}};
+    let data = emptyState();
     let migrated = false;
     try {
       const parsed = JSON.parse(await readFile(file, "utf8"));
-      if (parsed?.version === 2 && parsed.outcomes && typeof parsed.outcomes === "object") {
-        data = {version: 2, conversation: parsed.conversation || null, outcomes: parsed.outcomes};
-      } else if (parsed?.version === 1 && parsed.outcomes && typeof parsed.outcomes === "object") {
-        data = {version: 2, conversation: migratePending(parsed.pending), outcomes: parsed.outcomes};
+      if (parsed?.version === 4 && parsed.capabilityState && typeof parsed.capabilityState === "object" && parsed.outcomes && typeof parsed.outcomes === "object") {
+        data = {
+          version: 4,
+          capabilityState: structuredClone(parsed.capabilityState),
+          outcomes: structuredClone(parsed.outcomes)
+        };
+        if (!data.capabilityState["daily-work"]) data.capabilityState["daily-work"] = {conversation: null};
+        if (!data.capabilityState.invoice) data.capabilityState.invoice = {};
+        if (!data.capabilityState.router) data.capabilityState.router = {conversation: null};
+      } else if (parsed?.version === 3 && parsed.capabilityState && typeof parsed.capabilityState === "object" && parsed.outcomes && typeof parsed.outcomes === "object") {
+        data={version:4,capabilityState:structuredClone(parsed.capabilityState),outcomes:structuredClone(parsed.outcomes)};
+        if (!data.capabilityState["daily-work"]) data.capabilityState["daily-work"]={conversation:null};
+        if (!data.capabilityState.invoice) data.capabilityState.invoice={};
+        data.capabilityState.router={conversation:null};
+        migrated=true;
+      } else if (parsed?.version === 2 && parsed.outcomes && typeof parsed.outcomes === "object") {
+        data = migratedState(parsed.conversation || null, parsed.outcomes);
         migrated = true;
-      }
+      } else if (parsed?.version === 1 && parsed.outcomes && typeof parsed.outcomes === "object") {
+        data = migratedState(migratePending(parsed.pending), parsed.outcomes);
+        migrated = true;
+      } else throw new Error("unsupported_state_version");
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
     }
@@ -28,31 +44,109 @@ export class StateStore {
     return store;
   }
 
-  getConversation() { return structuredClone(this.data.conversation); }
+  version() { return this.data.version; }
+  getCapabilityState(name) { return structuredClone(this.data.capabilityState[name] || {}); }
+
+  async getRouterConversation(nowMs=Date.now()) {
+    const conversation=this.data.capabilityState.router?.conversation || null;
+    if (!conversation || conversation.status!=="open") return null;
+    if (nowMs-Date.parse(conversation.startedAt) < 24*60*60*1000) return structuredClone(conversation);
+    this.data.capabilityState.router.conversation=null;
+    await this.persist();
+    return null;
+  }
+
+  async setRouterConversation(conversation) {
+    validateRouterConversation(conversation);
+    this.data.capabilityState.router={conversation:structuredClone(conversation)};
+    await this.persist();
+  }
+
+  async closeRouterConversation(status) {
+    if (!["superseded","cancelled"].includes(status)) throw new Error("invalid_router_conversation_status");
+    const conversation=this.data.capabilityState.router?.conversation;
+    if (!conversation) return;
+    conversation.status=status;
+    await this.persist();
+  }
+
+  async clearRouterConversation() {
+    this.data.capabilityState.router={conversation:null};
+    await this.persist();
+  }
+
+  listInvoiceTransactions() {
+    const transactions = this.data.capabilityState.invoice?.transactions || {};
+    return Object.values(transactions).map(value => structuredClone(value));
+  }
+
+  async prepareInvoiceTransaction(transactionId, data) {
+    if (typeof transactionId !== "string" || !transactionId || !data || !/^[a-f0-9]{64}$/.test(data.sourceHash) || typeof data.targetRelativePath !== "string") {
+      throw new Error("invalid_invoice_transaction");
+    }
+    const invoice = this.data.capabilityState.invoice ||= {};
+    const transactions = invoice.transactions ||= {};
+    if (transactions[transactionId]) throw new Error("invoice_transaction_exists");
+    transactions[transactionId] = {
+      transactionId,
+      targetRelativePath: data.targetRelativePath,
+      sourceHash: data.sourceHash,
+      status: "prepared",
+      createdAt: new Date().toISOString()
+    };
+    pruneTransactions(transactions);
+    await this.persist();
+    return structuredClone(transactions[transactionId]);
+  }
+
+  async updateInvoiceTransaction(transactionId, status) {
+    if (!["prepared","published","aborted","needs_inspection"].includes(status)) throw new Error("invalid_invoice_transaction_status");
+    const transaction = this.data.capabilityState.invoice?.transactions?.[transactionId];
+    if (!transaction) throw new Error("invoice_transaction_not_found");
+    transaction.status = status;
+    await this.persist();
+    return structuredClone(transaction);
+  }
+
+  async setCapabilityState(name, value) {
+    if (typeof name !== "string" || !name || !value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error("invalid_capability_state");
+    }
+    this.data.capabilityState[name] = structuredClone(value);
+    await this.persist();
+  }
+
+  getConversation() { return structuredClone(this.data.capabilityState["daily-work"].conversation || null); }
   hasOutcome(messageId) { return Object.hasOwn(this.data.outcomes, messageId); }
 
   unreplied() {
     return Object.entries(this.data.outcomes)
-      .filter(([, outcome]) => !outcome.replied)
+      .filter(([, outcome]) => !outcome.replied && outcome.noReplyRequired !== true)
       .map(([messageId, outcome]) => ({messageId, ...structuredClone(outcome)}));
   }
 
   async setConversation(conversation) {
     validateConversation(conversation);
-    this.data.conversation = structuredClone(conversation);
+    this.data.capabilityState["daily-work"].conversation = structuredClone(conversation);
     await this.persist();
   }
 
   async clearConversation() {
-    this.data.conversation = null;
+    this.data.capabilityState["daily-work"].conversation = null;
     await this.persist();
   }
 
-  async saveOutcome(messageId, {status, reply, recordIds = []}) {
+  async saveOutcome(messageId, outcome) {
     if (!this.hasOutcome(messageId)) {
-      this.data.outcomes[messageId] = {status, reply, recordIds: [...recordIds], replied: false};
-      const ids = Object.keys(this.data.outcomes);
-      while (ids.length > this.maxOutcomes) delete this.data.outcomes[ids.shift()];
+      const stored = {...structuredClone(outcome), replied: false};
+      if (Array.isArray(stored.recordIds)) stored.recordIds = [...stored.recordIds];
+      if (Array.isArray(stored.artifacts)) stored.artifacts = [...stored.artifacts];
+      this.data.outcomes[messageId] = stored;
+      while (Object.keys(this.data.outcomes).length > this.maxOutcomes) {
+        const removable = Object.keys(this.data.outcomes).find(id => this.data.outcomes[id].replied === true);
+        if (!removable) break;
+        delete this.data.outcomes[removable];
+      }
       await this.persist();
     }
     return structuredClone(this.data.outcomes[messageId]);
@@ -77,6 +171,30 @@ export class StateStore {
     }
     await rename(temporary, this.file);
   }
+}
+
+function emptyState() {
+  return {
+    version: 4,
+    capabilityState: {"daily-work": {conversation: null}, invoice: {}, router:{conversation:null}},
+    outcomes: {}
+  };
+}
+
+function migratedState(conversation, outcomes) {
+  return {
+    version: 4,
+    capabilityState: {"daily-work": {conversation}, invoice: {}, router:{conversation:null}},
+    outcomes: structuredClone(outcomes)
+  };
+}
+
+function validateRouterConversation(conversation) {
+  const fields=new Set(["capability","question","startedAt","attempts","status"]);
+  if (!conversation || typeof conversation!=="object" || Array.isArray(conversation) || Object.keys(conversation).length!==fields.size || Object.keys(conversation).some(key=>!fields.has(key))) throw new Error("invalid_router_conversation");
+  if (conversation.capability!==null && (typeof conversation.capability!=="string" || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(conversation.capability))) throw new Error("invalid_router_conversation");
+  if (typeof conversation.question!=="string" || !conversation.question.trim() || [...conversation.question].length>200) throw new Error("invalid_router_conversation");
+  if (!Number.isFinite(Date.parse(conversation.startedAt)) || conversation.attempts!==1 || !["open","superseded","cancelled"].includes(conversation.status)) throw new Error("invalid_router_conversation");
 }
 
 function migratePending(pending) {
@@ -104,4 +222,15 @@ function validateConversation(conversation) {
     }
   }
   if (!conversation.candidateIds.every(id => /^[a-f0-9]{16}$/.test(id))) throw new Error("invalid_conversation_candidate");
+}
+
+function pruneTransactions(transactions) {
+  const cutoff = Date.now() - 90 * 24 * 60 * 60 * 1000;
+  for (const [id,transaction] of Object.entries(transactions)) {
+    if (["published","aborted"].includes(transaction.status) && Date.parse(transaction.createdAt) < cutoff) delete transactions[id];
+  }
+  const eligible = Object.values(transactions)
+    .filter(transaction => ["published","aborted"].includes(transaction.status))
+    .sort((a,b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+  while (Object.keys(transactions).length > 2000 && eligible.length) delete transactions[eligible.shift().transactionId];
 }
