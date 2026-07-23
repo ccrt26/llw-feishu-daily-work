@@ -48,11 +48,11 @@
 - Consumes: V3.2 第 7.2–7.5、阶段四和回滚边界；腾讯协议证据提交 `cef0bfc390393f716903e16d50408118047f87e0`。
 - Produces: 一份不含秘密和平台标识的 `pass | blocked` 可行性结论；`pass` 是 Task 4.2 的前置条件。
 
-- [ ] **Step 1: 逐项摘录协议证据**
+- [x] **Step 1: 逐项摘录协议证据**
 
   只记录 QR、`getupdates`、`sendmessage`、`message_id`、`context_token`、媒体引用、游标、重连和许可证所在的上游文件/提交，不复制 token、二维码或实例数据。
 
-- [ ] **Step 2: 核对不安装 OpenClaw 的硬门禁**
+- [x] **Step 2: 核对不安装 OpenClaw 的硬门禁**
 
   在可行性文档写入精确结论：
 
@@ -62,7 +62,7 @@
   protocol_source=Tencent/openclaw-weixin@cef0bfc390393f716903e16d50408118047f87e0
   ```
 
-- [ ] **Step 3: 运行文档秘密扫描**
+- [x] **Step 3: 运行文档秘密扫描**
 
   Run:
 
@@ -72,7 +72,7 @@
 
   Expected: 无输出。
 
-- [ ] **Step 4: 提交门禁结论供所有者确认**
+- [x] **Step 4: 提交门禁结论供所有者确认**
 
   只有 `pass` 才继续；`blocked` 必须说明缺失能力、维护成本和“保持阶段三”的回退，不得提出 OpenClaw 替代路线。
 
