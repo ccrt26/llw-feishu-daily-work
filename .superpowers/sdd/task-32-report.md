@@ -2,7 +2,7 @@
 
 ## Status
 
-LOCAL ACCEPTANCE COMPLETE — deterministic regression and the fixed real DeepSeek V4 Pro evaluation are green. Production rollback creation, commit/push, configuration change, restart and deployment have not been performed.
+PHASE 3 PRODUCTION ACCEPTANCE COMPLETE — deterministic regression, the fixed real DeepSeek V4 Pro evaluation, protected rollback drill, production deployment and bounded Feishu acceptance are green. Production is intentionally left in Codex mode.
 
 The former V3.0/V3.1 six-class natural-language guard, 194-case matrix and related `Ready` conclusions are historical and superseded by V3.2. They are not current product claims and must not be used as a deployment gate.
 
@@ -29,6 +29,7 @@ The former V3.0/V3.1 six-class natural-language guard, 194-case matrix and relat
 - The common semantic-task guard runs before either Codex or DeepSeek client.
 - DeepSeek errors never invoke Codex and never change model or business state.
 - `invoice.visual` remains Codex-only and is explicitly rejected in DeepSeek mode before download or archive work.
+- The Feishu boundary accepts exactly the legacy `![Image](img_...)` marker and the current lark-cli 1.0.68 `[Image: img_...]` marker. Both remain full-string matches with the same bounded resource-key grammar.
 - Version 4 production configuration without DeepSeek fields normalizes to `deepseekEnabled=false`.
 - Production Codex paths, Feishu behavior, deterministic writers, Obsidian formats and archive rules are unchanged.
 
@@ -39,10 +40,10 @@ The former V3.0/V3.1 six-class natural-language guard, 194-case matrix and relat
   - cancellation without an active conversation;
   - formal Skill sole-candidate and vague-progress rules;
   - the versioned 22-case runner and its raw-data-free report.
-- Current Phase 3 full regression: 239 passed, 0 failed.
-- Current production-component regression against the revised formal Skill: 162 passed, 0 failed.
+- Current Phase 3 and production-component full regression: 240 passed, 0 failed.
 - All three formal Skill validations: passed.
 - The runner's injected fake-client check: 22/22 passed without Keychain or network access.
+- The current lark-cli image marker fix was developed with a failing reproduction first: the focused suite failed 2/28 before the parser change and passed 28/28 after it.
 
 These deterministic results are supplemented by the real evaluation below.
 
@@ -59,17 +60,23 @@ After project-owner approval, the fixed formal 22 cases were evaluated through t
 
 The final report is `/private/tmp/llw-v32-real-deepseek-eval-report.json`, is mode 0600, and contains no raw input, raw output or API key material. The pre-normalization 21/22 report is preserved separately as diagnostic evidence.
 
+## Production acceptance evidence
+
+- The protected pre-deployment rollback point is `~/Library/Application Support/LLW Assistant/backups/baselines/v3-phase-3-pre-deploy-2026-07-24/`. Its component, three-Skill, configuration/state, LaunchAgent and model-state semantics were restored and verified in a fresh `/private/tmp` directory before deployment.
+- Production configuration remains version 4, stores the five fixed model fields with mode 0600, enables the approved DeepSeek capability and fixes the model to `deepseek-v4-pro`.
+- Keychain retrieval was verified without printing or persisting the key.
+- Feishu acceptance exercised exact status/switch commands, Codex and DeepSeek daily-work clarification, deterministic silent cancellation and the DeepSeek invoice boundary.
+- The first image attempt exposed a real lark-cli 1.0.68 marker compatibility gap. Commit `7837454` added only the second exact marker form plus regression coverage; it was pushed, deployed by fast-forward and retested.
+- The post-fix image outcome is `invoice/rejected`, replied, has zero artifacts and did not increase the existing invoice transaction count. It therefore performed no model call, download, archive or Obsidian write.
+- Final Feishu commands restored and confirmed Codex. The LaunchAgent has one Node.js main process and one direct lark-cli event child, a fresh heartbeat and no new stderr entry.
+
 ## Remaining gates
 
-1. Review and accept the local implementation and 22/22 real-evaluation evidence.
-2. Obtain separate approval before commit/push or PR updates.
-3. Before production deployment, create and isolation-restore the required fresh rollback point.
-4. Obtain separate approval before configuration changes, restart or deployment.
-5. End any approved production acceptance with model mode manually restored to `codex`.
+- No Phase 3 production gate remains.
+- Draft PR #2 still carries the component branch for later repository integration; merging it is not part of the production acceptance performed here.
 
 ## Production and rollback
 
-- Production remains on commit `3788526`, Codex and version 4 configuration.
-- Existing Phase 1 rollback evidence targets the older `b1bdb05` baseline.
-- Before any Phase 3 production deployment, create and isolate-restore a fresh rollback point for current configuration/state, LaunchAgent, production component `3788526`, the three formal Skills and model state.
-- End any approved production acceptance with model mode manually restored to `codex`.
+- Production runs commit `7837454` on local branch `production/v3-deepseek-manual-mode`, with the source branch `agent/v3-deepseek-manual-mode` synchronized to GitHub.
+- Effective model is Codex and switching remains manual only; there is no automatic selection, fallback or retry to another model.
+- The Phase 3 protected rollback baseline restores production component `3788526`, the three formal Skills at `181cdd5`, version 4 protected state and effective Codex with DeepSeek disabled.
