@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { checkDailyWorkMessage } from "./policy.mjs";
+import {classifyAiFailure} from "./core/ai-failure.mjs";
 
 export class DailyWorkService {
   constructor({state, decide, catalog, writer}) {
@@ -27,7 +28,7 @@ export class DailyWorkService {
     const taskModel=model;
     const decision = await this.safeDecide({message:checkedMessage, conversation, candidates,model:taskModel});
     if (decision.action === "unavailable") {
-      return outcome("failed", decision.question);
+      return outcome(decision.status, decision.question);
     }
     switch (decision.action) {
       case "create_record": return this.createRecord(checkedMessage, decision);
@@ -40,7 +41,10 @@ export class DailyWorkService {
 
   async safeDecide(input) {
     try { return await this.decide(input); }
-    catch { return {action: "unavailable", question: "AI 暂时不可用，本条未入库；请稍后重新发送。"}; }
+    catch (error) {
+      const failure=classifyAiFailure(error,input.model);
+      return {action:"unavailable",status:failure.status,question:failure.reply};
+    }
   }
 
   async createRecord(message, decision) {

@@ -3,9 +3,9 @@ const ROUTER_ROOT=new Set(["message","conversation","capabilities"]);
 const ROUTER_CONVERSATION=new Set(["capability","question","startedAt"]);
 const ROUTING_CONTRACT=new Set(["capability","purpose","accepts","positive_examples","negative_examples","supports_continuation"]);
 const DAILY_ROOT=new Set(["message","conversation","candidates"]);
-const DAILY_MESSAGE=new Set(["text","sent_at_beijing"]);
-const DAILY_CONVERSATION=new Set(["turns"]);
-const DAILY_TURN=new Set(["role","text","sent_at_beijing"]);
+const DAILY_MESSAGE=new Set(["ok","messageId","text","createTime"]);
+const DAILY_CONVERSATION=new Set(["id","status","turns","candidateIds","model"]);
+const DAILY_TURN=new Set(["role","text","createTime"]);
 const DAILY_CANDIDATE=new Set(["record_id","date","occurred_time","occurred_end_time","title","people","location","summary","follow_ups"]);
 
 const FORBIDDEN_PATTERNS=[
@@ -14,10 +14,14 @@ const FORBIDDEN_PATTERNS=[
   /\bAuthorization\s*:\s*(?:Bearer|Token|Basic)\s+\S+/iu,
   /\b(?:api[_ -]?key|client[_ -]?secret|token|access[_ -]?token|refresh[_ -]?token|credential(?:s)?|private[_ -]?key|session[_ -]?cookie|ssh[_ -]?key|mfa[_ -]?(?:secret|key)|recovery[_ -]?code|otp|password|passwd|pwd)\s*[:=：]\s*\S+/iu,
   /(?:密码|凭证|口令|恢复码|动态验证码|验证码|支付密码|支付二维码|转账口令|授权信息|网银登录信息)\s*[:=：]\s*\S+/u,
+  /(?:我的)?(?:登录)?密码\s*(?:是|为)\s*\S+/u,
+  /(?:短信|动态)?验证码\s*(?:是|为)\s*\d{4,8}\b/u,
   /(?:银行卡(?:完整)?卡号|卡号|credit\s*card)\s*[:=：]?\s*(?:\d[ -]?){13,19}/iu,
+  /(?:我的)?银行卡(?:号)?\s*(?:是|为|[:=：])?\s*(?:\d[ -]?){13,19}/u,
   /\b(?:cvv|cvc|pin)\s*[:=：]\s*\d{3,8}\b/iu,
   /(?:密级\s*[:=：]\s*(?:绝密|机密|秘密|保密)|内部禁止外发|禁止外发)/u,
   /(?:【(?:绝密|机密|秘密|保密)】|\[(?:绝密|机密|秘密|保密)\])/u,
+  /(?:绝密|机密|秘密|保密)(?:项目|资料|文件|内容|原文|合同|信息)/u,
   /(?:security\s+dump-keychain|keychain\s+export|钥匙串导出|系统环境变量|未脱敏(?:的)?(?:系统)?日志|浏览器(?:配置|cookie)|崩溃转储)/iu,
   /(?:^|\n)(?:PATH|HOME|USER|SHELL|AWS_[A-Z0-9_]*|OPENAI_[A-Z0-9_]*|ANTHROPIC_[A-Z0-9_]*|DEEPSEEK_[A-Z0-9_]*)=/u,
   /(?:^|\n)\s*(?:\d{4}-\d{2}-\d{2}[T ][^\n]{0,60}\b(?:INFO|WARN|ERROR|DEBUG)\b|\[(?:INFO|WARN|ERROR|DEBUG)\])/iu,
@@ -29,14 +33,23 @@ const FORBIDDEN_PATTERNS=[
 ];
 
 export function guardAiInput(task,input) {
+  prepareGuardedAiInput(task,input);
+  return structuredClone(input);
+}
+
+export function prepareGuardedAiInput(task,input) {
   try {
-    if (task==="router.text") validateRouter(input);
-    else if (task==="daily-work.interpret") validateDaily(input);
+    let prepared;
+    if (task==="router.text") {
+      validateRouter(input);
+      prepared={context:structuredClone(input),validation:{enabledNames:input.capabilities.map(item=>item.capability)}};
+    }
+    else if (task==="daily-work.interpret") prepared=prepareDaily(input);
     else reject();
-    const serialized=JSON.stringify(input);
+    const serialized=JSON.stringify(prepared.context);
     if (Buffer.byteLength(serialized,"utf8")>MAX_INPUT_BYTES) reject();
-    for (const value of strings(input)) for (const pattern of FORBIDDEN_PATTERNS) if (pattern.test(value)) reject();
-    return structuredClone(input);
+    for (const value of strings(prepared.context)) for (const pattern of FORBIDDEN_PATTERNS) if (pattern.test(value)) reject();
+    return prepared;
   } catch (error) {
     if (error?.message==="ai_input_rejected") throw error;
     reject();
@@ -67,16 +80,23 @@ function validateRouter(input) {
   }
 }
 
-function validateDaily(input) {
-  exact(input,DAILY_ROOT); exact(input.message,DAILY_MESSAGE);
-  if (!text(input.message.text,12_000)||!text(input.message.sent_at_beijing,40)) reject();
+function prepareDaily(input) {
+  exact(input,DAILY_ROOT);
+  only(input.message,DAILY_MESSAGE);
+  if (!text(input.message.text,12_000)||!validTimestamp(input.message.createTime)) reject();
+  if (Object.hasOwn(input.message,"ok")&&input.message.ok!==true) reject();
+  if (Object.hasOwn(input.message,"messageId")&&!text(input.message.messageId,512)) reject();
+  let conversation=null;
   if (input.conversation!==null) {
-    exact(input.conversation,DAILY_CONVERSATION);
+    only(input.conversation,DAILY_CONVERSATION);
     if (!Array.isArray(input.conversation.turns)||input.conversation.turns.length>40) reject();
-    for (const turn of input.conversation.turns) {
-      exact(turn,new Set(Object.hasOwn(turn,"sent_at_beijing")?DAILY_TURN:["role","text"]));
-      if (!new Set(["user","assistant"]).has(turn.role)||!text(turn.text,12_000)||(Object.hasOwn(turn,"sent_at_beijing")&&!text(turn.sent_at_beijing,40))) reject();
-    }
+    conversation={turns:input.conversation.turns.map(turn=>{
+      only(turn,DAILY_TURN);
+      if (!new Set(["user","assistant"]).has(turn.role)||!text(turn.text,12_000)||(Object.hasOwn(turn,"createTime")&&!validTimestamp(turn.createTime))) reject();
+      const value={role:turn.role,text:turn.text};
+      if (Object.hasOwn(turn,"createTime")) value.sent_at_beijing=beijingTimestamp(turn.createTime);
+      return value;
+    })};
   }
   if (!Array.isArray(input.candidates)||input.candidates.length>20) reject();
   for (const candidate of input.candidates) {
@@ -85,6 +105,10 @@ function validateDaily(input) {
     for (const field of ["occurred_time","occurred_end_time"]) if (typeof candidate[field]!=="string"||candidate[field].length>5) reject();
     if (!text(candidate.title,80)||typeof candidate.location!=="string"||candidate.location.length>120||!text(candidate.summary,4000)||!stringArray(candidate.people,50,80)||!stringArray(candidate.follow_ups,50,500)) reject();
   }
+  return {
+    context:{message:{text:input.message.text,sent_at_beijing:beijingTimestamp(input.message.createTime)},conversation,candidates:structuredClone(input.candidates)},
+    validation:{sourceText:input.message.text,candidateIds:input.candidates.map(candidate=>candidate.record_id),allowedOriginalTexts:[input.message.text,...(conversation?.turns||[]).filter(turn=>turn.role==="user").map(turn=>turn.text)]}
+  };
 }
 
 function exact(value,fields) {
@@ -92,8 +116,13 @@ function exact(value,fields) {
   const keys=Object.keys(value);
   if (keys.length!==fields.size||keys.some(key=>!fields.has(key))) reject();
 }
+function only(value,fields) {
+  if (!value||typeof value!=="object"||Array.isArray(value)||Object.keys(value).some(key=>!fields.has(key))) reject();
+}
 function text(value,max) { return typeof value==="string"&&value.length>0&&value.length<=max; }
 function stringArray(value,maxItems,maxLength) { return Array.isArray(value)&&value.length<=maxItems&&value.every(item=>text(item,maxLength)); }
+function validTimestamp(value) { return Number.isFinite(value)&&Number.isFinite(new Date(value).getTime()); }
+function beijingTimestamp(milliseconds) { return new Intl.DateTimeFormat("sv-SE",{timeZone:"Asia/Shanghai",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hourCycle:"h23"}).format(new Date(milliseconds)); }
 function* strings(value) {
   if (typeof value==="string") { yield value; return; }
   if (Array.isArray(value)) { for (const item of value) yield* strings(item); return; }

@@ -3,6 +3,7 @@ import {checkSecurity} from "./security-gate.mjs";
 import {createRouterMessage} from "./router-message.mjs";
 import {createFeishuIncomingMessage,createReplyTarget} from "./incoming-message.mjs";
 import {effectiveModel,handleModelCommand} from "./model-command.mjs";
+import {classifyAiFailure} from "./ai-failure.mjs";
 
 export class Dispatcher {
   constructor({binding,state,capabilities,intentRouter,messenger,modelMode,deepseekEnabled}) {
@@ -27,16 +28,18 @@ export class Dispatcher {
     const activeSnapshot=conversation?.model||dailyConversation?.model||null;
     let globalModel;
     const readGlobalModel=async()=>globalModel||=effectiveModel(await this.modelMode.read(),this.deepseekEnabled);
-    let capabilityName="router",draft,message;
+    let capabilityName="router",draft,message,model;
     try {
       message=createFeishuIncomingMessage(event);
       const attachmentTask=message.attachments.length===1;
-      const model=attachmentTask?await readGlobalModel():(activeSnapshot?effectiveModel(activeSnapshot,this.deepseekEnabled):await readGlobalModel());
+      model=attachmentTask?await readGlobalModel():(activeSnapshot?effectiveModel(activeSnapshot,this.deepseekEnabled):await readGlobalModel());
       if (attachmentTask&&model==="deepseek") {
         capabilityName="invoice"; draft=deepseekInvoiceUnsupported();
       } else {
-        const decision=await this.intentRouter.decide({message:createRouterMessage(message),conversation:conversation?publicConversation(conversation):null,capabilities:this.capabilities.map(item=>structuredClone(item.routingContract)),model});
-        ({capabilityName,draft}=await this.applyDecision(message,conversation,decision,model,{dailyActive:!!dailyConversation,readGlobalModel}));
+        let decision;
+        try { decision=await this.intentRouter.decide({message:createRouterMessage(message),conversation:conversation?publicConversation(conversation):null,capabilities:this.capabilities.map(item=>structuredClone(item.routingContract)),model}); }
+        catch (error) { draft={...classifyAiFailure(error,model),artifacts:[]}; }
+        if (decision) ({capabilityName,draft}=await this.applyDecision(message,conversation,decision,model,{dailyActive:!!dailyConversation,readGlobalModel}));
       }
     } catch {
       draft={status:"failed",reply:"暂时无法判断你希望进行的操作，请告诉我你希望我处理什么。",artifacts:[]};

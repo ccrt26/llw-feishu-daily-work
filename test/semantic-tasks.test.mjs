@@ -59,12 +59,27 @@ test("disabled DeepSeek fails closed without calling either client",async()=>{
   assert.equal(codexCalls,0); assert.equal(deepseekCalls,0);
 });
 
-test("Codex text tasks preserve their existing client behavior",async()=>{
+test("a common guard rejects prohibited router and daily text before either AI client",async()=>{
+  let codexCalls=0,deepseekCalls=0;
+  const configuration={
+    invoke:async()=>{codexCalls++;},invokeDeepSeekClient:async()=>{deepseekCalls++;},deepseekEnabled:true,
+    deepseekModel:"deepseek-v4-pro",deepseekKeychainService:"com.llw.deepseek-api",deepseekKeychainAccount:"llw-assistant"
+  };
+  const router=createRouterTextTask(configuration),daily=createDailyWorkInterpretTask(configuration);
+  const forbidden=["我的密码是 hunter2","短信验证码是 123456","银行卡是 4111 1111 1111 1111","绝密项目资料"];
+  for (const model of ["codex","deepseek"]) for (const text of forbidden) {
+    await assert.rejects(()=>router({model,message:{type:"text",text,beijingTime:"2026-07-23 09:30:00"},conversation:null,capabilities:[]}),error=>error.message==="ai_input_rejected");
+    await assert.rejects(()=>daily({model,message:{text,createTime:1784426400000},conversation:null,candidates:[]}),error=>error.message==="ai_input_rejected");
+  }
+  assert.equal(codexCalls,0); assert.equal(deepseekCalls,0);
+});
+
+test("Codex text tasks preserve existing behavior for allowed text",async()=>{
   const calls=[];
   const configuration={invoke:async input=>{calls.push(structuredClone(input));return {provider:"codex"};}};
   const router=createRouterTextTask(configuration),daily=createDailyWorkInterpretTask(configuration);
-  assert.equal((await router({model:"codex",message:{type:"text",text:"token: test fixture",beijingTime:"2026-07-23 09:30:00"},conversation:null,capabilities:[]})).provider,"codex");
-  assert.equal((await daily({model:"codex",message:{text:"密码：test fixture",createTime:1784426400000},conversation:null,candidates:[]})).provider,"codex");
+  assert.equal((await router({model:"codex",message:{type:"text",text:"查看 https://example.com/a",beijingTime:"2026-07-23 09:30:00"},conversation:null,capabilities:[]})).provider,"codex");
+  assert.equal((await daily({model:"codex",message:{text:"今天完成评审",createTime:1784426400000},conversation:null,candidates:[]})).provider,"codex");
   assert.equal(calls.length,2);
 });
 

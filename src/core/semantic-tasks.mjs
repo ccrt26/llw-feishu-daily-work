@@ -2,6 +2,7 @@ import {invokeIntentRouter} from "./intent-router-client.mjs";
 import {invokeCodex} from "../codex-client.mjs";
 import {invokeInvoiceDecision} from "../capabilities/invoice/decision-client.mjs";
 import {invokeDeepSeek} from "../ai/deepseek-client.mjs";
+import {guardAiInput} from "../ai/ai-input-guard.mjs";
 
 export function createRouterTextTask({invoke=invokeIntentRouter,invokeDeepSeekClient=invokeDeepSeek,deepseekEnabled=false,...configuration}) {
   const {deepseekModel,deepseekKeychainService,deepseekKeychainAccount,...codexConfiguration}=configuration;
@@ -10,6 +11,7 @@ export function createRouterTextTask({invoke=invokeIntentRouter,invokeDeepSeekCl
   return async input=>{
     if (!input||typeof input!=="object"||!input.message||!Array.isArray(input.capabilities)) throw new Error("invalid_router_text_input");
     const {model="codex",...taskInput}=input;
+    guardAiInput("router.text",taskInput);
     if (model==="deepseek") {
       if (!deepseekEnabled) throw new Error("deepseek_disabled");
       return invokeDeepSeekClient({task:"router.text",...deepseek,input:taskInput});
@@ -26,6 +28,7 @@ export function createDailyWorkInterpretTask({invoke=invokeCodex,invokeDeepSeekC
   return async input=>{
     if (!input||typeof input!=="object"||!input.message||!Array.isArray(input.candidates)) throw new Error("invalid_daily_work_interpret_input");
     const {model="codex",...taskInput}=input;
+    guardAiInput("daily-work.interpret",taskInput);
     if (model==="deepseek") {
       if (!deepseekEnabled) throw new Error("deepseek_disabled");
       return invokeDeepSeekClient({task:"daily-work.interpret",...deepseek,input:taskInput});

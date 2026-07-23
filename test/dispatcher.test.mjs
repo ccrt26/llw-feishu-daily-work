@@ -6,9 +6,13 @@ import {join} from "node:path";
 import {Dispatcher} from "../src/core/dispatcher.mjs";
 import {StateStore} from "../src/state-store.mjs";
 import {DailyWorkService} from "../src/service.mjs";
+import {createRouterTextTask} from "../src/core/semantic-tasks.mjs";
 
 const raw={event_id:"e1",message_id:"m1",sender_id:"u1",chat_id:"c1",chat_type:"p2p",message_type:"image",content:"![Image](img_abc)",create_time:"1784426400000"};
 const contract=name=>({capability:name,purpose:name==="invoice"?"归档发票":"记录工作",accepts:name==="invoice"?["image","file"]:["text"],positive_examples:["正例"],negative_examples:["反例"],supports_continuation:name==="daily-work"});
+const SENSITIVE_REPLY="检测到本任务包含不允许发送给 AI 的身份凭证或密钥信息。\n系统未调用 Codex 或 DeepSeek，也未保存该敏感内容。\n请删除或遮盖敏感字段后重新提交。";
+const CODEX_FAILURE_REPLY="当前模型 Codex 本次调用失败。\n系统没有切换模型，也没有执行写入。\n如需使用 DeepSeek，请手工发送：/llw-model deepseek";
+const DEEPSEEK_FAILURE_REPLY="当前模型 DeepSeek 本次调用失败。\n系统没有切换模型，也没有执行写入。\n如需使用 Codex，请手工发送：/llw-model codex";
 
 async function harness({decision,handle:capabilityHandler,status="committed",send,model="codex",deepseekEnabled=true,modelMode:providedModelMode}={}) {
   const dir=await mkdtemp(join(tmpdir(),"llw-dispatcher-")); const file=join(dir,"state.json"); const state=await StateStore.open(file);
@@ -168,25 +172,41 @@ test("business ignored is silent and not_applicable asks once without trying ano
   const no=await harness({handle:async()=>({status:"not_applicable",reply:null,artifacts:[]})}); await no.dispatcher.handleRawEvent(raw); assert.deepEqual(no.runs,["invoice"]); assert.equal(no.sends.length,1); assert.match(no.sends[0].text,/无法确定/);
 });
 
-test("unsupported and router failure invoke no capability and send one safe reply",async () => {
+test("unsupported and model-specific router failures invoke no capability and send classified safe replies",async () => {
   const unsupported=await harness({decision:{action:"unsupported",reason:"目前没有相应能力"}}); await unsupported.dispatcher.handleRawEvent(raw); assert.equal(unsupported.runs.length,0); assert.equal(unsupported.sends.length,1);
-  const failed=await harness({model:"deepseek",decision:()=>{throw new Error("secret");}}); await failed.dispatcher.handleRawEvent({...raw,message_type:"text",content:"记录工作"});
-  assert.equal(failed.runs.length,0); assert.equal(failed.sends.length,1); assert.match(failed.sends[0].text,/暂时无法判断/); assert.deepEqual(failed.writes,[]); assert.deepEqual(failed.modes,["deepseek"]);
+  for (const [model,reply] of [["codex",CODEX_FAILURE_REPLY],["deepseek",DEEPSEEK_FAILURE_REPLY]]) {
+    const failed=await harness({model,decision:()=>{throw new Error("secret");}}); await failed.dispatcher.handleRawEvent({...raw,message_type:"text",content:"记录工作"});
+    assert.equal(failed.runs.length,0); assert.equal(failed.sends.length,1); assert.equal(failed.sends[0].text,reply); assert.deepEqual(failed.writes,[]); assert.deepEqual(failed.modes,[model]);
+  }
 });
 
-test("DeepSeek daily-work failure writes neither business data nor model state",async()=>{
-  let service,businessWrites=0,decisions=0;
-  const h=await harness({
-    model:"deepseek",decision:{action:"route",capability:"daily-work",confidence:"high",reasonCode:"direct_match"},
-    handle:(_name,message,context)=>service.handleMessage(message,context)
+test("router input rejection uses the V3 sensitive-data reply for both models with zero AI follow-up or model write",async()=>{
+  for (const model of ["codex","deepseek"]) {
+    let aiCalls=0;
+    const guardedRouter=createRouterTextTask({invoke:async()=>{aiCalls++;},invokeDeepSeekClient:async()=>{aiCalls++;},deepseekEnabled:true});
+    const h=await harness({model,decision:input=>guardedRouter(input)});
+    const result=await h.dispatcher.handleRawEvent({...raw,message_type:"text",content:"我的密码是 hunter2"});
+    assert.equal(result.status,"rejected"); assert.deepEqual(h.runs,[]); assert.deepEqual(h.writes,[]); assert.deepEqual(h.modes,[model]);
+    assert.equal(h.routerCalls.length,1); assert.equal(aiCalls,0); assert.equal(h.sends.length,1); assert.equal(h.sends[0].text,SENSITIVE_REPLY);
+  }
+});
+
+test("DeepSeek daily-work transport and Schema failures write neither business data nor model state",async t=>{
+  for (const errorCode of ["deepseek_timeout","deepseek_output_invalid"]) await t.test(errorCode,async()=>{
+    let service,businessWrites=0,decisions=0;
+    const h=await harness({
+      model:"deepseek",decision:{action:"route",capability:"daily-work",confidence:"high",reasonCode:"direct_match"},
+      handle:(_name,message,context)=>service.handleMessage(message,context)
+    });
+    service=new DailyWorkService({
+      state:h.state,catalog:{list:async()=>[]},
+      decide:async input=>{decisions++;assert.equal(input.model,"deepseek");throw new Error(errorCode);},
+      writer:{create:async()=>{businessWrites++;},supplement:async()=>{businessWrites++;}}
+    });
+    const result=await h.dispatcher.handleRawEvent({...raw,message_type:"text",content:"今天完成评审"});
+    assert.equal(result.status,"failed"); assert.equal(decisions,1); assert.equal(businessWrites,0); assert.deepEqual(h.writes,[]); assert.deepEqual(h.modes,["deepseek"]); assert.equal(h.state.getConversation(),null);
+    assert.equal(h.sends[0].text,DEEPSEEK_FAILURE_REPLY);
   });
-  service=new DailyWorkService({
-    state:h.state,catalog:{list:async()=>[]},
-    decide:async input=>{decisions++;assert.equal(input.model,"deepseek");throw new Error("deepseek_timeout");},
-    writer:{create:async()=>{businessWrites++;},supplement:async()=>{businessWrites++;}}
-  });
-  const result=await h.dispatcher.handleRawEvent({...raw,message_type:"text",content:"今天完成评审"});
-  assert.equal(result.status,"failed"); assert.equal(decisions,1); assert.equal(businessWrites,0); assert.deepEqual(h.writes,[]); assert.deepEqual(h.modes,["deepseek"]); assert.equal(h.state.getConversation(),null);
 });
 
 test("send failure resumes the same reply without rerunning router or capability",async () => {

@@ -1,7 +1,7 @@
 import {execFile} from "node:child_process";
 import {lstat,readFile} from "node:fs/promises";
 import {join} from "node:path";
-import {guardAiInput} from "./ai-input-guard.mjs";
+import {prepareGuardedAiInput} from "./ai-input-guard.mjs";
 import {validateIntentDecision} from "../core/intent-decision-validator.mjs";
 import {validateAction} from "../codex-client.mjs";
 
@@ -18,10 +18,9 @@ export async function invokeDeepSeek({
   keyReader=readDeepSeekApiKey,testEndpoint,testTimeoutMs
 }) {
   validateConfiguration({task,model,keychainService,keychainAccount,skillRoot,testEndpoint,testTimeoutMs});
-  const prepared=prepareInput(task,input);
-  const guarded=guardAiInput(task,prepared.context);
+  const prepared=prepareGuardedAiInput(task,input);
   const bundle=await readSkillBundle(skillRoot);
-  const body=createRequestBody({task,model,input:guarded,...bundle});
+  const body=createRequestBody({task,model,input:prepared.context,...bundle});
   const bytes=Buffer.from(JSON.stringify(body),"utf8");
   if (bytes.length>MAX_REQUEST_BYTES) throw safeError("deepseek_request_too_large");
 
@@ -55,7 +54,7 @@ export async function invokeDeepSeek({
     if (!choice.message.content.trim()) throw safeError("deepseek_content_empty");
     let decision;
     try { decision=JSON.parse(choice.message.content); } catch { throw safeError("deepseek_output_invalid"); }
-    try { return validateDecision(task,decision,prepared.validation); }
+    try { return validateDecision(task,decision,prepared.validation,bundle.schema); }
     catch { throw safeError("deepseek_output_invalid"); }
   } catch (error) {
     if (error?.message?.startsWith("deepseek_")) throw error;
@@ -82,23 +81,6 @@ function validateConfiguration({task,model,keychainService,keychainAccount,skill
   }
 }
 
-function prepareInput(task,input) {
-  if (task==="router.text") return {context:structuredClone(input),validation:{enabledNames:input?.capabilities?.map(item=>item.capability)}};
-  if (!input||typeof input!=="object"||Array.isArray(input)||!exactKeys(input,["message","conversation","candidates"])||!input.message||typeof input.message.text!=="string"||!input.message.text||!Number.isFinite(input.message.createTime)||!Array.isArray(input.candidates)) throw safeError("ai_input_rejected");
-  let conversation=null;
-  if (input.conversation) {
-    if (!Array.isArray(input.conversation.turns)) throw safeError("ai_input_rejected");
-    conversation={turns:input.conversation.turns.map(turn=>{
-      if (!turn||!["user","assistant"].includes(turn.role)||typeof turn.text!=="string"||!turn.text) throw safeError("ai_input_rejected");
-      const result={role:turn.role,text:turn.text};
-      if (Number.isFinite(turn.createTime)) result.sent_at_beijing=beijingTimestamp(turn.createTime);
-      return result;
-    })};
-  }
-  const context={message:{text:input.message.text,sent_at_beijing:beijingTimestamp(input.message.createTime)},conversation,candidates:structuredClone(input.candidates)};
-  return {context,validation:{sourceText:input.message.text,candidateIds:input.candidates.map(candidate=>candidate.record_id),allowedOriginalTexts:[input.message.text,...(conversation?.turns||[]).filter(turn=>turn.role==="user").map(turn=>turn.text)]}};
-}
-
 async function readSkillBundle(skillRoot) {
   const skillFile=join(skillRoot,"SKILL.md"),schemaFile=join(skillRoot,"references","output-schema.json");
   try {
@@ -106,7 +88,7 @@ async function readSkillBundle(skillRoot) {
     if (!skillInfo.isFile()||skillInfo.isSymbolicLink()||!schemaInfo.isFile()||schemaInfo.isSymbolicLink()||!skill.trim()) throw new Error("unsafe");
     const schema=JSON.parse(schemaText);
     if (!schema||typeof schema!=="object"||Array.isArray(schema)) throw new Error("unsafe");
-    return {skill,schemaText};
+    return {skill,schemaText,schema};
   } catch { throw safeError("deepseek_skill_unavailable"); }
 }
 
@@ -138,11 +120,38 @@ async function readBoundedBody(response,controller) {
   return new TextDecoder("utf-8",{fatal:true}).decode(Buffer.concat(chunks.map(chunk=>Buffer.from(chunk))));
 }
 
-function validateDecision(task,decision,validation) {
+function validateDecision(task,decision,validation,schema) {
+  if (task==="daily-work.interpret") validateSchemaValue(decision,schema);
   if (task==="router.text") return validateIntentDecision(decision,validation.enabledNames);
   return validateAction(decision,validation);
 }
-function beijingTimestamp(milliseconds) { return new Intl.DateTimeFormat("sv-SE",{timeZone:"Asia/Shanghai",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hourCycle:"h23"}).format(new Date(milliseconds)); }
-function exactKeys(value,keys) { const actual=Object.keys(value); return actual.length===keys.length&&actual.every(key=>keys.includes(key)); }
+function validateSchemaValue(value,schema) {
+  if (!schema||typeof schema!=="object"||Array.isArray(schema)) throw new Error("invalid_schema");
+  if (schema.type==="object") {
+    if (!value||typeof value!=="object"||Array.isArray(value)) throw new Error("schema_type");
+    const properties=schema.properties||{};
+    if (!properties||typeof properties!=="object"||Array.isArray(properties)) throw new Error("invalid_schema");
+    if (schema.additionalProperties===false&&Object.keys(value).some(key=>!Object.hasOwn(properties,key))) throw new Error("schema_additional_property");
+    if (schema.required!==undefined&&(!Array.isArray(schema.required)||schema.required.some(key=>typeof key!=="string"||!Object.hasOwn(value,key)))) throw new Error("schema_required");
+    for (const [key,item] of Object.entries(value)) if (Object.hasOwn(properties,key)) validateSchemaValue(item,properties[key]);
+    return;
+  }
+  if (schema.type==="array") {
+    if (!Array.isArray(value)) throw new Error("schema_type");
+    if (Number.isInteger(schema.maxItems)&&value.length>schema.maxItems) throw new Error("schema_max_items");
+    if (!schema.items||typeof schema.items!=="object") throw new Error("invalid_schema");
+    for (const item of value) validateSchemaValue(item,schema.items);
+    return;
+  }
+  if (schema.type==="string") {
+    if (typeof value!=="string") throw new Error("schema_type");
+    if (Number.isInteger(schema.minLength)&&[...value].length<schema.minLength) throw new Error("schema_min_length");
+    if (Number.isInteger(schema.maxLength)&&[...value].length>schema.maxLength) throw new Error("schema_max_length");
+    if (Array.isArray(schema.enum)&&!schema.enum.includes(value)) throw new Error("schema_enum");
+    if (typeof schema.pattern==="string"&&!new RegExp(schema.pattern,"u").test(value)) throw new Error("schema_pattern");
+    return;
+  }
+  throw new Error("invalid_schema");
+}
 function keychainName(value) { return typeof value==="string"&&/^[A-Za-z0-9._@-]{1,128}$/.test(value); }
 function safeError(code) { return new Error(code); }

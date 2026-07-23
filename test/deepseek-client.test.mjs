@@ -11,12 +11,25 @@ const routerInput={
   capabilities:[{capability:"daily-work",purpose:"记录工作",accepts:["text"],positive_examples:["今天完成评审"],negative_examples:["解释评审"],supports_continuation:true}]
 };
 const routerDecision={action:"route",capability:"daily-work",confidence:"high",reason_code:"direct_match",question:"",reason:""};
+const dailySchema={
+  type:"object",additionalProperties:false,
+  required:["action","confidence","reason","question","source_text","target_record_id","records"],
+  properties:{
+    action:{type:"string",enum:["create_record","supplement_record","ask_user","ignore"]},
+    confidence:{type:"string",enum:["high","medium","low"]},reason:{type:"string",maxLength:500},question:{type:"string",maxLength:200},
+    source_text:{type:"string",minLength:1,maxLength:12000},target_record_id:{type:"string",pattern:"^$|^[a-f0-9]{16}$"},
+    records:{type:"array",maxItems:20,items:{type:"object",additionalProperties:false,
+      required:["occurred_date","occurred_time","occurred_end_time","title","people","location","summary","follow_ups","original_text"],
+      properties:{occurred_date:{type:"string",pattern:"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},occurred_time:{type:"string",pattern:"^$|^([01][0-9]|2[0-3]):[0-5][0-9]$"},occurred_end_time:{type:"string",pattern:"^$|^([01][0-9]|2[0-3]):[0-5][0-9]$"},title:{type:"string",minLength:1,maxLength:80},people:{type:"array",maxItems:50,items:{type:"string",minLength:1,maxLength:80}},location:{type:"string",maxLength:120},summary:{type:"string",minLength:1,maxLength:4000},follow_ups:{type:"array",maxItems:50,items:{type:"string",minLength:1,maxLength:500}},original_text:{type:"string",minLength:1,maxLength:12000}}
+    }}
+  }
+};
 
 async function skillRoot(name="feishu-intent-router") {
   const root=await mkdtemp(join(tmpdir(),"llw-deepseek-skill-"));
   await mkdir(join(root,"references"),{recursive:true});
   await writeFile(join(root,"SKILL.md"),`---\nname: ${name}\n---\n# 规则\n只输出 JSON。\n`);
-  await writeFile(join(root,"references","output-schema.json"),JSON.stringify({type:"object",additionalProperties:false}));
+  await writeFile(join(root,"references","output-schema.json"),JSON.stringify(name==="feishu-daily-work"?dailySchema:{type:"object",additionalProperties:false}));
   return root;
 }
 
@@ -113,17 +126,23 @@ test("keychain and guard failures happen before any network request",async t=>{
   await t.test("guard",async()=>{
     const fake=await server(async (_request,response)=>response.end(responseFor())); let keyReads=0;
     try {
-      for (const text of ["Authorization: Bearer not-real","Authorization: Token not-real","token: not-real","client_secret: not-real","凭证：not-real","otp: 123456","支付凭证：not-real","/tmp/private.txt","/root/private.txt","路径：/root/private.txt","path=/mnt/private.txt","打开，/srv/private.txt","Z:/private/file.txt","配置:C:\\private\\file.txt","\\\\server\\private\\file.txt","share=\\\\server\\private\\file.txt","ou_not_a_real_id","file_not_a_real_key"]) {
+      const prohibited=["我的密码是 hunter2","短信验证码是 123456","银行卡是 4111 1111 1111 1111","绝密项目资料"];
+      for (const text of ["Authorization: Bearer not-real","Authorization: Token not-real","token: not-real","client_secret: not-real","凭证：not-real","otp: 123456","支付凭证：not-real","/tmp/private.txt","/root/private.txt","路径：/root/private.txt","path=/mnt/private.txt","打开，/srv/private.txt","Z:/private/file.txt","配置:C:\\private\\file.txt","\\\\server\\private\\file.txt","share=\\\\server\\private\\file.txt","ou_not_a_real_id","file_not_a_real_key",...prohibited]) {
         await assert.rejects(()=>call({endpoint:fake.endpoint,input:{...routerInput,message:{...routerInput.message,text}},keyReader:async()=>{keyReads++;return "not-a-real-key";}}),error=>error.message==="ai_input_rejected");
       }
       const dailySkillRoot=await skillRoot("feishu-daily-work");
-      for (const text of ["凭证：not-real","路径：/root/private.txt"]) await assert.rejects(()=>invokeDeepSeek({
+      for (const text of ["凭证：not-real","路径：/root/private.txt",...prohibited]) await assert.rejects(()=>invokeDeepSeek({
           task:"daily-work.interpret",model:"deepseek-v4-pro",keychainService:"com.llw.deepseek-api",keychainAccount:"llw-assistant",
           skillRoot:dailySkillRoot,input:{message:{text,createTime:1784426400000},conversation:null,candidates:[]},
           keyReader:async()=>{keyReads++;return "not-a-real-key";},testEndpoint:fake.endpoint
         }),error=>error.message==="ai_input_rejected");
       assert.equal(keyReads,0); assert.equal(fake.requests.length,0);
     } finally { await fake.close(); }
+  });
+  await t.test("guard precedes Skill reads",async()=>{
+    let keyReads=0;
+    await assert.rejects(()=>invokeDeepSeek({task:"router.text",model:"deepseek-v4-pro",keychainService:"com.llw.deepseek-api",keychainAccount:"llw-assistant",skillRoot:"/definitely/missing",input:{...routerInput,message:{...routerInput.message,text:"我的密码是 hunter2"}},keyReader:async()=>{keyReads++;return "not-a-real-key";},testEndpoint:"http://127.0.0.1:1/chat/completions"}),error=>error.message==="ai_input_rejected");
+    assert.equal(keyReads,0);
   });
 });
 
@@ -144,12 +163,42 @@ test("validates a real daily-work response with the existing action validator",a
   } finally { await fake.close(); }
 });
 
+test("enforces the current daily-work output Schema before the existing action validator",async t=>{
+  const text="今天完成了方案评审";
+  const record={occurred_date:"2026-07-23",occurred_time:"",occurred_end_time:"",title:"方案评审",people:[],location:"",summary:"完成方案评审。",follow_ups:[],original_text:text};
+  const valid={action:"create_record",confidence:"high",reason:"明确新工作",question:"",source_text:text,target_record_id:"",records:[record]};
+  const invalid=[
+    ["top-level maxLength",{...valid,reason:"x".repeat(501)}],
+    ["record maxItems",{...valid,records:Array.from({length:21},()=>record)}],
+    ["record maxLength",{...valid,records:[{...record,title:"x".repeat(81)}]}],
+    ["array maxItems",{...valid,records:[{...record,people:Array.from({length:51},()=>"张三")}]}],
+    ["array item minLength",{...valid,records:[{...record,follow_ups:[""]}]}]
+  ];
+  const root=await skillRoot("feishu-daily-work");
+  for (const [name,decision] of invalid) await t.test(name,async()=>{
+    const fake=await server(async (_request,response)=>{response.writeHead(200,{"content-type":"application/json"});response.end(responseFor(decision));});
+    try {
+      await assert.rejects(()=>invokeDeepSeek({task:"daily-work.interpret",model:"deepseek-v4-pro",keychainService:"com.llw.deepseek-api",keychainAccount:"llw-assistant",skillRoot:root,input:{message:{text,createTime:1784426400000},conversation:null,candidates:[]},keyReader:async()=>"not-a-real-key",testEndpoint:fake.endpoint}),error=>error.message==="deepseek_output_invalid");
+      assert.equal(fake.requests.length,1);
+    } finally { await fake.close(); }
+  });
+});
+
 test("rejects malformed daily input and an oversized request before key or network access",async()=>{
-  let keyReads=0; const root=await skillRoot("feishu-daily-work");
+  let keyReads=0; const root=await skillRoot("feishu-daily-work"),routerRoot=await skillRoot();
   await assert.rejects(()=>invokeDeepSeek({
-    task:"daily-work.interpret",model:"deepseek-v4-pro",keychainService:"com.llw.deepseek-api",keychainAccount:"llw-assistant",skillRoot:root,
-    input:{message:{text:"工作",createTime:Number.NaN},conversation:null,candidates:[]},keyReader:async()=>{keyReads++;return "not-a-real-key";},testEndpoint:"http://127.0.0.1:1/chat/completions"
+    task:"router.text",model:"deepseek-v4-pro",keychainService:"com.llw.deepseek-api",keychainAccount:"llw-assistant",skillRoot:routerRoot,
+    input:{...routerInput,capabilities:[null]},keyReader:async()=>{keyReads++;return "not-a-real-key";},testEndpoint:"http://127.0.0.1:1/chat/completions"
   }),error=>error.message==="ai_input_rejected");
+  for (const input of [
+    {message:{text:"工作",createTime:Number.NaN},conversation:null,candidates:[]},
+    {message:{text:"工作",createTime:1e20},conversation:null,candidates:[]},
+    {message:{text:"工作",createTime:1784426400000},conversation:{turns:[null]},candidates:[]},
+    {message:{text:"工作",createTime:1784426400000},conversation:null,candidates:[null]}
+  ]) await assert.rejects(()=>invokeDeepSeek({
+      task:"daily-work.interpret",model:"deepseek-v4-pro",keychainService:"com.llw.deepseek-api",keychainAccount:"llw-assistant",skillRoot:root,input,
+      keyReader:async()=>{keyReads++;return "not-a-real-key";},testEndpoint:"http://127.0.0.1:1/chat/completions"
+    }),error=>error.message==="ai_input_rejected");
   await writeFile(join(root,"SKILL.md"),`---\nname: feishu-daily-work\n---\n${"x".repeat(140_000)}`);
   await assert.rejects(()=>invokeDeepSeek({
     task:"daily-work.interpret",model:"deepseek-v4-pro",keychainService:"com.llw.deepseek-api",keychainAccount:"llw-assistant",skillRoot:root,

@@ -6,11 +6,14 @@ import { join } from "node:path";
 import { DailyWorkService } from "../src/service.mjs";
 import { StateStore } from "../src/state-store.mjs";
 import { createDailyWorkCapability } from "../src/capabilities/daily-work/capability.mjs";
+import {createDailyWorkInterpretTask} from "../src/core/semantic-tasks.mjs";
 
 const baseMessage = {
   source:"feishu",sourceMessageId:"m1",userId:"user-1",conversationId:"chat-1",receivedAt:"2026-07-19T02:00:00.000Z",
   text:"今天完成了方案评审",attachments:[],replyTarget:{source:"feishu",sourceMessageId:"m1",conversationId:"chat-1"}
 };
+const SENSITIVE_REPLY="检测到本任务包含不允许发送给 AI 的身份凭证或密钥信息。\n系统未调用 Codex 或 DeepSeek，也未保存该敏感内容。\n请删除或遮盖敏感字段后重新提交。";
+const DEEPSEEK_FAILURE_REPLY="当前模型 DeepSeek 本次调用失败。\n系统没有切换模型，也没有执行写入。\n如需使用 Codex，请手工发送：/llw-model codex";
 const candidate = {record_id: "90f29b02eb9ec9bb", date: "2026-07-18", occurred_time: "", occurred_end_time: "", title: "标品订单RV会议", people: [], location: "线上", summary: "公司线上召开标品订单RV会议。", follow_ups: ["下周完成EDR安装部署。"]};
 
 function record(originalText, overrides = {}) {
@@ -135,8 +138,19 @@ test("temporary AI failure does not create a false conversation", async () => {
   const result = await h.service.handleMessage(baseMessage,{model:"deepseek"});
   assert.equal(h.creates.length, 0);
   assert.equal(h.state.getConversation(), null);
-  assert.equal(result.reply, "AI 暂时不可用，本条未入库；请稍后重新发送。");
+  assert.equal(result.reply, DEEPSEEK_FAILURE_REPLY);
   assert.equal(h.sends.length, 0);
+});
+
+test("daily-work input rejection uses the V3 sensitive-data reply for both models and never writes",async()=>{
+  for (const model of ["codex","deepseek"]) {
+    let aiCalls=0;
+    const decide=createDailyWorkInterpretTask({invoke:async()=>{aiCalls++;},invokeDeepSeekClient:async()=>{aiCalls++;},deepseekEnabled:true});
+    const h=await harness(decide);
+    const result=await h.service.handleMessage({...baseMessage,text:"短信验证码是 123456"},{model});
+    assert.equal(aiCalls,0); assert.equal(result.status,"rejected"); assert.equal(result.reply,SENSITIVE_REPLY);
+    assert.deepEqual(h.creates,[]); assert.deepEqual(h.supplements,[]); assert.equal(h.state.getConversation(),null); assert.deepEqual(h.sends,[]);
+  }
 });
 
 test("missing Vault never falls back to a Mac directory", async () => {
