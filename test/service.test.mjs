@@ -6,11 +6,15 @@ import { join } from "node:path";
 import { DailyWorkService } from "../src/service.mjs";
 import { StateStore } from "../src/state-store.mjs";
 import { createDailyWorkCapability } from "../src/capabilities/daily-work/capability.mjs";
+import {createDailyWorkInterpretTask} from "../src/core/semantic-tasks.mjs";
+import {FORBIDDEN_AI_INPUTS} from "./fixtures/forbidden-ai-inputs.mjs";
 
 const baseMessage = {
   source:"feishu",sourceMessageId:"m1",userId:"user-1",conversationId:"chat-1",receivedAt:"2026-07-19T02:00:00.000Z",
   text:"今天完成了方案评审",attachments:[],replyTarget:{source:"feishu",sourceMessageId:"m1",conversationId:"chat-1"}
 };
+const SENSITIVE_REPLY="检测到可能包含实际密钥、登录凭证或支付控制信息。\n系统没有把本次内容发送给 Codex 或 DeepSeek，也没有写入业务记录。\n请删除或遮盖相关值后重新提交。";
+const DEEPSEEK_FAILURE_REPLY="当前模型 DeepSeek 本次调用失败。\n系统没有切换模型，也没有执行写入。\n如需使用 Codex，请手工发送：/llw-model codex";
 const candidate = {record_id: "90f29b02eb9ec9bb", date: "2026-07-18", occurred_time: "", occurred_end_time: "", title: "标品订单RV会议", people: [], location: "线上", summary: "公司线上召开标品订单RV会议。", follow_ups: ["下周完成EDR安装部署。"]};
 
 function record(originalText, overrides = {}) {
@@ -89,6 +93,14 @@ test("natural-language clarification supplements the July 18 record instead of c
   assert.equal(h.state.getConversation(), null);
 });
 
+test("daily-work continuation obeys the dispatcher effective model over persisted state",async () => {
+  const calls=[];
+  const h=await harness(async input=>{calls.push(structuredClone(input));return {action:"ignore",confidence:"high",reason:"测试",question:"",source_text:input.message.text,target_record_id:"",records:[]};});
+  await h.state.setConversation({id:"c1",status:"open",turns:[{role:"assistant",text:"请补充"}],candidateIds:[],model:"deepseek"});
+  await h.service.handleMessage({...baseMessage,text:"继续任务"},{model:"codex"});
+  assert.equal(calls.length,1); assert.equal(calls[0].conversation.model,"deepseek"); assert.equal(calls[0].model,"codex");
+});
+
 test("every reply phrase is sent back to AI without program keyword handling", async () => {
   for (const [index, text] of ["是", "不是这场", "就是昨天那场"].entries()) {
     const calls = [];
@@ -124,11 +136,25 @@ test("unsupported attachment is not sent to daily-work AI", async () => {
 
 test("temporary AI failure does not create a false conversation", async () => {
   const h = await harness(async () => { throw new Error("model_capacity"); });
-  const result = await h.service.handleMessage(baseMessage);
+  const result = await h.service.handleMessage(baseMessage,{model:"deepseek"});
   assert.equal(h.creates.length, 0);
   assert.equal(h.state.getConversation(), null);
-  assert.equal(result.reply, "AI 暂时不可用，本条未入库；请稍后重新发送。");
+  assert.equal(result.reply, DEEPSEEK_FAILURE_REPLY);
   assert.equal(h.sends.length, 0);
+});
+
+test("daily-work input rejection uses the V3.1 fixed reply for both models and never writes",async()=>{
+  for (const model of ["codex","deepseek"]) {
+    let aiCalls=0;
+    const decide=createDailyWorkInterpretTask({invoke:async()=>{aiCalls++;},invokeDeepSeekClient:async()=>{aiCalls++;},deepseekEnabled:true});
+    const h=await harness(decide);
+    for (const [index,{text}] of FORBIDDEN_AI_INPUTS.entries()) {
+      const result=await h.service.handleMessage({...baseMessage,sourceMessageId:`m-${model}-${index}`,text},{model});
+      assert.equal(result.status,"rejected"); assert.equal(result.reply,SENSITIVE_REPLY);
+    }
+    assert.equal(aiCalls,0);
+    assert.deepEqual(h.creates,[]); assert.deepEqual(h.supplements,[]); assert.equal(h.state.getConversation(),null); assert.deepEqual(h.sends,[]);
+  }
 });
 
 test("missing Vault never falls back to a Mac directory", async () => {
@@ -141,15 +167,15 @@ test("missing Vault never falls back to a Mac directory", async () => {
 
 test("daily-work capability maps only an already-selected normalized event", async () => {
   const received = [];
-  const capability = createDailyWorkCapability({service:{handleMessage:async message => {
-    received.push(message);
+  const capability = createDailyWorkCapability({service:{handleMessage:async (message,context) => {
+    received.push({message,context});
     return {status:"ignored", reply:"未入库", artifacts:[]};
   }}});
   assert.equal(capability.name, "daily-work");
   assert.equal(Object.hasOwn(capability,"match"),false);
   const message={...baseMessage,text:"工作内容"};
-  const result = await capability.handle(message);
+  const result = await capability.handle(message,{model:"deepseek"});
   assert.equal(result.status, "ignored");
-  assert.deepEqual(received[0],message);
-  for (const field of ["message_id","sender_id","chat_id","message_type","content"]) assert.equal(Object.hasOwn(received[0],field),false);
+  assert.deepEqual(received[0],{message,context:{model:"deepseek"}});
+  for (const field of ["message_id","sender_id","chat_id","message_type","content"]) assert.equal(Object.hasOwn(received[0].message,field),false);
 });

@@ -16,6 +16,7 @@ import {prepareInvoicePdf} from "./capabilities/invoice/pdf-preparer.mjs";
 import {downloadLarkResource,scavengeInvoiceTempRoot} from "./adapters/lark-resource-downloader.mjs";
 import {createLarkMessenger} from "./adapters/lark-reply.mjs";
 import {Dispatcher} from "./core/dispatcher.mjs";
+import {ModelMode} from "./core/model-mode.mjs";
 import {safeLog} from "./core/redaction.mjs";
 import {loadRoutingContract} from "./core/routing-contract.mjs";
 import {validateIntentRouterSkill} from "./core/intent-router-client.mjs";
@@ -33,12 +34,19 @@ if (invoiceConfig.enabled) contracts.invoice=await loadRoutingContract(invoiceCo
 const routerSkillRoot=join(config.vaultRoot,".agents","skills","feishu-intent-router");
 await validateIntentRouterSkill(routerSkillRoot);
 const state=await StateStore.open(config.stateFile);
+const modelMode=new ModelMode(config.modelStateFile);
 const binding={senderId:config.senderId,chatId:config.chatId};
 const messenger=createLarkMessenger({cliPath:config.cliPath,profile:config.profile,boundChatId:config.chatId});
+const deepseekTextConfiguration={
+  deepseekEnabled:config.deepseekEnabled,
+  deepseekModel:config.deepseekModel,
+  deepseekKeychainService:config.deepseekKeychainService,
+  deepseekKeychainAccount:config.deepseekKeychainAccount
+};
 
 const dailyWriter=new VaultWriter(config.vaultRoot);
 const catalog=new RecordCatalog(config.vaultRoot);
-const dailyWorkInterpret=createDailyWorkInterpretTask({codexPath:config.codexPath,workspaceRoot:config.vaultRoot,skillRoot:config.capabilities["daily-work"].skillRoot});
+const dailyWorkInterpret=createDailyWorkInterpretTask({codexPath:config.codexPath,workspaceRoot:config.vaultRoot,skillRoot:config.capabilities["daily-work"].skillRoot,...deepseekTextConfiguration});
 const dailyService=new DailyWorkService({
   state,catalog,writer:dailyWriter,decide:dailyWorkInterpret
 });
@@ -65,9 +73,9 @@ const invoiceCapability=createInvoiceCapability({
 });
 
 const capabilities=buildCapabilityRegistry({dailyWork:dailyCapability,invoice:invoiceCapability,contracts,enabled:{"daily-work":config.capabilities["daily-work"].enabled,invoice:invoiceConfig.enabled}});
-const routerText=createRouterTextTask({codexPath:config.codexPath,workspaceRoot:config.vaultRoot,skillRoot:routerSkillRoot,timeoutMs:invoiceConfig.aiTimeoutMs});
+const routerText=createRouterTextTask({codexPath:config.codexPath,workspaceRoot:config.vaultRoot,skillRoot:routerSkillRoot,timeoutMs:invoiceConfig.aiTimeoutMs,...deepseekTextConfiguration});
 const intentRouter={decide:routerText};
-const dispatcher=new Dispatcher({binding,state,capabilities,intentRouter,messenger});
+const dispatcher=new Dispatcher({binding,state,capabilities,intentRouter,messenger,modelMode,deepseekEnabled:config.deepseekEnabled});
 
 await scavengeInvoiceTempRoot(invoiceConfig.tempRoot);
 await invoiceArchiveWriter.recoverTransactions();

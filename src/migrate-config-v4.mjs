@@ -1,4 +1,5 @@
 import {lstat,readFile} from "node:fs/promises";
+import {dirname,join} from "node:path";
 import {saveConfig} from "./config.mjs";
 
 const TOP_FIELDS=new Set(["version","vaultRoot","stateFile","heartbeatFile","cliPath","codexPath","profile","senderId","chatId","capabilities"]);
@@ -20,6 +21,11 @@ try {
   const migrated={
     ...current,
     version:4,
+    modelStateFile:join(dirname(current.stateFile),"model-state"),
+    deepseekEnabled:false,
+    deepseekModel:"deepseek-v4-pro",
+    deepseekKeychainService:"com.llw.deepseek-api",
+    deepseekKeychainAccount:"llw-assistant",
     capabilities:{
       ...current.capabilities,
       invoice:{
