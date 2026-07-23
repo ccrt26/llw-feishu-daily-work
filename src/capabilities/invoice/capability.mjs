@@ -10,11 +10,11 @@ export function createInvoiceCapability({download,inspect,preparePdf,decide,vali
       let resource;
       try { resource=parse(event); }
       catch { return {status:"failed",reply:"附件标识无法安全解析，本文件未下载、未识别、未归档；请重新发送原文件。",artifacts:[]}; }
-      const transactionId=createHash("sha256").update(`invoice:${event.sourceMessageId}:${resource.fileKey}`).digest("hex").slice(0,32);
+      const transactionId=createHash("sha256").update(`invoice:${event.sourceMessageId}:${resource.fileKey||resource.resourceId}`).digest("hex").slice(0,32);
       let downloaded;
       let stage="download";
       try {
-        downloaded=await download({...resource,messageId:event.sourceMessageId});
+        downloaded=await download({...resource,source:event.source,messageId:event.sourceMessageId});
         stage="inspect";
         const inspected=await inspect(downloaded.file);
         let analysisInput;

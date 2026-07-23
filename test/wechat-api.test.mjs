@@ -120,6 +120,15 @@ test("maps unsafe, failed, non-JSON and oversized responses to value-free errors
     ()=>media.downloadEncryptedMedia({url:"https://media.weixin.qq.com/file",maxBytes:20}),
     error=>error.message==="wechat_response_too_large"
   );
+  const paddedMedia=createWechatApi({
+    baseUrl:BASE_URL,token:TOKEN,uIn:UIN,
+    fetchImpl:async()=>new Response(Buffer.alloc(16),{
+      headers:{"content-type":"application/octet-stream","content-length":"16"}
+    })
+  });
+  assert.equal((await paddedMedia.downloadEncryptedMedia({
+    url:"https://media.weixin.qq.com/file",maxBytes:20*1024*1024+16
+  })).length,16);
   await assert.rejects(
     ()=>media.downloadEncryptedMedia({url:"https://localhost/file",maxBytes:20}),
     error=>error.message==="wechat_media_invalid"

@@ -47,9 +47,36 @@ test("committed and existing image archives get independent exact outcomes",asyn
   assert.equal(first.status,"committed"); assert.match(first.reply,/发票已归档\n/); assert.match(first.reply,/290.00 元/); assert.equal(first.artifacts.length,1); assert.equal(h.calls.cleanup,1);
   assert.equal(h.calls.prepare,0); assert.equal(h.calls.decideInput.analysisInput.pageImages.length,1);
   assert.equal(h.calls.downloadInput.messageId,"m1");
+  assert.equal(h.calls.downloadInput.source,"feishu");
   const secondHarness=harness({archive:{status:"existing",relativePath:"亚信工作/日常发票/餐饮发票/2026年07月/290.00.png"}});
   const second=await secondHarness.capability.handle({...event,sourceMessageId:"m2",attachments:[{type:"image",sourceAttachmentId:"img_def",displayName:"飞书图片",extension:""}]});
   assert.equal(second.status,"existing"); assert.match(second.reply,/文件已存在，未重复复制/); assert.equal(secondHarness.calls.cleanup,1);
+});
+
+test("passes only the WeChat source and opaque resource id into the existing invoice flow",async () => {
+  const h=harness();
+  const result=await h.capability.handle({
+    ...event,
+    source:"wechat",
+    sourceMessageId:"1001",
+    attachments:[{
+      type:"image",sourceAttachmentId:"wxr_0123456789abcdef0123456789abcdef",
+      displayName:"微信图片",extension:""
+    }],
+    replyTarget:{
+      source:"wechat",sourceMessageId:"1001",conversationId:"wx-owner",contextToken:"test-context"
+    }
+  });
+  assert.equal(result.status,"committed");
+  assert.deepEqual(h.calls.downloadInput,{
+    source:"wechat",
+    resourceId:"wxr_0123456789abcdef0123456789abcdef",
+    type:"image",
+    messageId:"1001"
+  });
+  assert.equal(h.calls.inspect,1);
+  assert.equal(h.calls.decide,1);
+  assert.equal(h.calls.write,1);
 });
 
 test("PDF prepares every page input and archives only the original PDF",async () => {

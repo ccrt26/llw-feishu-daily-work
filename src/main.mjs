@@ -14,6 +14,7 @@ import {validateInvoiceDecision} from "./capabilities/invoice/decision-validator
 import {InvoiceArchiveWriter} from "./capabilities/invoice/archive-writer.mjs";
 import {prepareInvoicePdf} from "./capabilities/invoice/pdf-preparer.mjs";
 import {downloadLarkResource,scavengeInvoiceTempRoot} from "./adapters/lark-resource-downloader.mjs";
+import {downloadWechatResource} from "./adapters/wechat-resource-downloader.mjs";
 import {createLarkMessenger} from "./adapters/lark-reply.mjs";
 import {Dispatcher} from "./core/dispatcher.mjs";
 import {ModelMode} from "./core/model-mode.mjs";
@@ -37,6 +38,8 @@ const state=await StateStore.open(config.stateFile);
 const modelMode=new ModelMode(config.modelStateFile);
 const binding={senderId:config.senderId,chatId:config.chatId};
 const messenger=createLarkMessenger({cliPath:config.cliPath,profile:config.profile,boundChatId:config.chatId});
+const wechatResources=new Map();
+let wechatApi=null;
 const deepseekTextConfiguration={
   deepseekEnabled:config.deepseekEnabled,
   deepseekModel:config.deepseekModel,
@@ -54,8 +57,23 @@ const dailyCapability=createDailyWorkCapability({service:dailyService});
 
 const invoiceArchiveWriter=new InvoiceArchiveWriter({vaultRoot:config.vaultRoot,state});
 const invoiceVisual=createInvoiceVisualTask({codexPath:config.codexPath,workspaceRoot:config.vaultRoot,skillRoot:invoiceConfig.skillRoot,timeoutMs:invoiceConfig.aiTimeoutMs});
+const downloadInvoiceResource=resource => {
+  if (resource.source==="feishu") {
+    return downloadLarkResource({
+      cliPath:config.cliPath,profile:config.profile,tempRoot:invoiceConfig.tempRoot,
+      timeoutMs:invoiceConfig.aiTimeoutMs,...resource
+    });
+  }
+  if (resource.source==="wechat"&&wechatApi) {
+    return downloadWechatResource({
+      api:wechatApi,resources:wechatResources,tempRoot:invoiceConfig.tempRoot,
+      maxFileBytes:invoiceConfig.maxFileBytes,timeoutMs:invoiceConfig.aiTimeoutMs,...resource
+    });
+  }
+  throw Object.assign(new Error("download_failed"),{code:"download_failed"});
+};
 const invoiceCapability=createInvoiceCapability({
-  download:resource => downloadLarkResource({cliPath:config.cliPath,profile:config.profile,tempRoot:invoiceConfig.tempRoot,timeoutMs:invoiceConfig.aiTimeoutMs,...resource}),
+  download:downloadInvoiceResource,
   inspect:file => inspectInvoiceFile(file,{maxBytes:invoiceConfig.maxFileBytes}),
   preparePdf:({file}) => prepareInvoicePdf({
     file,

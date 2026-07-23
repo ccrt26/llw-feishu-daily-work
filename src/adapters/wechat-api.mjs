@@ -2,7 +2,7 @@ import {createDecipheriv} from "node:crypto";
 import {isIP} from "node:net";
 
 const MAX_JSON_BYTES=1024*1024;
-const MAX_MEDIA_BYTES=20*1024*1024;
+const MAX_MEDIA_BYTES=20*1024*1024+16;
 const BASE_INFO={channel_version:"2.4.6",bot_agent:"LLWAssistant/1.0"};
 const CLIENT_VERSION=132102;
 
