@@ -7,6 +7,7 @@ import {Dispatcher} from "../src/core/dispatcher.mjs";
 import {StateStore} from "../src/state-store.mjs";
 import {DailyWorkService} from "../src/service.mjs";
 import {createRouterTextTask} from "../src/core/semantic-tasks.mjs";
+import {createWechatIncomingMessage} from "../src/core/incoming-message.mjs";
 import {FORBIDDEN_AI_INPUTS} from "./fixtures/forbidden-ai-inputs.mjs";
 
 const raw={event_id:"e1",message_id:"m1",sender_id:"u1",chat_id:"c1",chat_type:"p2p",message_type:"image",content:"![Image](img_abc)",create_time:"1784426400000"};
@@ -22,8 +23,22 @@ async function harness({decision,handle:capabilityHandler,status="committed",sen
   const intentRouter={decide:async input=>{routerCalls.push(structuredClone(input));return typeof decision==="function"?decision(input):decision||{action:"route",capability:"invoice",confidence:"high",reasonCode:"attachment_match"};}};
   const modes=[],writes=[]; let selected=model;
   const modelMode=providedModelMode||{read:async()=>{modes.push(selected);return selected;},write:async value=>{writes.push(value);selected=value;}};
-  const dispatcher=new Dispatcher({binding:{senderId:"u1",chatId:"c1"},state,capabilities,intentRouter,messenger:{send:send|| (async message=>sends.push(message))},modelMode,deepseekEnabled});
+  const dispatcher=new Dispatcher({
+    binding:{senderId:"u1",chatId:"c1"},
+    bindings:{
+      feishu:{userId:"u1",conversationId:"c1"},
+      wechat:{userId:"wx-owner",conversationId:"wx-owner"}
+    },
+    state,capabilities,intentRouter,messenger:{send:send|| (async message=>sends.push(message))},modelMode,deepseekEnabled
+  });
   return {file,state,routerCalls,runs,messages,contexts,sends,modes,writes,dispatcher};
+}
+
+function wechatMessage({messageId="m1",userId="wx-owner",text="记录今天工作"}={}) {
+  return createWechatIncomingMessage({
+    messageId,userId,conversationId:"wx-owner",createTimeMs:1784851200000,
+    type:"text",text,contextToken:"test-context"
+  });
 }
 
 test("routes once, invokes only the selected capability, persists before send and suppresses duplicates",async () => {
@@ -44,6 +59,50 @@ test("security failures, empty text and duplicates never call the router",async 
   await h.dispatcher.handleRawEvent({...raw,sender_id:"other"});
   await h.dispatcher.handleRawEvent({...raw,message_id:"m2",message_type:"text",content:"   "});
   assert.equal(h.routerCalls.length,0); assert.equal(h.sends.length,0);
+});
+
+test("shares one queue while keeping Feishu and WeChat outcome keys independent",async () => {
+  const h=await harness({decision:{action:"route",capability:"daily-work",confidence:"high",reasonCode:"direct_match"}});
+  const feishu=h.dispatcher.handleRawEvent({...raw,message_type:"text",content:"记录飞书工作"});
+  const wechat=h.dispatcher.handleIncomingMessage(wechatMessage({text:"记录微信工作"}));
+  const duplicate=h.dispatcher.handleIncomingMessage(wechatMessage({text:"重复微信工作"}));
+  assert.deepEqual(await Promise.all([feishu,wechat,duplicate]),[
+    {handled:true,status:"committed"},
+    {handled:true,status:"committed"},
+    {handled:false,reason:"duplicate"}
+  ]);
+  assert.equal(h.routerCalls.length,2);
+  assert.deepEqual(h.runs,["daily-work","daily-work"]);
+  assert.equal(h.state.hasOutcome("m1"),true);
+  assert.equal(h.state.hasOutcome("wechat:m1"),true);
+  assert.equal(JSON.stringify(h.messages).includes("test-context"),false);
+  assert.deepEqual(h.sends.map(item=>item.replyTarget),[
+    {source:"feishu",sourceMessageId:"m1",conversationId:"c1"},
+    {source:"wechat",sourceMessageId:"m1",conversationId:"wx-owner",contextToken:"test-context"}
+  ]);
+});
+
+test("rejects an unbound WeChat sender before model commands, router or capability work",async () => {
+  const h=await harness();
+  assert.deepEqual(
+    await h.dispatcher.handleIncomingMessage(wechatMessage({userId:"wx-other",text:"/llw-model deepseek"})),
+    {handled:false,reason:"sender_not_allowed"}
+  );
+  assert.deepEqual(h.routerCalls,[]);
+  assert.deepEqual(h.runs,[]);
+  assert.deepEqual(h.modes,[]);
+  assert.deepEqual(h.writes,[]);
+  assert.deepEqual(h.sends,[]);
+});
+
+test("runs the same exact model commands from WeChat and ignores natural-language switching",async () => {
+  const h=await harness({decision:{action:"unsupported",reason:"目前没有相应能力"}});
+  assert.equal((await h.dispatcher.handleIncomingMessage(wechatMessage({text:"/llw-model deepseek"}))).status,"existing");
+  assert.deepEqual(h.writes,["deepseek"]);
+  assert.equal(h.routerCalls.length,0);
+  assert.equal((await h.dispatcher.handleIncomingMessage(wechatMessage({messageId:"m2",text:"请切换到 Codex"}))).status,"rejected");
+  assert.equal(h.routerCalls.length,1);
+  assert.deepEqual(h.writes,["deepseek"]);
 });
 
 test("model commands run after security and idempotency but before the router",async () => {
@@ -307,4 +366,56 @@ test("send failure resumes the same reply without rerunning router or capability
   let first=true; const sent=[]; const h=await harness({send:async message=>{if(first){first=false;throw new Error("network");}sent.push(message);}});
   await assert.rejects(()=>h.dispatcher.handleRawEvent(raw),/message_send_failed/); assert.equal(h.routerCalls.length,1); assert.equal(h.runs.length,1);
   await h.dispatcher.resumeReplies(); assert.equal(h.routerCalls.length,1); assert.equal(h.runs.length,1); assert.equal(sent.length,1);
+});
+
+test("reopens an unreplied WeChat outcome and resumes to the original entry",async () => {
+  const first=await harness({
+    decision:{action:"route",capability:"daily-work",confidence:"high",reasonCode:"direct_match"},
+    send:async()=>{throw new Error("network");}
+  });
+  await assert.rejects(()=>first.dispatcher.handleIncomingMessage(wechatMessage()),/message_send_failed/);
+  assert.equal(first.routerCalls.length,1);
+  assert.deepEqual(first.runs,["daily-work"]);
+
+  const state=await StateStore.open(first.file);
+  const resumed=[],routerCalls=[],runs=[];
+  const restarted=new Dispatcher({
+    binding:{senderId:"u1",chatId:"c1"},
+    bindings:{
+      feishu:{userId:"u1",conversationId:"c1"},
+      wechat:{userId:"wx-owner",conversationId:"wx-owner"}
+    },
+    state,
+    capabilities:["daily-work","invoice"].map(name=>({
+      name,routingContract:contract(name),
+      handle:async()=>{runs.push(name);return {status:"committed",reply:"不应执行",artifacts:["p"]};}
+    })),
+    intentRouter:{decide:async input=>{routerCalls.push(input);throw new Error("must_not_route");}},
+    messenger:{send:async message=>resumed.push(message)},
+    modelMode:{read:async()=>"codex",write:async()=>{}},
+    deepseekEnabled:true
+  });
+  await restarted.resumeReplies();
+  assert.deepEqual(routerCalls,[]);
+  assert.deepEqual(runs,[]);
+  assert.equal(resumed.length,1);
+  assert.deepEqual(resumed[0].replyTarget,{
+    source:"wechat",sourceMessageId:"m1",conversationId:"wx-owner",contextToken:"test-context"
+  });
+  assert.deepEqual((await StateStore.open(first.file)).unreplied(),[]);
+});
+
+test("resumes a legacy Feishu outcome that has no stored reply target",async () => {
+  const h=await harness();
+  await h.state.saveOutcome("legacy-m1",{
+    capability:"daily-work",status:"existing",reply:"历史回复",artifacts:[],
+    noReplyRequired:false,createdAt:"2026-07-24T00:00:00.000Z"
+  });
+  await h.dispatcher.resumeReplies();
+  assert.equal(h.sends.length,1);
+  assert.deepEqual(h.sends[0].replyTarget,{
+    source:"feishu",sourceMessageId:"legacy-m1",conversationId:"c1"
+  });
+  assert.equal(h.sends[0].idempotencyKey,"reply:legacy-m1");
+  assert.deepEqual((await StateStore.open(h.file)).unreplied(),[]);
 });

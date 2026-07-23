@@ -111,6 +111,35 @@ test("persists outcome before reply and exposes unreplied work", async () => {
   assert.deepEqual((await StateStore.open(file)).unreplied(), []);
 });
 
+test("persists an optional minimal reply target without changing version 4",async () => {
+  const {file}=await fresh();
+  const store=await StateStore.open(file);
+  const replyTarget={
+    source:"wechat",sourceMessageId:"1001",conversationId:"wx-owner",contextToken:"test-context"
+  };
+  await store.saveOutcome("wechat:1001",{
+    capability:"daily-work",status:"committed",reply:"已入库",artifacts:["p"],replyTarget
+  });
+  assert.deepEqual((await StateStore.open(file)).unreplied(),[{
+    messageId:"wechat:1001",capability:"daily-work",status:"committed",reply:"已入库",
+    artifacts:["p"],replyTarget,replied:false
+  }]);
+  assert.equal(JSON.parse(await readFile(file,"utf8")).version,4);
+});
+
+test("rejects non-minimal outcome reply targets before persistence",async () => {
+  const {file}=await fresh();
+  const store=await StateStore.open(file);
+  await assert.rejects(()=>store.saveOutcome("wechat:1001",{
+    status:"committed",reply:"已入库",artifacts:["p"],
+    replyTarget:{
+      source:"wechat",sourceMessageId:"1001",conversationId:"wx-owner",
+      contextToken:"test-context",encrypt_query_param:"raw-cdn"
+    }
+  }),/invalid_reply_target/);
+  assert.equal(store.hasOutcome("wechat:1001"),false);
+});
+
 test("migrates exact version 3 without losing daily-work, invoice or outcomes",async () => {
   const {file}=await fresh();
   const invoice={transactions:{tx:{transactionId:"tx",status:"published"}}};

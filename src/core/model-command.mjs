@@ -1,11 +1,11 @@
-const FEISHU_COMMANDS=new Map([
+const CHAT_ENTRY_COMMANDS=new Map([
   ["/llw-model status","status"],
   ["/llw-model codex","codex"],
   ["/llw-model deepseek","deepseek"]
 ]);
 const LOCAL_COMMANDS=new Set(["status","codex","deepseek"]);
 
-export function parseModelCommand(content) { return typeof content==="string"?FEISHU_COMMANDS.get(content)||null:null; }
+export function parseModelCommand(content) { return typeof content==="string"?CHAT_ENTRY_COMMANDS.get(content)||null:null; }
 
 export function parseLocalModelCommand(argumentsList) {
   if (!Array.isArray(argumentsList) || argumentsList.length!==1 || typeof argumentsList[0]!=="string") return null;

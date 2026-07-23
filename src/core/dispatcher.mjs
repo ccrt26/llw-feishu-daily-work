@@ -1,16 +1,26 @@
 import {normalizeEvent} from "./event-normalizer.mjs";
-import {checkSecurity} from "./security-gate.mjs";
+import {checkIncomingSecurity,checkSecurity} from "./security-gate.mjs";
 import {createRouterMessage} from "./router-message.mjs";
 import {createFeishuIncomingMessage,createReplyTarget} from "./incoming-message.mjs";
 import {effectiveModel,handleModelCommand} from "./model-command.mjs";
 import {classifyAiFailure} from "./ai-failure.mjs";
 
 export class Dispatcher {
-  constructor({binding,state,capabilities,intentRouter,messenger,modelMode,deepseekEnabled}) {
-    this.binding=binding; this.state=state; this.capabilities=capabilities; this.intentRouter=intentRouter; this.messenger=messenger; this.modelMode=modelMode; this.deepseekEnabled=deepseekEnabled; this.queue=Promise.resolve();
+  constructor({binding,bindings,state,capabilities,intentRouter,messenger,modelMode,deepseekEnabled}) {
+    this.binding=binding;
+    this.bindings=bindings||{
+      feishu:{userId:binding?.senderId,conversationId:binding?.chatId}
+    };
+    this.state=state; this.capabilities=capabilities; this.intentRouter=intentRouter; this.messenger=messenger; this.modelMode=modelMode; this.deepseekEnabled=deepseekEnabled; this.queue=Promise.resolve();
   }
 
   handleRawEvent(raw) { const next=this.queue.then(()=>this.processRawEvent(raw)); this.queue=next.catch(()=>{}); return next; }
+
+  handleIncomingMessage(message) {
+    const next=this.queue.then(()=>this.processIncomingMessage(message));
+    this.queue=next.catch(()=>{});
+    return next;
+  }
 
   async processRawEvent(raw) {
     let event;
@@ -19,18 +29,35 @@ export class Dispatcher {
     if (!security.ok) return {handled:false,reason:security.reason};
     if (event.messageType==="text"&&!event.content.trim()) return {handled:false,reason:"empty_text"};
     if (this.state.hasOutcome(event.messageId)) return {handled:false,reason:"duplicate"};
-    if (event.messageType==="text") {
-      const command=await handleModelCommand(event.content,{modelMode:this.modelMode,deepseekEnabled:this.deepseekEnabled});
-      if (command) return this.persistAndSend(fallbackMessage(event),"model",command);
+    let message;
+    try { message=createFeishuIncomingMessage(event); }
+    catch {
+      return this.persistAndSend(fallbackMessage(event),"router",{
+        status:"failed",
+        reply:"暂时无法判断你希望进行的操作，请告诉我你希望我处理什么。",
+        artifacts:[]
+      });
     }
-    const conversation=await this.state.getRouterConversation(event.createTimeMs);
+    return this.processIncomingMessage(message);
+  }
+
+  async processIncomingMessage(message) {
+    const security=checkIncomingSecurity(message,this.bindings);
+    if (!security.ok) return {handled:false,reason:security.reason};
+    if (typeof message.text==="string"&&!message.text.trim()) return {handled:false,reason:"empty_text"};
+    const key=outcomeKey(message);
+    if (this.state.hasOutcome(key)) return {handled:false,reason:"duplicate"};
+    if (typeof message.text==="string") {
+      const command=await handleModelCommand(message.text,{modelMode:this.modelMode,deepseekEnabled:this.deepseekEnabled});
+      if (command) return this.persistAndSend(message,"model",command);
+    }
+    const conversation=await this.state.getRouterConversation(Date.parse(message.receivedAt));
     const dailyConversation=this.state.getConversation();
     const activeSnapshot=conversation?.model||dailyConversation?.model||null;
     let globalModel;
     const readGlobalModel=async()=>globalModel||=effectiveModel(await this.modelMode.read(),this.deepseekEnabled);
-    let capabilityName="router",draft,message,model;
+    let capabilityName="router",draft,model;
     try {
-      message=createFeishuIncomingMessage(event);
       const attachmentTask=message.attachments.length===1;
       model=attachmentTask?await readGlobalModel():(activeSnapshot?effectiveModel(activeSnapshot,this.deepseekEnabled):await readGlobalModel());
       if (attachmentTask&&model==="deepseek") {
@@ -44,7 +71,6 @@ export class Dispatcher {
     } catch {
       draft={status:"failed",reply:"暂时无法判断你希望进行的操作，请告诉我你希望我处理什么。",artifacts:[]};
     }
-    message ||= fallbackMessage(event);
     return this.persistAndSend(message,capabilityName,draft);
   }
 
@@ -72,7 +98,7 @@ export class Dispatcher {
       if (conversation.capability==="daily-work") await this.state.clearConversation();
     }
     else if (newTask&&dailyActive) await this.state.clearConversation();
-    let draft=await capability.handle(message,{state:this.state,model:taskModel});
+    let draft=await capability.handle(createBusinessMessage(message),{state:this.state,model:taskModel});
     if (draft?.status==="not_applicable") draft={status:"awaiting_clarification",reply:"我暂时无法确定你希望进行的操作，请告诉我你希望我处理什么。",artifacts:[]};
     if (draft?.status==="awaiting_clarification") {
       await this.state.setRouterConversation({capability:capability.name,question:draft.reply,startedAt:conversation?.startedAt||message.receivedAt,attempts:1,status:"open",model:taskModel});
@@ -93,7 +119,10 @@ export class Dispatcher {
 
   async resumeReplies() {
     for (const outcome of this.state.unreplied()) {
-      const message={sourceMessageId:outcome.messageId,replyTarget:createReplyTarget({source:"feishu",sourceMessageId:outcome.messageId,conversationId:this.binding.chatId})};
+      const replyTarget=outcome.replyTarget
+        ?createReplyTarget(outcome.replyTarget)
+        :createReplyTarget({source:"feishu",sourceMessageId:outcome.messageId,conversationId:this.binding.chatId});
+      const message={source:replyTarget.source,sourceMessageId:replyTarget.sourceMessageId,replyTarget};
       await this.send(message,outcome.capability||"daily-work",outcome.reply);
       await this.state.markReplied(outcome.messageId);
     }
@@ -102,26 +131,54 @@ export class Dispatcher {
   async handleMalformed(raw) {
     if (!isBoundMalformed(raw,this.binding)) return {handled:false,reason:"invalid_event"};
     if (this.state.hasOutcome(raw.message_id)) return {handled:false,reason:"duplicate"};
-    return this.persistAndSend({sourceMessageId:raw.message_id,replyTarget:createReplyTarget({source:"feishu",sourceMessageId:raw.message_id,conversationId:raw.chat_id})},"core",{status:"failed",reply:"消息结构无效，本条未处理；请重新发送。",artifacts:[]});
+    return this.persistAndSend({source:"feishu",sourceMessageId:raw.message_id,replyTarget:createReplyTarget({source:"feishu",sourceMessageId:raw.message_id,conversationId:raw.chat_id})},"core",{status:"failed",reply:"消息结构无效，本条未处理；请重新发送。",artifacts:[]});
   }
 
-  async persistAndSend(event,capability,draft) {
+  async persistAndSend(message,capability,draft) {
     validateDraft(draft);
+    const key=outcomeKey(message);
     const noReplyRequired=draft.reply===null;
-    await this.state.saveOutcome(event.sourceMessageId,{capability,status:draft.status,reply:draft.reply,artifacts:[...draft.artifacts],noReplyRequired,createdAt:new Date().toISOString()});
+    await this.state.saveOutcome(key,{
+      capability,status:draft.status,reply:draft.reply,artifacts:[...draft.artifacts],
+      noReplyRequired,replyTarget:message.replyTarget,createdAt:new Date().toISOString()
+    });
     if (noReplyRequired) return {handled:true,status:draft.status};
-    await this.send(event,capability,draft.reply); await this.state.markReplied(event.sourceMessageId);
+    await this.send(message,capability,draft.reply); await this.state.markReplied(key);
     return {handled:true,status:draft.status};
   }
 
-  async send(event,capability,text) {
-    const idempotencyKey=capability==="invoice"?`invoice-reply:${event.sourceMessageId}`:`reply:${event.sourceMessageId}`;
-    try { await this.messenger.send({capability,replyTarget:event.replyTarget,text,idempotencyKey}); } catch { throw new Error("message_send_failed"); }
+  async send(message,capability,text) {
+    const key=outcomeKey(message);
+    const idempotencyKey=capability==="invoice"?`invoice-reply:${key}`:`reply:${key}`;
+    try { await this.messenger.send({capability,replyTarget:message.replyTarget,text,idempotencyKey}); } catch { throw new Error("message_send_failed"); }
   }
 }
 
+export function outcomeKey(message) {
+  if (message?.source==="feishu") return message.sourceMessageId;
+  if (message?.source==="wechat") return `wechat:${message.sourceMessageId}`;
+  throw new Error("invalid_incoming_message");
+}
+
 function publicConversation(value) { return {capability:value.capability,question:value.question,startedAt:value.startedAt}; }
-function fallbackMessage(event) { return {sourceMessageId:event.messageId,replyTarget:createReplyTarget({source:"feishu",sourceMessageId:event.messageId,conversationId:event.chatId})}; }
+function fallbackMessage(event) {
+  if (event?.source&&event?.replyTarget) return event;
+  return {
+    source:"feishu",
+    sourceMessageId:event.messageId,
+    replyTarget:createReplyTarget({source:"feishu",sourceMessageId:event.messageId,conversationId:event.chatId})
+  };
+}
+function createBusinessMessage(message) {
+  if (message.source!=="wechat") return message;
+  const value=structuredClone(message);
+  value.replyTarget={
+    source:value.replyTarget.source,
+    sourceMessageId:value.replyTarget.sourceMessageId,
+    conversationId:value.replyTarget.conversationId
+  };
+  return value;
+}
 function deepseekInvoiceUnsupported() { return {status:"rejected",reply:"当前模型为 DeepSeek，但发票图片/PDF需要 Codex 视觉判断。\n本次未调用模型、未归档文件、未写入 Obsidian。\n请先发送：/llw-model codex\n然后重新提交发票。",artifacts:[]}; }
 function isBoundMalformed(raw,binding) { return raw&&typeof raw==="object"&&raw.sender_id===binding.senderId&&raw.chat_id===binding.chatId&&raw.chat_type==="p2p"&&typeof raw.message_id==="string"&&raw.message_id.length>0; }
 function validateDraft(draft) {
