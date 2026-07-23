@@ -72,6 +72,9 @@ test("keeps WeChat reply context out of Feishu targets and rejects raw or malfor
     {messageId:"1001",userId:"wx-owner",conversationId:"wx-owner",createTimeMs:1784851200000,type:"text",text:"",contextToken:"test-context"},
     {messageId:"1001",userId:"wx-owner",conversationId:"wx-owner",createTimeMs:1784851200000,type:"text",text:"x",contextToken:"test-context",group_id:"raw-group"},
     {messageId:"1001",userId:"wx-owner",conversationId:"wx-owner",createTimeMs:1784851200000,type:"image",contextToken:"test-context",
-      attachment:{type:"image",sourceAttachmentId:"media-1",displayName:"微信图片",extension:""},encrypt_query_param:"raw-cdn"}
+      attachment:{type:"image",sourceAttachmentId:"media-1",displayName:"微信图片",extension:""},encrypt_query_param:"raw-cdn"},
+    {messageId:"1".repeat(513),userId:"wx-owner",conversationId:"wx-owner",createTimeMs:1784851200000,type:"text",text:"x",contextToken:"test-context"},
+    {messageId:"1001",userId:"wx-owner",conversationId:"wx-owner",createTimeMs:1784851200000,type:"text",text:"x".repeat(32769),contextToken:"test-context"},
+    {messageId:"1001",userId:"wx-owner",conversationId:"wx-owner",createTimeMs:1784851200000,type:"text",text:"x",contextToken:"x".repeat(4097)}
   ]) assert.throws(()=>createWechatIncomingMessage(malformed),/invalid_incoming_message/);
 });
