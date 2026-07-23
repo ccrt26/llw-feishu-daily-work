@@ -27,6 +27,9 @@ test("daily-work Skill exposes the complete V3 business contract and versioned e
   assert.deepEqual(new Set(cases.map(item=>item.kind)),new Set(["positive","negative","boundary"]));
   assert.equal(new Set(cases.map(item=>item.id)).size,cases.length);
   for (const item of cases) {
+    const allowedRootKeys=["expected","id","input","kind","task"];
+    if (Object.hasOwn(item,"manual_review_criteria")) allowedRootKeys.push("manual_review_criteria");
+    assert.deepEqual(Object.keys(item).sort(),allowedRootKeys.sort());
     assert.equal(item.task,"daily-work.interpret");
     assert.equal(typeof item.id,"string");
     assert.deepEqual(Object.keys(item.input).sort(),["candidates","conversation","message"]);
@@ -52,7 +55,11 @@ test("daily-work Skill exposes the complete V3 business contract and versioned e
     },
     "daily-positive-multiturn-clarified-supplement":{
       kind:"positive",
-      expected:{action:"supplement_record",confidence:"high",target_record_id:"5555555555555555",source_text:"是周二的订单评审会"}
+      expected:{action:"supplement_record",confidence:"high",target_record_id:"5555555555555555",source_text:"是周二的订单评审会"},
+      manual_review_criteria:[
+        "每条 records[].original_text 必须来自上一轮真正包含补充事实的 user turn 的逐字连续片段。",
+        "records[].original_text 不能使用当前仅用于定位目标的 source_text，也不能复制 candidates 中的旧记录内容。"
+      ]
     },
     "daily-negative-active-cancel":{
       kind:"negative",
@@ -85,8 +92,13 @@ test("daily-work Skill exposes the complete V3 business contract and versioned e
     assert.equal(item.task,"daily-work.interpret");
     assert.equal(item.kind,contract.kind);
     assert.deepEqual(item.expected,contract.expected);
+    if (contract.manual_review_criteria) assert.deepEqual(item.manual_review_criteria,contract.manual_review_criteria);
+    else assert.equal(Object.hasOwn(item,"manual_review_criteria"),false);
   }
   assert.equal(cases.length>=12,true);
+  assert.deepEqual(cases.filter(item=>Object.hasOwn(item,"manual_review_criteria")).map(item=>item.id),[
+    "daily-positive-multiturn-clarified-supplement"
+  ]);
   const timed=byId.get("daily-positive-unique-timed-supplement");
   assert.match(timed.input.message.text,/下午4点30.*下午5点30/);
   assert.equal(timed.input.candidates.length,1);
@@ -107,10 +119,14 @@ test("daily-work Skill exposes the complete V3 business contract and versioned e
   assert.equal(activeCancel.input.conversation.turns.at(-1).role,"assistant");
   const yesterday=byId.get("daily-positive-beijing-yesterday");
   assert.match(yesterday.input.message.text,/昨天/);
+  const beijingDate=new Intl.DateTimeFormat("sv-SE",{timeZone:"Asia/Shanghai",year:"numeric",month:"2-digit",day:"2-digit"});
+  assert.equal(beijingDate.format(new Date(yesterday.input.message.createTime)),"2026-07-24");
   assert.equal(yesterday.expected.records[0].occurred_date,"2026-07-23");
   const explicitDate=byId.get("daily-positive-explicit-date-precedence");
   assert.match(explicitDate.input.message.text,/7月21日/);
+  assert.equal(beijingDate.format(new Date(explicitDate.input.message.createTime)),"2026-07-24");
   assert.equal(explicitDate.expected.records[0].occurred_date,"2026-07-21");
+  assert.notEqual(explicitDate.expected.records[0].occurred_date,"2026-07-24");
   const twoRecords=byId.get("daily-positive-two-independent-records");
   assert.equal(twoRecords.input.message.text.split("；").length,2);
   assert.equal(twoRecords.expected.records.length,2);

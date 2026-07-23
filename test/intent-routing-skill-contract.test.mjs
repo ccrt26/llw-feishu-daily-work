@@ -39,9 +39,13 @@ test("router Skill and business routing contracts expose one strict routing boun
   }
   assert.match(ui,/default_prompt: "Use \$feishu-intent-router /);
   const cases=evalText.trim().split("\n").map(line=>JSON.parse(line));
+  const canonicalContracts=new Map([[daily.capability,daily],[invoice.capability,invoice]]);
   assert.deepEqual(new Set(cases.map(item=>item.kind)),new Set(["positive","negative","boundary"]));
   assert.equal(new Set(cases.map(item=>item.id)).size,cases.length);
   for (const item of cases) {
+    const allowedRootKeys=["expected","id","input","kind","task"];
+    if (Object.hasOwn(item,"manual_review_criteria")) allowedRootKeys.push("manual_review_criteria");
+    assert.deepEqual(Object.keys(item).sort(),allowedRootKeys.sort());
     assert.equal(item.task,"router.text");
     assert.equal(typeof item.id,"string");
     assert.deepEqual(Object.keys(item.input).sort(),["capabilities","conversation","message"]);
@@ -52,6 +56,9 @@ test("router Skill and business routing contracts expose one strict routing boun
     for (const capability of item.input.capabilities) assert.deepEqual(Object.keys(capability).sort(),[
       "accepts","capability","negative_examples","positive_examples","purpose","supports_continuation"
     ]);
+    for (const capability of item.input.capabilities) assert.deepEqual(
+      capability,canonicalContracts.get(capability.capability),`${item.id} must use the canonical ${capability.capability} routing contract`
+    );
     assert.equal(typeof item.expected?.action,"string");
   }
   const byId=new Map(cases.map(item=>[item.id,item]));
@@ -74,7 +81,8 @@ test("router Skill and business routing contracts expose one strict routing boun
     },
     "router-negative-cancel-without-conversation":{
       kind:"negative",
-      expected:{action:"unsupported"}
+      expected:{action:"unsupported"},
+      manual_review_criteria:["模型输出的 reason 不得为 cancelled；没有活动会话时不能产生静默取消哨兵。"]
     },
     "router-boundary-invoice-new-task":{
       kind:"boundary",
@@ -91,8 +99,13 @@ test("router Skill and business routing contracts expose one strict routing boun
     assert.equal(item.task,"router.text");
     assert.equal(item.kind,contract.kind);
     assert.deepEqual(item.expected,contract.expected);
+    if (contract.manual_review_criteria) assert.deepEqual(item.manual_review_criteria,contract.manual_review_criteria);
+    else assert.equal(Object.hasOwn(item,"manual_review_criteria"),false);
   }
   assert.equal(cases.length>=10,true);
+  assert.deepEqual(cases.filter(item=>Object.hasOwn(item,"manual_review_criteria")).map(item=>item.id),[
+    "router-negative-cancel-without-conversation"
+  ]);
   assert.deepEqual(byId.get("router-positive-invoice-attachment").input.message,{
     type:"file",attachment:{displayName:"电子发票.pdf",extension:"pdf",resourceType:"file"},beijingTime:"2026-07-23 10:00:00"
   });
