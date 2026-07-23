@@ -38,12 +38,62 @@ test("router Skill and business routing contracts expose one strict routing boun
   }
   assert.match(ui,/default_prompt: "Use \$feishu-intent-router /);
   const cases=evalText.trim().split("\n").map(line=>JSON.parse(line));
-  assert.equal(cases.length>=3,true);
   assert.deepEqual(new Set(cases.map(item=>item.kind)),new Set(["positive","negative","boundary"]));
+  assert.equal(new Set(cases.map(item=>item.id)).size,cases.length);
   for (const item of cases) {
     assert.equal(item.task,"router.text");
     assert.equal(typeof item.id,"string");
+    assert.deepEqual(Object.keys(item.input).sort(),["capabilities","conversation","message"]);
     assert.equal(typeof item.input?.message?.type,"string");
+    assert.equal(Array.isArray(item.input?.capabilities),true);
+    assert.equal(item.input.capabilities.length>0&&item.input.capabilities.length<=20,true);
     assert.equal(typeof item.expected?.action,"string");
   }
+  const byId=new Map(cases.map(item=>[item.id,item]));
+  const required={
+    "router-positive-invoice-attachment":{
+      kind:"positive",
+      expected:{action:"route",capability:"invoice",confidence:"high",reason_code:"attachment_match"}
+    },
+    "router-negative-invoice-knowledge-question":{
+      kind:"negative",
+      expected:{action:"unsupported"}
+    },
+    "router-positive-daily-work-continuation":{
+      kind:"positive",
+      expected:{action:"route",capability:"daily-work",confidence:"high",reason_code:"continuation"}
+    },
+    "router-boundary-active-cancel":{
+      kind:"boundary",
+      expected:{action:"unsupported",reason:"cancelled"}
+    },
+    "router-negative-cancel-without-conversation":{
+      kind:"negative",
+      expected:{action:"unsupported",reason_not:"cancelled"}
+    },
+    "router-boundary-invoice-new-task":{
+      kind:"boundary",
+      expected:{action:"route",capability:"invoice",confidence:"high",reason_code:"new_task"}
+    },
+    "router-negative-disabled-daily-work":{
+      kind:"negative",
+      expected:{action:"unsupported"}
+    }
+  };
+  for (const [id,contract] of Object.entries(required)) {
+    const item=byId.get(id);
+    assert.ok(item,`missing eval case ${id}`);
+    assert.equal(item.task,"router.text");
+    assert.equal(item.kind,contract.kind);
+    assert.deepEqual(item.expected,contract.expected);
+  }
+  assert.equal(cases.length>=10,true);
+  assert.deepEqual(byId.get("router-positive-invoice-attachment").input.message,{
+    type:"file",attachment:{displayName:"电子发票.pdf",extension:"pdf",resourceType:"file"},beijingTime:"2026-07-23 10:00:00"
+  });
+  assert.equal(byId.get("router-positive-daily-work-continuation").input.conversation.capability,"daily-work");
+  assert.equal(byId.get("router-boundary-active-cancel").input.conversation.capability,"daily-work");
+  assert.equal(byId.get("router-negative-cancel-without-conversation").input.conversation,null);
+  assert.equal(byId.get("router-boundary-invoice-new-task").input.conversation.capability,"daily-work");
+  assert.deepEqual(byId.get("router-negative-disabled-daily-work").input.capabilities.map(item=>item.capability),["invoice"]);
 });
