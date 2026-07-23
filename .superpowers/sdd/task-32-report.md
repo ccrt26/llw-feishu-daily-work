@@ -2,7 +2,7 @@
 
 ## Status
 
-DONE
+DONE — independent final-review remediation passed
 
 ## Implementation
 
@@ -16,9 +16,10 @@ DONE
 
 ## Files
 
-- Added: `src/ai/deepseek-client.mjs`, `src/ai/ai-input-guard.mjs`, `test/deepseek-client.test.mjs`, `test/ai-input-guard.test.mjs`.
-- Updated: `src/config.mjs`, `src/core/dispatcher.mjs`, `src/core/semantic-tasks.mjs`, `src/main.mjs`, `src/migrate-config-v4.mjs`, `test/config.test.mjs`, `test/dispatcher.test.mjs`, `test/main-composition.test.mjs`, `test/migrate-config-v4.test.mjs`, `test/privacy.test.mjs`, `test/semantic-tasks.test.mjs`, and `test/service.test.mjs`.
+- Added: `src/ai/deepseek-client.mjs`, `src/ai/ai-input-guard.mjs`, `src/core/ai-failure.mjs`, `test/deepseek-client.test.mjs`, `test/ai-input-guard.test.mjs`.
+- Updated: `src/config.mjs`, `src/core/dispatcher.mjs`, `src/core/semantic-tasks.mjs`, `src/main.mjs`, `src/migrate-config-v4.mjs`, `src/service.mjs`, `test/config.test.mjs`, `test/dispatcher.test.mjs`, `test/main-composition.test.mjs`, `test/migrate-config-v4.test.mjs`, `test/privacy.test.mjs`, `test/semantic-tasks.test.mjs`, and `test/service.test.mjs`.
 - Implementation commit: `302a016` (`feat: add guarded DeepSeek text tasks`).
+- Final-review remediation commit: `28718d0` (`fix: enforce shared AI safety boundaries`).
 
 ## TDD chronology
 
@@ -29,10 +30,21 @@ DONE
 - Final URL-boundary RED: positive router/daily inputs containing `https://example.com/a` and `http://localhost/a` exposed the Windows-drive regex false positive (2/3 guard tests passed).
 - Final URL-boundary GREEN: adding a start boundary to the drive-letter alternative made the guard suite pass 3/3 while existing `C:\\`, `Z:/`, POSIX, and UNC rejection cases remained covered.
 
+## Independent final-review remediation
+
+- A fresh independent final review correctly returned Not ready after the initial implementation. It identified one Critical issue (the guard applied only to DeepSeek), two Important issues (daily output Schema constraints were not deterministically executed, and safe failure replies lost the V3 classifications), and one Minor issue (some malformed dates/collection elements leaked native errors).
+- RED: the focused remediation suite failed 15 checks covering those findings.
+- GREEN: the same focused area first passed 64/64, then expanded to 67/67 with direct zero-client/zero-Key/zero-network/zero-write and both-model reply-matrix evidence.
+- The common guard now runs before either Codex or DeepSeek for both text tasks. It rejects `我的密码是 hunter2`, `短信验证码是 123456`, `银行卡是 4111 1111 1111 1111`, and `绝密项目资料` in both Router and daily-work paths. The prior test that allowed token/password text into Codex was removed and replaced with allowed-text compatibility checks.
+- DeepSeek daily-work output is now recursively checked against every constraint kind used by the current Schema—object/array/string type, required fields, additional properties, enum, pattern, min/max length, max items, and array items—before the existing `validateAction` business validator runs. Schema-invalid output maps to `deepseek_output_invalid` and has explicit zero business/model-write coverage.
+- Router and daily-work now preserve the V3 fixed sensitive-input and actual-model failure replies. Both Codex and DeepSeek variants are asserted end to end, including no automatic switch and no business/model write.
+- Daily input preparation moved behind the safe guard boundary. Invalid finite dates and null capability/candidate/turn elements now map to `ai_input_rejected` before Skill, Keychain, or network work.
+- After the fixes, an independent read-only re-review returned Ready with no Critical, Important, or Minor findings. Its final focused reply-matrix check passed 32/32 and did not mutate the worktree.
+
 ## Verification
 
-- Final full regression: `/usr/local/bin/npm test` — 212 passed, 0 failed (exit 0).
-- Final independent review: Ready; no remaining Critical or Important findings. Reviewer-focused guard/config/dispatcher/semantic/privacy tests passed 40/40 and loopback DeepSeek tests passed 18/18.
+- Final full regression after remediation: `/usr/local/bin/npm test` — 224 passed, 0 failed (exit 0).
+- Final independent review: Ready; no remaining Critical, Important, or Minor findings.
 - `node --check` passed for every added or changed source module.
 - `git diff --check` completed without output.
 - `/usr/local/bin/npm ls --depth=0` reported no dependencies.
@@ -49,4 +61,4 @@ DONE
 
 ## Concerns
 
-- None for Task 3.2. Production enablement and real credentials remain intentionally out of scope and require later explicit authorization and acceptance work.
+- None remaining after the independent final-review remediation. Production enablement and real credentials remain intentionally out of scope and require later explicit authorization and acceptance work.
