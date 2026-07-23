@@ -127,7 +127,7 @@
 - Consumes: 现有 `createReplyTarget({source,sourceMessageId,conversationId})`、`createFeishuIncomingMessage(event)` 和 `checkSecurity(event,binding)`。
 - Produces: `createWechatIncomingMessage(event): IncomingMessage`；`createReplyTarget()` 对微信额外接受 `contextToken`；`checkIncomingSecurity(message,bindings)` 返回现有 `{ok:true}` 或 `{ok:false,reason,notify:false}`。
 
-- [ ] **Step 1: 写微信内部契约失败测试**
+- [x] **Step 1: 写微信内部契约失败测试**
 
   测试输入使用假值并断言精确输出：
 
@@ -145,7 +145,7 @@
   });
   ```
 
-- [ ] **Step 2: 运行测试并确认 RED**
+- [x] **Step 2: 运行测试并确认 RED**
 
   Run:
 
@@ -155,7 +155,7 @@
 
   Expected: FAIL，原因是 `createWechatIncomingMessage` / `checkIncomingSecurity` 尚不存在。
 
-- [ ] **Step 3: 实现最小双入口类型与安全门**
+- [x] **Step 3: 实现最小双入口类型与安全门**
 
   实现并只导出以下签名：
 
@@ -169,11 +169,11 @@
 
   `createWechatIncomingMessage` 只接受 `text | image | file` 的已清洗事件；`checkIncomingSecurity` 只检查 `bindings[message.source]` 的 owner/conversation，不读取模型、Keychain 或业务状态。
 
-- [ ] **Step 4: 运行测试并确认 GREEN**
+- [x] **Step 4: 运行测试并确认 GREEN**
 
   Run 同 Step 2。Expected: PASS，且全部既有飞书断言不变。
 
-- [ ] **Step 5: 提交独立契约变更**
+- [x] **Step 5: 提交独立契约变更**
 
   ```bash
   git add src/core/incoming-message.mjs src/core/security-gate.mjs test/incoming-message.test.mjs test/core-routing.test.mjs
@@ -246,11 +246,11 @@ RED 必须证明当前代码无法构造/校验微信消息；GREEN 后断言业
 - Consumes: Task 4.2 的 `IncomingMessage`、`ReplyTarget`、`checkIncomingSecurity()`。
 - Produces: `Dispatcher.handleIncomingMessage(message)`；`outcomeKey(message)`；新 outcome 可选 `replyTarget`；历史飞书 outcome 兼容恢复。
 
-- [ ] **Step 1: 写共享队列、来源去重和恢复回复失败测试**
+- [x] **Step 1: 写共享队列、来源去重和恢复回复失败测试**
 
   使用同一 harness 提交 `feishu:m1`、`wechat:m1`、重复 `wechat:m1`，断言前两条各处理一次、第三条为 duplicate；模拟保存后发送失败并重新打开 `StateStore`，断言恢复目标仍为微信。
 
-- [ ] **Step 2: 运行测试并确认 RED**
+- [x] **Step 2: 运行测试并确认 RED**
 
   ```bash
   node --test test/dispatcher.test.mjs test/state-store.test.mjs test/model-command.test.mjs
@@ -258,7 +258,7 @@ RED 必须证明当前代码无法构造/校验微信消息；GREEN 后断言业
 
   Expected: FAIL，因为当前 dispatcher 只接受飞书 raw event 且恢复时固定构造飞书目标。
 
-- [ ] **Step 3: 实现来源感知但非通用化的核心**
+- [x] **Step 3: 实现来源感知但非通用化的核心**
 
   固定签名和键规则：
 
@@ -278,11 +278,11 @@ RED 必须证明当前代码无法构造/校验微信消息；GREEN 后断言业
 
   `handleRawEvent(raw)` 继续完成飞书原始标准化/畸形处理后调用 `handleIncomingMessage`；`saveOutcome` 保存 `replyTarget`，`resumeReplies` 优先使用保存值，旧记录缺失时使用飞书兼容目标。
 
-- [ ] **Step 4: 运行测试并确认 GREEN**
+- [x] **Step 4: 运行测试并确认 GREEN**
 
   Run 同 Step 2。Expected: PASS；自然语言模型切换仍为 null，三个精确命令两入口相同。
 
-- [ ] **Step 5: 提交核心收敛**
+- [x] **Step 5: 提交核心收敛**
 
   ```bash
   git add src/core/dispatcher.mjs src/state-store.mjs src/core/model-command.mjs test/dispatcher.test.mjs test/state-store.test.mjs test/model-command.test.mjs
@@ -346,7 +346,7 @@ node --test test/dispatcher.test.mjs test/state-store.test.mjs test/model-comman
 - Consumes: Node `fetch`、`node:crypto`、`execFile("/usr/bin/security", ...)`；Task 4.1 固定的腾讯协议提交。
 - Produces: `wechatApi` 的 QR/getUpdates/send/download 方法、`decryptWechatMedia()`；`runWechatBind()`；version 4 配置的四个微信字段；权限 `0600` 的 channel state。
 
-- [ ] **Step 1: 写 API、配置和绑定失败测试**
+- [x] **Step 1: 写 API、配置和绑定失败测试**
 
   测试固定以下公开接口，不使用真实网络/钥匙串：
 
@@ -366,7 +366,7 @@ node --test test/dispatcher.test.mjs test/state-store.test.mjs test/model-comman
   }
   ```
 
-- [ ] **Step 2: 运行测试并确认 RED**
+- [x] **Step 2: 运行测试并确认 RED**
 
   ```bash
   node --test test/wechat-api.test.mjs test/wechat-bind.test.mjs test/config.test.mjs
@@ -374,7 +374,7 @@ node --test test/dispatcher.test.mjs test/state-store.test.mjs test/model-comman
 
   Expected: FAIL，原因是新模块/字段不存在。
 
-- [ ] **Step 3: 实现直接 HTTPS 和手工绑定**
+- [x] **Step 3: 实现直接 HTTPS 和手工绑定**
 
   只实现这些导出：
 
@@ -391,7 +391,7 @@ node --test test/dispatcher.test.mjs test/state-store.test.mjs test/model-comman
 
   HTTP 响应先检查状态、`content-type` 和最大 JSON/媒体字节；token 仅作为 `Authorization: Bearer ...` 请求头值存在于内存。`runWechatBind` 只在确认状态后写 Keychain，再原子写无 token 的 channel state。
 
-- [ ] **Step 4: 运行测试并确认 GREEN**
+- [x] **Step 4: 运行测试并确认 GREEN**
 
   Run 同 Step 2。Expected: PASS；假 token 不出现在 state、stdout、stderr 和错误字符串。
 
@@ -405,7 +405,7 @@ node --test test/dispatcher.test.mjs test/state-store.test.mjs test/model-comman
 
   Expected stdout 仅含 `bind_ok=true` 与 `p2p_owner_ok=true`；本步骤不启用 `wechatEnabled`。
 
-- [ ] **Step 6: 提交鉴权边界**
+- [x] **Step 6: 提交鉴权边界**
 
   ```bash
   git add src/adapters/wechat-api.mjs src/wechat-bind.mjs src/config.mjs test/wechat-api.test.mjs test/wechat-bind.test.mjs test/config.test.mjs
@@ -478,11 +478,11 @@ node --test test/wechat-api.test.mjs test/wechat-bind.test.mjs test/config.test.
 - Consumes: Task 4.4 的 `createWechatApi()` 和受保护 channel state；Task 4.2 的 `createWechatIncomingMessage()`。
 - Produces: `startWechatListener({api,state,binding,onMessage,onError})`；`createWechatMessenger({api,boundUserId})`；`createChannelMessenger({feishu,wechat})`。
 
-- [ ] **Step 1: 写 runtime、回复和二分 messenger 失败测试**
+- [x] **Step 1: 写 runtime、回复和二分 messenger 失败测试**
 
   假 `getUpdates` 依次返回本人文字、其他用户、群消息、机器人消息、未完成消息和重复消息；断言只把本人完成态文字交给 `onMessage`。回复测试断言 `to_user_id` 与绑定本人一致并原样带回测试 `contextToken`。
 
-- [ ] **Step 2: 运行测试并确认 RED**
+- [x] **Step 2: 运行测试并确认 RED**
 
   ```bash
   node --test test/wechat-runtime.test.mjs test/wechat-reply.test.mjs test/channel-messenger.test.mjs test/incoming-message.test.mjs
@@ -490,7 +490,7 @@ node --test test/wechat-api.test.mjs test/wechat-bind.test.mjs test/config.test.
 
   Expected: FAIL，因为三个适配器不存在。
 
-- [ ] **Step 3: 实现最小入口生命周期**
+- [x] **Step 3: 实现最小入口生命周期**
 
   固定导出：
 
@@ -516,11 +516,11 @@ node --test test/wechat-api.test.mjs test/wechat-bind.test.mjs test/config.test.
 
   `startWechatListener` 的循环必须在内部捕获网络错误并调用脱敏 `onError`；鉴权失效令 `done` 正常结束微信部分，不 throw 到飞书主等待链。
 
-- [ ] **Step 4: 运行测试并确认 GREEN**
+- [x] **Step 4: 运行测试并确认 GREEN**
 
   Run 同 Step 2。Expected: PASS；群/他人/机器人/视频/语音均 0 Router、0回复。
 
-- [ ] **Step 5: 提交文字入口**
+- [x] **Step 5: 提交文字入口**
 
   ```bash
   git add src/adapters/wechat-runtime.mjs src/adapters/wechat-reply.mjs src/adapters/channel-messenger.mjs src/core/incoming-message.mjs test/wechat-runtime.test.mjs test/wechat-reply.test.mjs test/channel-messenger.test.mjs
@@ -581,11 +581,11 @@ node --test test/wechat-runtime.test.mjs test/wechat-reply.test.mjs test/channel
 - Consumes: Task 4.5 runtime 的当前消息资源表；Task 4.4 的 `downloadEncryptedMedia()` / `decryptWechatMedia()`；现有 `createInvoiceCapability({download,...})`。
 - Produces: `downloadWechatResource({resourceId,tempRoot,maxFileBytes,timeoutMs}) -> {tempDir,file}`；invoice 下载调用新增 `source`。
 
-- [ ] **Step 1: 写加密媒体和共用 invoice 失败测试**
+- [x] **Step 1: 写加密媒体和共用 invoice 失败测试**
 
   用固定 16-byte 测试 key 加密一张最小 PNG 和一个最小 PDF；假 HTTPS 返回密文。断言 downloader 解密为一个普通文件，capability 继续调用现有 inspector/writer，`finally` 删除 job。
 
-- [ ] **Step 2: 运行测试并确认 RED**
+- [x] **Step 2: 运行测试并确认 RED**
 
   ```bash
   node --test test/wechat-resource-downloader.test.mjs test/invoice-resource-marker.test.mjs test/invoice-capability.test.mjs
@@ -593,7 +593,7 @@ node --test test/wechat-runtime.test.mjs test/wechat-reply.test.mjs test/channel
 
   Expected: FAIL，因为微信 downloader 和来源分支不存在。
 
-- [ ] **Step 3: 实现微信媒体下载而不复制业务逻辑**
+- [x] **Step 3: 实现微信媒体下载而不复制业务逻辑**
 
   固定导出和调用形状：
 
@@ -622,11 +622,11 @@ node --test test/wechat-runtime.test.mjs test/wechat-reply.test.mjs test/channel
 
   不允许第三种 source；解密输出仍交现有 `inspectInvoiceFile`、PDF preparer、Codex visual、validator 和 archive writer。
 
-- [ ] **Step 4: 运行测试并确认 GREEN**
+- [x] **Step 4: 运行测试并确认 GREEN**
 
   Run 同 Step 2。Expected: PASS；成功、失败、超时后 temp job 均不存在。
 
-- [ ] **Step 5: 提交媒体入口**
+- [x] **Step 5: 提交媒体入口**
 
   ```bash
   git add src/adapters/wechat-resource-downloader.mjs src/capabilities/invoice/capability.mjs src/capabilities/invoice/resource-marker.mjs src/main.mjs test/wechat-resource-downloader.test.mjs test/invoice-capability.test.mjs test/invoice-resource-marker.test.mjs
@@ -687,11 +687,11 @@ node --test test/wechat-resource-downloader.test.mjs test/invoice-resource-marke
 - Consumes: Tasks 4.3–4.6 的共享 dispatcher、微信 runtime、二分 messenger 和 downloader。
 - Produces: `main.mjs` 的单进程双入口组合；`wechatEnabled=false` 的零读取/零网络保证。
 
-- [ ] **Step 1: 写组合和故障隔离失败测试**
+- [x] **Step 1: 写组合和故障隔离失败测试**
 
   在 `test/main-composition.test.mjs` 注入微信 state/keychain/fetch spies；分别以开关 false、初始化失败、轮询失败运行，断言 false 时调用数全为 0，失败时飞书 `onEvent` 仍可调用同一 dispatcher。
 
-- [ ] **Step 2: 运行测试并确认 RED**
+- [x] **Step 2: 运行测试并确认 RED**
 
   ```bash
   node --test test/main-composition.test.mjs test/config.test.mjs test/dispatcher.test.mjs test/lark-runtime.test.mjs
@@ -699,7 +699,7 @@ node --test test/wechat-resource-downloader.test.mjs test/invoice-resource-marke
 
   Expected: FAIL，因为 `main.mjs` 尚未组合微信。
 
-- [ ] **Step 3: 实现默认关闭的单进程组合**
+- [x] **Step 3: 实现默认关闭的单进程组合**
 
   组合顺序固定为：
 
@@ -719,11 +719,11 @@ node --test test/wechat-resource-downloader.test.mjs test/invoice-resource-marke
 
   主进程继续等待 `larkListener.done`；`wechatListener.done` 只挂脱敏错误处理，不成为主退出条件。shutdown 先停止微信（若存在），再按现有方式停止飞书。
 
-- [ ] **Step 4: 运行测试并确认 GREEN**
+- [x] **Step 4: 运行测试并确认 GREEN**
 
   Run 同 Step 2。Expected: PASS；`git diff -- deploy/com.llw.feishu-daily-work.plist` 无输出。
 
-- [ ] **Step 5: 提交生产组合**
+- [x] **Step 5: 提交生产组合**
 
   ```bash
   git add src/main.mjs src/config.mjs test/main-composition.test.mjs test/config.test.mjs
@@ -778,7 +778,7 @@ node --test test/main-composition.test.mjs test/config.test.mjs test/dispatcher.
 - Consumes: Tasks 4.2–4.7 全部离线实现、现有 Skills和测试工具。
 - Produces: 0 fail 的完整回归、双入口等价证据、固定失败证据和空临时目录。
 
-- [ ] **Step 1: 运行完整回归并记录精确计数**
+- [x] **Step 1: 运行完整回归并记录精确计数**
 
   ```bash
   /usr/local/bin/npm test
@@ -786,7 +786,7 @@ node --test test/main-composition.test.mjs test/config.test.mjs test/dispatcher.
 
   Expected: 全部 PASS、0 FAIL；记录总数，不沿用阶段三 240/240 作为新结果。
 
-- [ ] **Step 2: 运行双入口等价集成测试**
+- [x] **Step 2: 运行双入口等价集成测试**
 
   ```bash
   node --test test/dispatcher.test.mjs test/service.test.mjs test/invoice-capability.test.mjs test/ai-input-guard.test.mjs
@@ -794,7 +794,7 @@ node --test test/main-composition.test.mjs test/config.test.mjs test/dispatcher.
 
   Expected: 同一脱敏文字/附件输入除 `ReplyTarget` 外得到相同 Router input、capability、draft 和测试 Vault业务结果。
 
-- [ ] **Step 3: 在 `/private/tmp` 执行测试 Vault 场景**
+- [x] **Step 3: 在 `/private/tmp` 执行测试 Vault 场景**
 
   测试配置必须使用：
 
@@ -807,7 +807,7 @@ node --test test/main-composition.test.mjs test/config.test.mjs test/dispatcher.
 
   微信协议和 Keychain 均注入假实现；执行文字、图片、PDF、重复、下载失败、守卫命中和微信停止场景。Expected: 正式 Vault文件计数/哈希不变。
 
-- [ ] **Step 4: 扫描泄露和临时残留**
+- [x] **Step 4: 扫描泄露和临时残留**
 
   ```bash
   rg -n 'Bearer |bot_token|context_token|ilink_user_id|encrypt_query_param|aes_key' src test docs
@@ -816,12 +816,23 @@ node --test test/main-composition.test.mjs test/config.test.mjs test/dispatcher.
 
   Expected: 第一条只命中协议字段名/假 fixture，不命中实际值；第二条没有未说明的 job。
 
-- [ ] **Step 5: 提交测试证据更新**
+- [x] **Step 5: 提交测试证据更新**
 
   ```bash
   git add docs/superpowers/plans/2026-07-24-v32-phase4-wechat-second-entry.md
   git commit -m "test: record phase four offline gates"
   ```
+
+**离线执行证据（2026-07-24）**
+
+- 完整回归：`270/270` PASS，`0` fail。
+- 双入口等价集：`67/67` PASS，`0` fail；两入口继续共用 Router、capability、模型状态、业务写入器和队列。
+- `/private/tmp` 测试 Vault：使用 `wechatEnabled=true`、`deepseekEnabled=false`、假微信协议和假 Keychain，相关文字、图片、PDF、重复、下载失败、安全守卫、停止/隔离用例 `99/99` PASS。
+- 正式业务资料前后均为 `20` 个文件，聚合 SHA-256 均为 `be03538d4e199b846ae04ab9176542c04dfa3db03f66c89bc3459e3145d2e2ff`；未修改正式 Vault。
+- 泄露扫描只命中协议字段、实现中的运行时请求头和明确的测试 fixture；未发现真实 token、平台标识或实例值。
+- `/private/tmp` 测试 Vault、测试配置和所有 `llw-wechat-*` 临时目录已清除；未留下 `job-*`。
+- 微信接入未改变三个语义任务的输入形状，因此未重复调用正式 DeepSeek 22 条评测，沿用阶段三已通过的 `22/22`。
+- 本证据只通过离线门禁；未执行真实扫码、生产 Keychain 写入、生产部署或正式 Vault 验收。
 
 **当前问题**
 
