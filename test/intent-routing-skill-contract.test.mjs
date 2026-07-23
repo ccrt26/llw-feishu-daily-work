@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {readFile} from "node:fs/promises";
+import {guardAiInput} from "../src/ai/ai-input-guard.mjs";
 
 const workspace="/Volumes/ZHUTONG/LLW的私人助手/LLW";
 
@@ -47,6 +48,10 @@ test("router Skill and business routing contracts expose one strict routing boun
     assert.equal(typeof item.input?.message?.type,"string");
     assert.equal(Array.isArray(item.input?.capabilities),true);
     assert.equal(item.input.capabilities.length>0&&item.input.capabilities.length<=20,true);
+    assert.doesNotThrow(()=>guardAiInput(item.task,item.input),`guard rejected ${item.id}`);
+    for (const capability of item.input.capabilities) assert.deepEqual(Object.keys(capability).sort(),[
+      "accepts","capability","negative_examples","positive_examples","purpose","supports_continuation"
+    ]);
     assert.equal(typeof item.expected?.action,"string");
   }
   const byId=new Map(cases.map(item=>[item.id,item]));
@@ -69,7 +74,7 @@ test("router Skill and business routing contracts expose one strict routing boun
     },
     "router-negative-cancel-without-conversation":{
       kind:"negative",
-      expected:{action:"unsupported",reason_not:"cancelled"}
+      expected:{action:"unsupported"}
     },
     "router-boundary-invoice-new-task":{
       kind:"boundary",
@@ -91,9 +96,26 @@ test("router Skill and business routing contracts expose one strict routing boun
   assert.deepEqual(byId.get("router-positive-invoice-attachment").input.message,{
     type:"file",attachment:{displayName:"电子发票.pdf",extension:"pdf",resourceType:"file"},beijingTime:"2026-07-23 10:00:00"
   });
-  assert.equal(byId.get("router-positive-daily-work-continuation").input.conversation.capability,"daily-work");
-  assert.equal(byId.get("router-boundary-active-cancel").input.conversation.capability,"daily-work");
-  assert.equal(byId.get("router-negative-cancel-without-conversation").input.conversation,null);
-  assert.equal(byId.get("router-boundary-invoice-new-task").input.conversation.capability,"daily-work");
-  assert.deepEqual(byId.get("router-negative-disabled-daily-work").input.capabilities.map(item=>item.capability),["invoice"]);
+  const knowledge=byId.get("router-negative-invoice-knowledge-question");
+  assert.equal(knowledge.input.message.type,"text");
+  assert.match(knowledge.input.message.text,/发票.*区别/);
+  assert.equal(Object.hasOwn(knowledge.input.message,"attachment"),false);
+  const continuation=byId.get("router-positive-daily-work-continuation");
+  assert.equal(continuation.input.message.text,"16:30开始，17:30结束");
+  assert.match(continuation.input.conversation.question,/具体时间/);
+  assert.equal(continuation.input.conversation.capability,"daily-work");
+  assert.equal(continuation.input.capabilities.find(item=>item.capability==="daily-work").supports_continuation,true);
+  const activeCancel=byId.get("router-boundary-active-cancel");
+  assert.match(activeCancel.input.message.text,/取消/);
+  assert.equal(activeCancel.input.conversation.capability,"daily-work");
+  const inactiveCancel=byId.get("router-negative-cancel-without-conversation");
+  assert.match(inactiveCancel.input.message.text,/取消/);
+  assert.equal(inactiveCancel.input.conversation,null);
+  const newTask=byId.get("router-boundary-invoice-new-task");
+  assert.equal(newTask.input.conversation.capability,"daily-work");
+  assert.equal(newTask.input.message.type,"file");
+  assert.deepEqual(newTask.input.message.attachment,{displayName:"差旅电子发票.pdf",extension:"pdf",resourceType:"file"});
+  const disabledDaily=byId.get("router-negative-disabled-daily-work");
+  assert.match(disabledDaily.input.message.text,/测试环境巡检/);
+  assert.deepEqual(disabledDaily.input.capabilities.map(item=>item.capability),["invoice"]);
 });
