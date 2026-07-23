@@ -5,6 +5,15 @@ import {guardAiInput} from "../src/ai/ai-input-guard.mjs";
 
 const skillRoot="/Volumes/ZHUTONG/LLW的私人助手/LLW/.agents/skills/feishu-daily-work";
 
+function assertExpectedFieldsUseSchema(schema,value,path) {
+  for (const [field,expected] of Object.entries(value)) {
+    const property=schema.properties?.[field];
+    assert.ok(property,`${path}.${field} is not a daily-work output schema field`);
+    if (Array.isArray(expected)) for (const [index,item] of expected.entries()) assertExpectedFieldsUseSchema(property.items,item,`${path}.${field}[${index}]`);
+    else if (expected&&typeof expected==="object") assertExpectedFieldsUseSchema(property,expected,`${path}.${field}`);
+  }
+}
+
 test("daily-work Skill exposes the complete V3 business contract and versioned evals",async () => {
   const [skill,schema,routing,evalText]=await Promise.all([
     readFile(`${skillRoot}/SKILL.md`,"utf8"),
@@ -42,6 +51,7 @@ test("daily-work Skill exposes the complete V3 business contract and versioned e
       "date","follow_ups","location","occurred_end_time","occurred_time","people","record_id","summary","title"
     ]);
     assert.equal(typeof item.expected?.action,"string");
+    assertExpectedFieldsUseSchema(schema,item.expected,`${item.id}.expected`);
   }
   const byId=new Map(cases.map(item=>[item.id,item]));
   const required={
@@ -95,7 +105,7 @@ test("daily-work Skill exposes the complete V3 business contract and versioned e
     if (contract.manual_review_criteria) assert.deepEqual(item.manual_review_criteria,contract.manual_review_criteria);
     else assert.equal(Object.hasOwn(item,"manual_review_criteria"),false);
   }
-  assert.equal(cases.length>=12,true);
+  assert.equal(cases.length,12);
   assert.deepEqual(cases.filter(item=>Object.hasOwn(item,"manual_review_criteria")).map(item=>item.id),[
     "daily-positive-multiturn-clarified-supplement"
   ]);

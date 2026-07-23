@@ -102,7 +102,7 @@ test("router Skill and business routing contracts expose one strict routing boun
     if (contract.manual_review_criteria) assert.deepEqual(item.manual_review_criteria,contract.manual_review_criteria);
     else assert.equal(Object.hasOwn(item,"manual_review_criteria"),false);
   }
-  assert.equal(cases.length>=10,true);
+  assert.equal(cases.length,10);
   assert.deepEqual(cases.filter(item=>Object.hasOwn(item,"manual_review_criteria")).map(item=>item.id),[
     "router-negative-cancel-without-conversation"
   ]);
