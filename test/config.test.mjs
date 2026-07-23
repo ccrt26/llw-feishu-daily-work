@@ -12,6 +12,8 @@ function config(overrides = {}) {
     stateFile: "/Users/test/state.json", heartbeatFile: "/Users/test/heartbeat.json",
     modelStateFile: "/Users/test/model-state", deepseekEnabled: false,
     deepseekModel:"deepseek-v4-pro",deepseekKeychainService:"com.llw.deepseek-api",deepseekKeychainAccount:"llw-assistant",
+    wechatEnabled:false,wechatStateFile:"/Users/test/wechat-state.json",
+    wechatKeychainService:"com.llw.wechat-ilink",wechatKeychainAccount:"llw-assistant",
     cliPath: "/Users/test/bin/lark-cli", codexPath: "/Applications/ChatGPT.app/codex",
     profile: "llw-private", senderId: "user-1", chatId: "chat-1",
     capabilities:{
@@ -40,6 +42,9 @@ test("saves mode-0600 config and validates required absolute paths", async () =>
   await assert.rejects(async () => saveConfig(file, config({deepseekModel:"deepseek-v4-flash"})), /invalid_deepseek_model/);
   await assert.rejects(async () => saveConfig(file, config({deepseekModel:"deepseek-chat"})), /invalid_deepseek_model/);
   await assert.rejects(async () => saveConfig(file, config({deepseekKeychainService:""})), /invalid_deepseek_keychain_name/);
+  await assert.rejects(async () => saveConfig(file, config({wechatEnabled:"false"})), /invalid_wechat_enabled/);
+  await assert.rejects(async () => saveConfig(file, config({wechatStateFile:"relative"})), /invalid_config_path:wechatStateFile/);
+  await assert.rejects(async () => saveConfig(file, config({wechatKeychainService:""})), /invalid_wechat_keychain_name/);
   await assert.rejects(async () => saveConfig(file, {...config(),deepseekBaseUrl:"https:\/\/example.com"}), /unknown_config_field/);
   for (const modelStateFile of [config().stateFile,config().heartbeatFile,config().cliPath,config().codexPath,config().capabilities.invoice.pdfInfoPath]) {
     await assert.rejects(async () => saveConfig(file, config({modelStateFile})), /invalid_model_state_file_alias/);
@@ -52,11 +57,24 @@ test("saves mode-0600 config and validates required absolute paths", async () =>
 test("loads deployed version-4 config without model or DeepSeek connection fields using safe disabled defaults",async () => {
   const dir=await mkdtemp(join(tmpdir(),"llw-config-legacy-v4-")); const file=join(dir,"config.json");
   try {
-    const {modelStateFile,deepseekEnabled,deepseekModel,deepseekKeychainService,deepseekKeychainAccount,...legacy}=config();
+    const {
+      modelStateFile,deepseekEnabled,deepseekModel,deepseekKeychainService,deepseekKeychainAccount,
+      wechatEnabled,wechatStateFile,wechatKeychainService,wechatKeychainAccount,
+      ...legacy
+    }=config();
     await writeFile(file,`${JSON.stringify(legacy)}\n`,{mode:0o600});
-    assert.deepEqual(await loadConfig(file),{...legacy,modelStateFile:"/Users/test/model-state",deepseekEnabled:false,deepseekModel:"deepseek-v4-pro",deepseekKeychainService:"com.llw.deepseek-api",deepseekKeychainAccount:"llw-assistant"});
+    assert.deepEqual(await loadConfig(file),{
+      ...legacy,
+      modelStateFile:"/Users/test/model-state",
+      deepseekEnabled:false,deepseekModel:"deepseek-v4-pro",
+      deepseekKeychainService:"com.llw.deepseek-api",deepseekKeychainAccount:"llw-assistant",
+      wechatEnabled:false,wechatStateFile:"/Users/test/wechat-state.json",
+      wechatKeychainService:"com.llw.wechat-ilink",wechatKeychainAccount:"llw-assistant"
+    });
     await writeFile(file,`${JSON.stringify({...legacy,deepseekEnabled:true})}\n`,{mode:0o600});
     assert.equal((await loadConfig(file)).deepseekEnabled,false);
+    await writeFile(file,`${JSON.stringify({...legacy,wechatEnabled:true})}\n`,{mode:0o600});
+    assert.equal((await loadConfig(file)).wechatEnabled,false);
     await assert.rejects(()=>saveConfig(file,legacy),/missing_config_field/);
   } finally { await rm(dir,{recursive:true,force:true}); }
 });
