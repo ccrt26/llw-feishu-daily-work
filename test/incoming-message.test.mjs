@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {createFeishuIncomingMessage,createReplyTarget} from "../src/core/incoming-message.mjs";
+import {createFeishuIncomingMessage,createReplyTarget,createWechatIncomingMessage} from "../src/core/incoming-message.mjs";
 
 const event={eventId:"e1",messageId:"m1",senderId:"u1",chatId:"c1",chatType:"p2p",messageType:"image",content:"![Image](img_abc)",createTimeMs:1784426400000};
 
@@ -43,4 +43,35 @@ test("rejects malformed platform attachments and invalid reply targets",() => {
   ]) assert.throws(()=>createFeishuIncomingMessage(malformed),/invalid_incoming_message/);
   assert.throws(()=>createReplyTarget({source:"feishu",sourceMessageId:"",conversationId:"c1"}),/invalid_reply_target/);
   assert.throws(()=>createReplyTarget({source:"email",sourceMessageId:"m1",conversationId:"c1"}),/invalid_reply_target/);
+});
+
+test("converts one sanitized WeChat text event to the exact minimal internal contract",() => {
+  const message=createWechatIncomingMessage({
+    messageId:"1001",userId:"wx-owner",conversationId:"wx-owner",
+    createTimeMs:1784851200000,type:"text",text:"今天完成评审",
+    contextToken:"test-context"
+  });
+  assert.deepEqual(message,{
+    source:"wechat",sourceMessageId:"1001",userId:"wx-owner",
+    conversationId:"wx-owner",receivedAt:"2026-07-24T00:00:00.000Z",
+    text:"今天完成评审",attachments:[],
+    replyTarget:{source:"wechat",sourceMessageId:"1001",conversationId:"wx-owner",contextToken:"test-context"}
+  });
+  assert.equal(message.contextToken,undefined);
+});
+
+test("keeps WeChat reply context out of Feishu targets and rejects raw or malformed WeChat events",() => {
+  assert.deepEqual(createReplyTarget({
+    source:"feishu",sourceMessageId:"m1",conversationId:"c1",contextToken:"must-not-copy"
+  }),{source:"feishu",sourceMessageId:"m1",conversationId:"c1"});
+  assert.throws(()=>createReplyTarget({
+    source:"wechat",sourceMessageId:"1001",conversationId:"wx-owner"
+  }),/invalid_reply_target/);
+  for (const malformed of [
+    {messageId:"1001",userId:"wx-owner",conversationId:"wx-owner",createTimeMs:1784851200000,type:"voice",text:"x",contextToken:"test-context"},
+    {messageId:"1001",userId:"wx-owner",conversationId:"wx-owner",createTimeMs:1784851200000,type:"text",text:"",contextToken:"test-context"},
+    {messageId:"1001",userId:"wx-owner",conversationId:"wx-owner",createTimeMs:1784851200000,type:"text",text:"x",contextToken:"test-context",group_id:"raw-group"},
+    {messageId:"1001",userId:"wx-owner",conversationId:"wx-owner",createTimeMs:1784851200000,type:"image",contextToken:"test-context",
+      attachment:{type:"image",sourceAttachmentId:"media-1",displayName:"微信图片",extension:""},encrypt_query_param:"raw-cdn"}
+  ]) assert.throws(()=>createWechatIncomingMessage(malformed),/invalid_incoming_message/);
 });

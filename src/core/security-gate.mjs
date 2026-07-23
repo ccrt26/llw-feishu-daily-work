@@ -6,6 +6,15 @@ export function checkSecurity(event, binding) {
   return {ok: true};
 }
 
+export function checkIncomingSecurity(message, bindings) {
+  if (!message||typeof message!=="object"||!["feishu","wechat"].includes(message.source)) return reject("invalid_message");
+  const binding=bindings?.[message.source];
+  if (!binding?.userId||!binding?.conversationId) return reject("invalid_binding");
+  if (message.userId!==binding.userId) return reject("sender_not_allowed");
+  if (message.conversationId!==binding.conversationId) return reject("chat_not_allowed");
+  return {ok:true};
+}
+
 function reject(reason) {
   return {ok: false, reason, notify: false};
 }
