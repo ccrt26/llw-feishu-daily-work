@@ -26,6 +26,10 @@ try {
     deepseekModel:"deepseek-v4-pro",
     deepseekKeychainService:"com.llw.deepseek-api",
     deepseekKeychainAccount:"llw-assistant",
+    wechatEnabled:false,
+    wechatStateFile:join(dirname(current.stateFile),"wechat-state.json"),
+    wechatKeychainService:"com.llw.wechat-ilink",
+    wechatKeychainAccount:"llw-assistant",
     capabilities:{
       ...current.capabilities,
       invoice:{
