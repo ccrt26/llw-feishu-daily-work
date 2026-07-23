@@ -7,6 +7,7 @@ import { DailyWorkService } from "../src/service.mjs";
 import { StateStore } from "../src/state-store.mjs";
 import { createDailyWorkCapability } from "../src/capabilities/daily-work/capability.mjs";
 import {createDailyWorkInterpretTask} from "../src/core/semantic-tasks.mjs";
+import {FORBIDDEN_AI_INPUTS} from "./fixtures/forbidden-ai-inputs.mjs";
 
 const baseMessage = {
   source:"feishu",sourceMessageId:"m1",userId:"user-1",conversationId:"chat-1",receivedAt:"2026-07-19T02:00:00.000Z",
@@ -147,8 +148,11 @@ test("daily-work input rejection uses the V3 sensitive-data reply for both model
     let aiCalls=0;
     const decide=createDailyWorkInterpretTask({invoke:async()=>{aiCalls++;},invokeDeepSeekClient:async()=>{aiCalls++;},deepseekEnabled:true});
     const h=await harness(decide);
-    const result=await h.service.handleMessage({...baseMessage,text:"短信验证码是 123456"},{model});
-    assert.equal(aiCalls,0); assert.equal(result.status,"rejected"); assert.equal(result.reply,SENSITIVE_REPLY);
+    for (const [index,{text}] of FORBIDDEN_AI_INPUTS.entries()) {
+      const result=await h.service.handleMessage({...baseMessage,sourceMessageId:`m-${model}-${index}`,text},{model});
+      assert.equal(result.status,"rejected"); assert.equal(result.reply,SENSITIVE_REPLY);
+    }
+    assert.equal(aiCalls,0);
     assert.deepEqual(h.creates,[]); assert.deepEqual(h.supplements,[]); assert.equal(h.state.getConversation(),null); assert.deepEqual(h.sends,[]);
   }
 });

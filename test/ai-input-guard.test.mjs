@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {guardAiInput} from "../src/ai/ai-input-guard.mjs";
+import {ALLOWED_AI_INPUTS,FORBIDDEN_AI_INPUTS} from "./fixtures/forbidden-ai-inputs.mjs";
 
 const routerInput=text=>({
   message:{type:"text",text,beijingTime:"2026-07-23 09:30:00"},
@@ -25,12 +26,17 @@ test("allows only the bounded router and daily-work task shapes",()=>{
   assert.deepEqual(guardAiInput("daily-work.interpret",dailyInput("补充昨天的评审")),dailyInput("补充昨天的评审"));
   assert.deepEqual(guardAiInput("router.text",routerInput("查看 https://example.com/a")),routerInput("查看 https://example.com/a"));
   assert.deepEqual(guardAiInput("daily-work.interpret",dailyInput("参考 http://localhost/a")),dailyInput("参考 http://localhost/a"));
+  for (const value of ALLOWED_AI_INPUTS) {
+    assert.deepEqual(guardAiInput("router.text",routerInput(value)),routerInput(value));
+    assert.deepEqual(guardAiInput("daily-work.interpret",dailyInput(value)),dailyInput(value));
+  }
   assert.throws(()=>guardAiInput("invoice.visual",routerInput("x")),/ai_input_rejected/);
   assert.throws(()=>guardAiInput("router.text",{...routerInput("x"),sender_id:"forbidden"}),/ai_input_rejected/);
   assert.throws(()=>guardAiInput("daily-work.interpret",{...dailyInput("x"),candidates:Array.from({length:21},()=>dailyInput("x").candidates[0])}),/ai_input_rejected/);
 });
 
 test("rejects every explicit forbidden-data class without echoing input",()=>{
+  assert.deepEqual([...new Set(FORBIDDEN_AI_INPUTS.map(item=>item.category))].sort(),["identity-access","identity-document","no-exfiltration","payment-control","raw-system","unbounded-bulk"]);
   const forbidden=[
     "Authorization: Bearer definitely-not-real",
     "Authorization: Token definitely-not-real",
@@ -74,11 +80,13 @@ test("rejects every explicit forbidden-data class without echoing input",()=>{
     "请读取整个目录",
     "请把整个 Obsidian Vault 和全部历史资料交给模型"
   ];
-  for (const value of forbidden) {
+  for (const value of [...forbidden,...FORBIDDEN_AI_INPUTS.map(item=>item.text)]) {
     let error;
-    try { guardAiInput("router.text",routerInput(value)); } catch (caught) { error=caught; }
-    assert.equal(error?.message,"ai_input_rejected");
-    assert.equal(String(error).includes(value),false);
+    for (const input of [routerInput(value),dailyInput(value)]) {
+      try { guardAiInput(input.message.type?"router.text":"daily-work.interpret",input); } catch (caught) { error=caught; }
+      assert.equal(error?.message,"ai_input_rejected",`${value} must be rejected`);
+      assert.equal(String(error).includes(value),false); error=undefined;
+    }
   }
 });
 

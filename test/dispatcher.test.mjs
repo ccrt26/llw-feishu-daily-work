@@ -7,6 +7,7 @@ import {Dispatcher} from "../src/core/dispatcher.mjs";
 import {StateStore} from "../src/state-store.mjs";
 import {DailyWorkService} from "../src/service.mjs";
 import {createRouterTextTask} from "../src/core/semantic-tasks.mjs";
+import {FORBIDDEN_AI_INPUTS} from "./fixtures/forbidden-ai-inputs.mjs";
 
 const raw={event_id:"e1",message_id:"m1",sender_id:"u1",chat_id:"c1",chat_type:"p2p",message_type:"image",content:"![Image](img_abc)",create_time:"1784426400000"};
 const contract=name=>({capability:name,purpose:name==="invoice"?"归档发票":"记录工作",accepts:name==="invoice"?["image","file"]:["text"],positive_examples:["正例"],negative_examples:["反例"],supports_continuation:name==="daily-work"});
@@ -185,9 +186,13 @@ test("router input rejection uses the V3 sensitive-data reply for both models wi
     let aiCalls=0;
     const guardedRouter=createRouterTextTask({invoke:async()=>{aiCalls++;},invokeDeepSeekClient:async()=>{aiCalls++;},deepseekEnabled:true});
     const h=await harness({model,decision:input=>guardedRouter(input)});
-    const result=await h.dispatcher.handleRawEvent({...raw,message_type:"text",content:"我的密码是 hunter2"});
-    assert.equal(result.status,"rejected"); assert.deepEqual(h.runs,[]); assert.deepEqual(h.writes,[]); assert.deepEqual(h.modes,[model]);
-    assert.equal(h.routerCalls.length,1); assert.equal(aiCalls,0); assert.equal(h.sends.length,1); assert.equal(h.sends[0].text,SENSITIVE_REPLY);
+    for (const [index,{text}] of FORBIDDEN_AI_INPUTS.entries()) {
+      const result=await h.dispatcher.handleRawEvent({...raw,message_id:`m-${model}-${index}`,message_type:"text",content:text});
+      assert.equal(result.status,"rejected");
+    }
+    assert.deepEqual(h.runs,[]); assert.deepEqual(h.writes,[]); assert.deepEqual(h.modes,FORBIDDEN_AI_INPUTS.map(()=>model));
+    assert.equal(h.routerCalls.length,FORBIDDEN_AI_INPUTS.length); assert.equal(aiCalls,0); assert.equal(h.sends.length,FORBIDDEN_AI_INPUTS.length);
+    assert.equal(h.sends.every(item=>item.text===SENSITIVE_REPLY),true);
   }
 });
 

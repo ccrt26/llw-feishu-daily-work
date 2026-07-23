@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {createRouterTextTask,createDailyWorkInterpretTask,createInvoiceVisualTask} from "../src/core/semantic-tasks.mjs";
+import {FORBIDDEN_AI_INPUTS} from "./fixtures/forbidden-ai-inputs.mjs";
 
 test("exposes exactly the three named semantic task boundaries over existing clients",async () => {
   const calls=[];
@@ -66,8 +67,7 @@ test("a common guard rejects prohibited router and daily text before either AI c
     deepseekModel:"deepseek-v4-pro",deepseekKeychainService:"com.llw.deepseek-api",deepseekKeychainAccount:"llw-assistant"
   };
   const router=createRouterTextTask(configuration),daily=createDailyWorkInterpretTask(configuration);
-  const forbidden=["我的密码是 hunter2","短信验证码是 123456","银行卡是 4111 1111 1111 1111","绝密项目资料"];
-  for (const model of ["codex","deepseek"]) for (const text of forbidden) {
+  for (const model of ["codex","deepseek"]) for (const {text} of FORBIDDEN_AI_INPUTS) {
     await assert.rejects(()=>router({model,message:{type:"text",text,beijingTime:"2026-07-23 09:30:00"},conversation:null,capabilities:[]}),error=>error.message==="ai_input_rejected");
     await assert.rejects(()=>daily({model,message:{text,createTime:1784426400000},conversation:null,candidates:[]}),error=>error.message==="ai_input_rejected");
   }

@@ -5,6 +5,7 @@ import {mkdtemp,mkdir,writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {invokeDeepSeek} from "../src/ai/deepseek-client.mjs";
+import {FORBIDDEN_AI_INPUTS} from "./fixtures/forbidden-ai-inputs.mjs";
 
 const routerInput={
   message:{type:"text",text:"今天完成方案评审",beijingTime:"2026-07-23 09:30:00"},conversation:null,
@@ -126,7 +127,7 @@ test("keychain and guard failures happen before any network request",async t=>{
   await t.test("guard",async()=>{
     const fake=await server(async (_request,response)=>response.end(responseFor())); let keyReads=0;
     try {
-      const prohibited=["我的密码是 hunter2","短信验证码是 123456","银行卡是 4111 1111 1111 1111","绝密项目资料"];
+      const prohibited=FORBIDDEN_AI_INPUTS.map(item=>item.text);
       for (const text of ["Authorization: Bearer not-real","Authorization: Token not-real","token: not-real","client_secret: not-real","凭证：not-real","otp: 123456","支付凭证：not-real","/tmp/private.txt","/root/private.txt","路径：/root/private.txt","path=/mnt/private.txt","打开，/srv/private.txt","Z:/private/file.txt","配置:C:\\private\\file.txt","\\\\server\\private\\file.txt","share=\\\\server\\private\\file.txt","ou_not_a_real_id","file_not_a_real_key",...prohibited]) {
         await assert.rejects(()=>call({endpoint:fake.endpoint,input:{...routerInput,message:{...routerInput.message,text}},keyReader:async()=>{keyReads++;return "not-a-real-key";}}),error=>error.message==="ai_input_rejected");
       }
@@ -141,7 +142,10 @@ test("keychain and guard failures happen before any network request",async t=>{
   });
   await t.test("guard precedes Skill reads",async()=>{
     let keyReads=0;
-    await assert.rejects(()=>invokeDeepSeek({task:"router.text",model:"deepseek-v4-pro",keychainService:"com.llw.deepseek-api",keychainAccount:"llw-assistant",skillRoot:"/definitely/missing",input:{...routerInput,message:{...routerInput.message,text:"我的密码是 hunter2"}},keyReader:async()=>{keyReads++;return "not-a-real-key";},testEndpoint:"http://127.0.0.1:1/chat/completions"}),error=>error.message==="ai_input_rejected");
+    for (const {text} of FORBIDDEN_AI_INPUTS) for (const [task,input] of [
+      ["router.text",{...routerInput,message:{...routerInput.message,text}}],
+      ["daily-work.interpret",{message:{text,createTime:1784426400000},conversation:null,candidates:[]}]
+    ]) await assert.rejects(()=>invokeDeepSeek({task,model:"deepseek-v4-pro",keychainService:"com.llw.deepseek-api",keychainAccount:"llw-assistant",skillRoot:"/definitely/missing",input,keyReader:async()=>{keyReads++;return "not-a-real-key";},testEndpoint:"http://127.0.0.1:1/chat/completions"}),error=>error.message==="ai_input_rejected");
     assert.equal(keyReads,0);
   });
 });
