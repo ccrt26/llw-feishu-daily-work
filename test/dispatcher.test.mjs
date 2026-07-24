@@ -16,11 +16,22 @@ const SENSITIVE_REPLY="检测到可能包含实际密钥、登录凭证或支付
 const CODEX_FAILURE_REPLY="当前模型 Codex 本次调用失败。\n系统没有切换模型，也没有执行写入。\n如需使用 DeepSeek，请手工发送：/llw-model deepseek";
 const DEEPSEEK_FAILURE_REPLY="当前模型 DeepSeek 本次调用失败。\n系统没有切换模型，也没有执行写入。\n如需使用 Codex，请手工发送：/llw-model codex";
 
-async function harness({decision,handle:capabilityHandler,status="committed",send,model="codex",deepseekEnabled=true,modelMode:providedModelMode}={}) {
+async function harness({decision,visualDecision,withPreparedImage,handle:capabilityHandler,status="committed",send,model="codex",deepseekEnabled=true,modelMode:providedModelMode,capabilityNames=["daily-work","invoice"]}={}) {
   const dir=await mkdtemp(join(tmpdir(),"llw-dispatcher-")); const file=join(dir,"state.json"); const state=await StateStore.open(file);
-  const routerCalls=[],runs=[],messages=[],contexts=[],sends=[];
-  const capabilities=["daily-work","invoice"].map(name=>({name,routingContract:contract(name),handle:async (message,context)=>{runs.push(name);messages.push(structuredClone(message));contexts.push({model:context.model});return capabilityHandler?capabilityHandler(name,message,context):{status,reply:status==="ignored"?null:`${name}完成`,artifacts:status==="committed"?["p"]:[]};}}));
-  const intentRouter={decide:async input=>{routerCalls.push(structuredClone(input));return typeof decision==="function"?decision(input):decision||{action:"route",capability:"invoice",confidence:"high",reasonCode:"attachment_match"};}};
+  const routerCalls=[],visualRouterCalls=[],runs=[],messages=[],contexts=[],sends=[];
+  const capabilities=capabilityNames.map(name=>({name,routingContract:contract(name),handle:async (message,context)=>{runs.push(name);messages.push(structuredClone(message));contexts.push({model:context.model});return capabilityHandler?capabilityHandler(name,message,context):{status,reply:status==="ignored"?null:`${name}完成`,artifacts:status==="committed"?["p"]:[]};}}));
+  const intentRouter={
+    decide:async input=>{routerCalls.push(structuredClone(input));return typeof decision==="function"?decision(input):decision||{action:"route",capability:"invoice",confidence:"high",reasonCode:"attachment_match"};},
+    decideVisual:async input=>{
+      routerCalls.push(structuredClone(input));visualRouterCalls.push(structuredClone(input));
+      const selected=visualDecision??decision;
+      return typeof selected==="function"?selected(input):selected||{action:"route",capability:"invoice",confidence:"high",reasonCode:"visual_match"};
+    }
+  };
+  const runPreparedImage=withPreparedImage||((message,operation)=>operation({
+    tempDir:"/tmp/job-safe",file:"/tmp/job-safe/image.png",
+    detectedFormat:"png",archiveExtension:"png",sizeBytes:123
+  }));
   const modes=[],writes=[]; let selected=model;
   const modelMode=providedModelMode||{read:async()=>{modes.push(selected);return selected;},write:async value=>{writes.push(value);selected=value;}};
   const dispatcher=new Dispatcher({
@@ -29,9 +40,10 @@ async function harness({decision,handle:capabilityHandler,status="committed",sen
       feishu:{userId:"u1",conversationId:"c1"},
       wechat:{userId:"wx-owner",conversationId:"wx-owner"}
     },
-    state,capabilities,intentRouter,messenger:{send:send|| (async message=>sends.push(message))},modelMode,deepseekEnabled
+    state,capabilities,intentRouter,withPreparedImage:runPreparedImage,
+    messenger:{send:send|| (async message=>sends.push(message))},modelMode,deepseekEnabled
   });
-  return {file,state,routerCalls,runs,messages,contexts,sends,modes,writes,dispatcher};
+  return {file,state,routerCalls,visualRouterCalls,runs,messages,contexts,sends,modes,writes,dispatcher};
 }
 
 function wechatMessage({messageId="m1",userId="wx-owner",text="记录今天工作"}={}) {
@@ -52,6 +64,173 @@ test("routes once, invokes only the selected capability, persists before send an
     replyTarget:{source:"feishu",sourceMessageId:"m1",conversationId:"c1"}
   });
   for (const field of ["message_id","sender_id","chat_id","message_type","content","messageId","senderId","chatId","messageType","createTimeMs"]) assert.equal(Object.hasOwn(h.messages[0],field),false);
+});
+
+test("routes one image by pixels using only enabled image capabilities and reuses the prepared image",async () => {
+  const prepared={
+    tempDir:"/tmp/job-one",file:"/tmp/job-one/image.png",
+    detectedFormat:"png",archiveExtension:"png",sizeBytes:456
+  };
+  let prepareCalls=0,cleanupCalls=0,reused=false;
+  const h=await harness({
+    withPreparedImage:async (message,operation)=>{
+      prepareCalls++;
+      assert.equal(message.attachments[0].type,"image");
+      try { return await operation(prepared); }
+      finally { cleanupCalls++; }
+    },
+    visualDecision:input=>{
+      assert.equal(input.model,"codex");
+      assert.equal(input.preparedImage,prepared);
+      assert.deepEqual(input.capabilities.map(item=>item.capability),["invoice"]);
+      return {action:"route",capability:"invoice",confidence:"high",reasonCode:"visual_match"};
+    },
+    handle:async (name,_message,context)=>{
+      assert.equal(name,"invoice");
+      reused=context.preparedImage===prepared;
+      return {status:"committed",reply:"已归档",artifacts:["p"]};
+    }
+  });
+  const result=await h.dispatcher.handleRawEvent(raw);
+  assert.equal(result.status,"committed");
+  assert.equal(h.visualRouterCalls.length,1);
+  assert.equal(prepareCalls,1);
+  assert.equal(cleanupCalls,1);
+  assert.equal(reused,true);
+});
+
+test("visual clarification cleans the image without creating or clearing a text conversation",async () => {
+  let cleanupCalls=0;
+  const h=await harness({
+    withPreparedImage:async (_message,operation)=>{
+      try {
+        return await operation({
+          tempDir:"/tmp/job-one",file:"/tmp/job-one/image.png",
+          detectedFormat:"png",archiveExtension:"png",sizeBytes:456
+        });
+      } finally { cleanupCalls++; }
+    },
+    visualDecision:{action:"clarify",question:"图片用途无法可靠判断。"}
+  });
+  const existing={
+    capability:"daily-work",question:"请补充工作细节",
+    startedAt:new Date(Number(raw.create_time)).toISOString(),
+    attempts:1,status:"open",model:"codex"
+  };
+  await h.state.setRouterConversation(existing);
+  const result=await h.dispatcher.handleRawEvent(raw);
+  assert.equal(result.status,"awaiting_clarification");
+  assert.deepEqual(await h.state.getRouterConversation(Number(raw.create_time)),existing);
+  assert.deepEqual(h.runs,[]);
+  assert.equal(cleanupCalls,1);
+  assert.equal(h.sends[0].text,"无法可靠判断这张图片属于哪个已启用能力。\n本次图片未保存、未交给业务Skill。\n请重新发送一张更清晰、内容完整的图片。");
+});
+
+test("visual unsupported invokes no business capability and returns one fixed no-capability reply",async () => {
+  let cleanupCalls=0;
+  const h=await harness({
+    withPreparedImage:async (_message,operation)=>{
+      try {
+        return await operation({
+          tempDir:"/tmp/job-one",file:"/tmp/job-one/photo.jpg",
+          detectedFormat:"jpeg",archiveExtension:"jpg",sizeBytes:456
+        });
+      } finally { cleanupCalls++; }
+    },
+    visualDecision:{action:"unsupported",reason:"模型自由文本不应直接作为回复"}
+  });
+  const result=await h.dispatcher.handleRawEvent(raw);
+  assert.equal(result.status,"rejected");
+  assert.deepEqual(h.runs,[]);
+  assert.equal(cleanupCalls,1);
+  assert.equal(h.sends[0].text,"当前没有可处理这类图片的已启用能力。");
+});
+
+test("no enabled image capability returns unsupported before reading model state or preparing the image",async () => {
+  let prepareCalls=0;
+  const h=await harness({
+    capabilityNames:["daily-work"],
+    withPreparedImage:async()=>{prepareCalls++;throw new Error("must_not_prepare");}
+  });
+  const result=await h.dispatcher.handleRawEvent(raw);
+  assert.equal(result.status,"rejected");
+  assert.equal(prepareCalls,0);
+  assert.deepEqual(h.modes,[]);
+  assert.deepEqual(h.routerCalls,[]);
+  assert.deepEqual(h.runs,[]);
+  assert.equal(h.sends[0].text,"当前没有可处理这类图片的已启用能力。");
+});
+
+test("visual model failure cleans the image and uses the existing model-specific safe failure",async () => {
+  let cleanupCalls=0;
+  const h=await harness({
+    withPreparedImage:async (_message,operation)=>{
+      try {
+        return await operation({
+          tempDir:"/tmp/job-one",file:"/tmp/job-one/image.png",
+          detectedFormat:"png",archiveExtension:"png",sizeBytes:456
+        });
+      } finally { cleanupCalls++; }
+    },
+    visualDecision:()=>{ throw Object.assign(new Error("codex failed"),{category:"model_unavailable"}); }
+  });
+  const result=await h.dispatcher.handleRawEvent(raw);
+  assert.equal(result.status,"failed");
+  assert.equal(cleanupCalls,1);
+  assert.deepEqual(h.runs,[]);
+  assert.equal(h.sends[0].text,CODEX_FAILURE_REPLY);
+});
+
+test("image preparation failure returns a fixed safe attachment error without business work",async () => {
+  const h=await harness({
+    withPreparedImage:async()=>{ throw Object.assign(new Error("download failed"),{code:"download_failed"}); }
+  });
+  const result=await h.dispatcher.handleRawEvent(raw);
+  assert.equal(result.status,"failed");
+  assert.deepEqual(h.routerCalls,[]);
+  assert.deepEqual(h.runs,[]);
+  assert.equal(h.sends[0].text,"图片准备失败，本次未交给 AI 或业务Skill、未写入 Obsidian；请重新发送受支持的原始图片。");
+});
+
+test("the same prepared image produces an entry-independent visual routing input for Feishu and WeChat",async () => {
+  const prepared={
+    tempDir:"/tmp/job-same",file:"/tmp/job-same/same.png",
+    detectedFormat:"png",archiveExtension:"png",sizeBytes:456
+  };
+  const h=await harness({
+    withPreparedImage:async (_message,operation)=>operation(prepared),
+    visualDecision:{action:"route",capability:"invoice",confidence:"high",reasonCode:"visual_match"}
+  });
+  await h.dispatcher.handleRawEvent(raw);
+  await h.dispatcher.handleIncomingMessage(createWechatIncomingMessage({
+    messageId:"m2",userId:"wx-owner",conversationId:"wx-owner",
+    createTimeMs:Number(raw.create_time),type:"image",contextToken:"test-context",
+    attachment:{
+      type:"image",sourceAttachmentId:"wxr_0123456789abcdef0123456789abcdef",
+      displayName:"微信图片",extension:""
+    }
+  }));
+  assert.equal(h.visualRouterCalls.length,2);
+  assert.deepEqual(h.visualRouterCalls[0],h.visualRouterCalls[1]);
+  assert.deepEqual(h.runs,["invoice","invoice"]);
+});
+
+test("PDF keeps the existing text router path and never enters the visual router",async () => {
+  let prepareCalls=0;
+  const h=await harness({
+    withPreparedImage:async()=>{prepareCalls++;throw new Error("must_not_prepare");},
+    decision:{action:"route",capability:"invoice",confidence:"high",reasonCode:"attachment_match"}
+  });
+  const result=await h.dispatcher.handleRawEvent({
+    ...raw,message_type:"file",
+    content:'<file key="file_abc" name="电子发票.pdf"/>'
+  });
+  assert.equal(result.status,"committed");
+  assert.equal(prepareCalls,0);
+  assert.equal(h.visualRouterCalls.length,0);
+  assert.equal(h.routerCalls.length,1);
+  assert.equal(h.routerCalls[0].message.type,"file");
+  assert.deepEqual(h.runs,["invoice"]);
 });
 
 test("security failures, empty text and duplicates never call the router",async () => {
@@ -131,12 +310,36 @@ test("disabled DeepSeek makes persisted DeepSeek state effectively Codex",async 
   assert.deepEqual(h.modes,["deepseek","deepseek"]);
 });
 
-test("DeepSeek invoice is rejected before capability work without switching models",async()=>{
-  const h=await harness({model:"deepseek",decision:{action:"route",capability:"invoice",confidence:"high",reasonCode:"attachment_match"}});
+test("DeepSeek image is rejected before download, visual routing or capability work without switching models",async()=>{
+  let prepareCalls=0;
+  const h=await harness({
+    model:"deepseek",
+    withPreparedImage:async()=>{prepareCalls++;throw new Error("must_not_prepare");},
+    decision:{action:"route",capability:"invoice",confidence:"high",reasonCode:"attachment_match"}
+  });
   const result=await h.dispatcher.handleRawEvent({...raw,content:"[Image: img_current-123]"});
-  assert.equal(result.status,"rejected"); assert.deepEqual(h.routerCalls,[]); assert.deepEqual(h.runs,[]); assert.deepEqual(h.writes,[]); assert.deepEqual(h.modes,["deepseek"]);
+  assert.equal(result.status,"rejected"); assert.equal(prepareCalls,0); assert.deepEqual(h.routerCalls,[]); assert.deepEqual(h.runs,[]); assert.deepEqual(h.writes,[]); assert.deepEqual(h.modes,["deepseek"]);
   assert.equal(h.sends.length,1);
-  assert.equal(h.sends[0].text,"当前模型为 DeepSeek，但发票图片/PDF需要 Codex 视觉判断。\n本次未调用模型、未归档文件、未写入 Obsidian。\n请先发送：/llw-model codex\n然后重新提交发票。");
+  assert.equal(h.sends[0].text,"当前模型为 DeepSeek，但图片需要 Codex 进行视觉路由。\n本次未下载图片、未调用模型、未调用业务Skill、未写入 Obsidian。\n请先发送：/llw-model codex\n然后重新提交图片。");
+  assert.equal(JSON.parse(await readFile(h.file,"utf8")).outcomes.m1.capability,"router");
+});
+
+test("DeepSeek PDF keeps the existing fixed rejection and never enters the visual router",async()=>{
+  let prepareCalls=0;
+  const h=await harness({
+    model:"deepseek",
+    withPreparedImage:async()=>{prepareCalls++;throw new Error("must_not_prepare");}
+  });
+  const result=await h.dispatcher.handleRawEvent({
+    ...raw,message_type:"file",
+    content:'<file key="file_abc" name="电子发票.pdf"/>'
+  });
+  assert.equal(result.status,"rejected");
+  assert.equal(prepareCalls,0);
+  assert.deepEqual(h.routerCalls,[]);
+  assert.deepEqual(h.runs,[]);
+  assert.equal(h.sends[0].text,"当前模型为 DeepSeek，但发票 PDF 需要 Codex 视觉判断。\n本次未调用模型、未归档文件、未写入 Obsidian。\n请先发送：/llw-model codex\n然后重新提交发票。");
+  assert.equal(JSON.parse(await readFile(h.file,"utf8")).outcomes.m1.capability,"invoice");
 });
 
 test("attachment new tasks use the current global model instead of an active conversation snapshot",async()=>{

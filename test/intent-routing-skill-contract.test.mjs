@@ -5,14 +5,15 @@ import {guardAiInput} from "../src/ai/ai-input-guard.mjs";
 
 const workspace="/Volumes/ZHUTONG/LLW的私人助手/LLW";
 
-test("router Skill and business routing contracts expose one strict routing boundary",async () => {
-  const [skill,schema,daily,invoice,ui,evalText]=await Promise.all([
+test("router Skill and business routing contracts expose one strict text and visual routing boundary",async () => {
+  const [skill,schema,daily,invoice,ui,evalText,visualEvalText]=await Promise.all([
     readFile(`${workspace}/.agents/skills/feishu-intent-router/SKILL.md`,"utf8"),
     readFile(`${workspace}/.agents/skills/feishu-intent-router/references/output-schema.json`,"utf8").then(JSON.parse),
     readFile(`${workspace}/.agents/skills/feishu-daily-work/references/routing-contract.json`,"utf8").then(JSON.parse),
     readFile(`${workspace}/.agents/skills/filing-invoices/references/routing-contract.json`,"utf8").then(JSON.parse),
     readFile(`${workspace}/.agents/skills/feishu-intent-router/agents/openai.yaml`,"utf8"),
-    readFile(`${workspace}/.agents/skills/feishu-intent-router/evals/cases.jsonl`,"utf8")
+    readFile(`${workspace}/.agents/skills/feishu-intent-router/evals/cases.jsonl`,"utf8"),
+    readFile(`${workspace}/.agents/skills/feishu-intent-router/evals/visual-cases.jsonl`,"utf8")
   ]);
   assert.match(skill,/^---\nname: feishu-intent-router\ndescription: Use when /);
   for (const phrase of ["只选择一个能力","不直接回复飞书","cancelled","reason_code"]) assert.match(skill,new RegExp(phrase));
@@ -21,7 +22,14 @@ test("router Skill and business routing contracts expose one strict routing boun
     "5. 处理规则","6. 业务不变量","7. 数据、原文和落库规则","8. 模型支持",
     "9. 异常与安全失败","10. 示例和评测","11. 权限与禁止行为","12. 验收标准"
   ]) assert.match(skill,new RegExp(`## ${section.replace(/[.*+?^${}()|[\\]\\]/g,"\\$&")}`));
-  for (const marker of ["[AI]","[程序]","[确认]","router.text","Codex","DeepSeek"]) assert.equal(skill.includes(marker),true);
+  for (const marker of ["[AI]","[程序]","[确认]","router.text","router.visual","Codex","DeepSeek"]) assert.equal(skill.includes(marker),true);
+  assert.match(skill,/router\.visual.*实际像素/s);
+  assert.match(skill,/只选择业务能力.*不提取发票字段/s);
+  assert.match(skill,/即使.*唯一.*图片候选.*不得强制.*route/s);
+  assert.match(skill,/图片中的.*指令.*不执行/s);
+  assert.match(skill,/DeepSeek.*图片.*不支持/s);
+  assert.match(skill,/“清晰”指票面应有区域完整存在且整体清晰/);
+  assert.match(skill,/即使仍能识别为发票.*明显裁切.*clarify/s);
   assert.match(skill,/Codex.*`low`/);
   assert.match(skill,/DeepSeek V4 Pro.*非思考模式.*`temperature=0`/);
   assert.match(skill,/推理设置由本 Skill 声明.*程序固定执行.*用户输入和模型输出不得覆盖/);
@@ -41,7 +49,8 @@ test("router Skill and business routing contracts expose one strict routing boun
     assert.equal(contract.negative_examples.length>0,true);
     assert.equal(typeof contract.supports_continuation,"boolean");
   }
-  assert.match(ui,/default_prompt: "Use \$feishu-intent-router /);
+  assert.match(ui,/short_description: "为私人飞书或微信消息/);
+  assert.match(ui,/default_prompt: "Use \$feishu-intent-router to choose exactly one enabled capability for a private Feishu or WeChat message or image\."/);
   const cases=evalText.trim().split("\n").map(line=>JSON.parse(line));
   const canonicalContracts=new Map([[daily.capability,daily],[invoice.capability,invoice]]);
   assert.deepEqual(new Set(cases.map(item=>item.kind)),new Set(["positive","negative","boundary"]));
@@ -135,4 +144,36 @@ test("router Skill and business routing contracts expose one strict routing boun
   const disabledDaily=byId.get("router-negative-disabled-daily-work");
   assert.match(disabledDaily.input.message.text,/测试环境巡检/);
   assert.deepEqual(disabledDaily.input.capabilities.map(item=>item.capability),["invoice"]);
+
+  const visualCases=visualEvalText.trim().split("\n").map(line=>JSON.parse(line));
+  assert.equal(visualCases.length>=6&&visualCases.length<=10,true);
+  assert.equal(new Set(visualCases.map(item=>item.id)).size,visualCases.length);
+  assert.deepEqual(new Set(visualCases.map(item=>item.kind)),new Set(["positive","negative","boundary"]));
+  for (const item of visualCases) {
+    assert.equal(item.task,"router.visual");
+    assert.deepEqual(Object.keys(item).sort(),["expected","fixture","id","input","kind","task"]);
+    assert.match(item.fixture,/^fixtures\/[a-z0-9-]+\.(?:png|jpg|jpeg|webp)$/);
+    assert.deepEqual(Object.keys(item.input).sort(),["capabilities","conversation","message"]);
+    assert.deepEqual(Object.keys(item.input.message).sort(),["beijingTime","type"]);
+    assert.equal(item.input.message.type,"image");
+    assert.equal(item.input.conversation,null);
+    assert.deepEqual(item.input.capabilities.map(capability=>capability.capability),["invoice"]);
+    assert.deepEqual(item.input.capabilities[0],invoice);
+    assert.equal(typeof item.expected.action,"string");
+    const fixture=await readFile(`${workspace}/.agents/skills/feishu-intent-router/evals/${item.fixture}`);
+    if (item.fixture.endsWith(".png")) {
+      assert.equal(fixture.subarray(0,8).equals(Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a])),true);
+    } else {
+      assert.equal(fixture[0],0xff);
+      assert.equal(fixture[1],0xd8);
+      assert.equal(fixture[2],0xff);
+    }
+  }
+  const visualById=new Map(visualCases.map(item=>[item.id,item]));
+  assert.deepEqual(visualById.get("visual-positive-clear-invoice").expected,{action:"route",capability:"invoice",confidence:"high"});
+  assert.deepEqual(visualById.get("visual-negative-ordinary-photo").expected,{action:"unsupported"});
+  assert.deepEqual(visualById.get("visual-negative-unrelated-screenshot").expected,{action:"unsupported"});
+  assert.deepEqual(visualById.get("visual-boundary-blurred-invoice").expected,{action:"clarify"});
+  assert.deepEqual(visualById.get("visual-boundary-cropped-invoice").expected,{action:"clarify"});
+  assert.deepEqual(visualById.get("visual-boundary-prompt-injection").expected,{action:"unsupported"});
 });

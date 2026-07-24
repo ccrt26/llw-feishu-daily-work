@@ -18,7 +18,9 @@ test("main validates business routing contracts and injects one read-only intent
   const source=await readFile(fileURLToPath(new URL("../src/main.mjs",import.meta.url)),"utf8");
   assert.match(source,/import \{loadRoutingContract\} from "\.\/core\/routing-contract\.mjs"/);
   assert.match(source,/import \{validateIntentRouterSkill\} from "\.\/core\/intent-router-client\.mjs"/);
-  assert.match(source,/import \{createRouterTextTask,createDailyWorkInterpretTask,createInvoiceVisualTask\} from "\.\/core\/semantic-tasks\.mjs"/);
+  assert.match(source,/import \{createRouterTextTask,createRouterVisualTask,createDailyWorkInterpretTask,createInvoiceVisualTask\} from "\.\/core\/semantic-tasks\.mjs"/);
+  assert.match(source,/import \{createPreparedImageRunner\} from "\.\/core\/prepared-image\.mjs"/);
+  assert.match(source,/import \{parseInvoiceResource\} from "\.\/capabilities\/invoice\/resource-marker\.mjs"/);
   assert.match(source,/import \{ModelMode\} from "\.\/core\/model-mode\.mjs"/);
   assert.match(source,/deepseekModel:config\.deepseekModel/);
   assert.match(source,/deepseekKeychainService:config\.deepseekKeychainService/);
@@ -29,13 +31,15 @@ test("main validates business routing contracts and injects one read-only intent
   assert.match(source,/loadRoutingContract\(config\.capabilities\["daily-work"\]\.skillRoot,"daily-work"\)/);
   assert.match(source,/loadRoutingContract\(invoiceConfig\.skillRoot,"invoice"\)/);
   assert.match(source,/buildCapabilityRegistry\(\{dailyWork:dailyCapability,invoice:invoiceCapability,contracts,enabled:/);
-  assert.match(source,/new Dispatcher\(\{binding,bindings,state,capabilities,intentRouter,messenger,modelMode,deepseekEnabled:config\.deepseekEnabled\}\)/);
+  assert.match(source,/new Dispatcher\(\{binding,bindings,state,capabilities,intentRouter,withPreparedImage,messenger,modelMode,deepseekEnabled:config\.deepseekEnabled\}\)/);
   assert.match(source,/const routerText=createRouterTextTask\(\{/);
+  assert.match(source,/const routerVisual=createRouterVisualTask\(\{/);
   assert.match(source,/const dailyWorkInterpret=createDailyWorkInterpretTask\(\{/);
   assert.match(source,/const invoiceVisual=createInvoiceVisualTask\(\{/);
   assert.match(source,/decide:dailyWorkInterpret/);
   assert.match(source,/decide:invoiceVisual/);
-  assert.match(source,/const intentRouter=\{decide:routerText\}/);
+  assert.match(source,/const withPreparedImage=createPreparedImageRunner\(\{/);
+  assert.match(source,/const intentRouter=\{decide:routerText,decideVisual:routerVisual\}/);
 });
 
 test("keeps every WeChat read and network call at zero when the switch is false",async () => {

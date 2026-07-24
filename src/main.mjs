@@ -14,6 +14,7 @@ import {createDailyWorkCapability} from "./capabilities/daily-work/capability.mj
 import {buildCapabilityRegistry} from "./capabilities/index.mjs";
 import {createInvoiceCapability} from "./capabilities/invoice/capability.mjs";
 import {inspectInvoiceFile} from "./capabilities/invoice/file-inspector.mjs";
+import {parseInvoiceResource} from "./capabilities/invoice/resource-marker.mjs";
 import {validateInvoiceDecision} from "./capabilities/invoice/decision-validator.mjs";
 import {InvoiceArchiveWriter} from "./capabilities/invoice/archive-writer.mjs";
 import {prepareInvoicePdf} from "./capabilities/invoice/pdf-preparer.mjs";
@@ -27,9 +28,10 @@ import {createChannelMessenger} from "./adapters/channel-messenger.mjs";
 import {Dispatcher} from "./core/dispatcher.mjs";
 import {ModelMode} from "./core/model-mode.mjs";
 import {safeLog} from "./core/redaction.mjs";
+import {createPreparedImageRunner} from "./core/prepared-image.mjs";
 import {loadRoutingContract} from "./core/routing-contract.mjs";
 import {validateIntentRouterSkill} from "./core/intent-router-client.mjs";
-import {createRouterTextTask,createDailyWorkInterpretTask,createInvoiceVisualTask} from "./core/semantic-tasks.mjs";
+import {createRouterTextTask,createRouterVisualTask,createDailyWorkInterpretTask,createInvoiceVisualTask} from "./core/semantic-tasks.mjs";
 
 const run=promisify(execFile);
 
@@ -92,9 +94,15 @@ const downloadInvoiceResource=resource => {
   }
   throw Object.assign(new Error("download_failed"),{code:"download_failed"});
 };
+const inspectInvoiceResource=file => inspectInvoiceFile(file,{maxBytes:invoiceConfig.maxFileBytes});
+const withPreparedImage=createPreparedImageRunner({
+  parse:parseInvoiceResource,
+  download:downloadInvoiceResource,
+  inspect:inspectInvoiceResource
+});
 const invoiceCapability=createInvoiceCapability({
   download:downloadInvoiceResource,
-  inspect:file => inspectInvoiceFile(file,{maxBytes:invoiceConfig.maxFileBytes}),
+  inspect:inspectInvoiceResource,
   preparePdf:({file}) => prepareInvoicePdf({
     file,
     pdfInfoPath:invoiceConfig.pdfInfoPath,
@@ -112,8 +120,9 @@ const invoiceCapability=createInvoiceCapability({
 
 const capabilities=buildCapabilityRegistry({dailyWork:dailyCapability,invoice:invoiceCapability,contracts,enabled:{"daily-work":config.capabilities["daily-work"].enabled,invoice:invoiceConfig.enabled}});
 const routerText=createRouterTextTask({codexPath:config.codexPath,workspaceRoot:config.vaultRoot,skillRoot:routerSkillRoot,timeoutMs:invoiceConfig.aiTimeoutMs,...deepseekTextConfiguration});
-const intentRouter={decide:routerText};
-const dispatcher=new Dispatcher({binding,bindings,state,capabilities,intentRouter,messenger,modelMode,deepseekEnabled:config.deepseekEnabled});
+const routerVisual=createRouterVisualTask({codexPath:config.codexPath,workspaceRoot:config.vaultRoot,skillRoot:routerSkillRoot,timeoutMs:invoiceConfig.aiTimeoutMs});
+const intentRouter={decide:routerText,decideVisual:routerVisual};
+const dispatcher=new Dispatcher({binding,bindings,state,capabilities,intentRouter,withPreparedImage,messenger,modelMode,deepseekEnabled:config.deepseekEnabled});
 
 await scavengeInvoiceTempRoot(invoiceConfig.tempRoot);
 await invoiceArchiveWriter.recoverTransactions();

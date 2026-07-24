@@ -53,6 +53,33 @@ test("committed and existing image archives get independent exact outcomes",asyn
   assert.equal(second.status,"existing"); assert.match(second.reply,/文件已存在，未重复复制/); assert.equal(secondHarness.calls.cleanup,1);
 });
 
+test("reuses a dispatcher-prepared image without downloading, inspecting or cleaning it again",async () => {
+  const h=harness({raw:decision("archive_dining","webp")});
+  const preparedImage={
+    tempDir:"/tmp/job-shared",
+    file:"/tmp/job-shared/shared.webp",
+    detectedFormat:"webp",
+    archiveExtension:"webp",
+    sizeBytes:789
+  };
+  const result=await h.capability.handle(event,{model:"codex",preparedImage});
+  assert.equal(result.status,"committed");
+  assert.equal(h.calls.download,0);
+  assert.equal(h.calls.inspect,0);
+  assert.equal(h.calls.cleanup,0);
+  assert.equal(h.calls.decide,1);
+  assert.deepEqual(h.calls.decideInput.analysisInput,{
+    originalFile:preparedImage.file,
+    detectedFormat:"webp",
+    archiveExtension:"webp",
+    pageImages:[preparedImage.file],
+    extractedText:"",
+    documentFacts:{pageCount:1,textAvailable:false}
+  });
+  assert.equal(h.calls.writeInput.source,preparedImage.file);
+  assert.equal(h.calls.writeInput.extension,"webp");
+});
+
 test("passes only the WeChat source and opaque resource id into the existing invoice flow",async () => {
   const h=harness();
   const result=await h.capability.handle({
