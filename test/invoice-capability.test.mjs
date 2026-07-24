@@ -155,6 +155,10 @@ test("ambiguous or unsafe storage values never reach the writer",async () => {
     const h=harness({raw});
     const result=await h.capability.handle(event);
     assert.equal(result.status,"awaiting_clarification");
+    assert.match(result.reply,/无法可靠转换为归档所需的日期|无法可靠转换为归档所需的金额/);
+    assert.match(result.reply,/清晰、完整的发票原件/);
+    assert.equal(result.reply.includes("AI 暂时不可用"),false);
+    assert.equal(result.reply.includes("购买方不匹配"),false);
     assert.equal(h.calls.write,0);
   }
 });
@@ -265,7 +269,7 @@ test("unknown extraction fields remain a technical failure instead of a business
 });
 
 for (const [state,pattern] of [
-  ["multiple_invoices",/拆分为一张发票一个 PDF/],
+  ["multiple_invoices",/检测到一个附件包含多张发票。[\s\S]*请一次只发送一张清晰完整的发票。/],
   ["conflicting_fields",/不同页面关键字段冲突/],
   ["unclear",/无法确认整份文件只含一张完整发票/]
 ]) test(`PDF document state ${state} gets a fixed clarification and never writes`,async () => {

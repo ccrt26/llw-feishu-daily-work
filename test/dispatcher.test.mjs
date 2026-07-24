@@ -288,7 +288,10 @@ test("Feishu and WeChat pass the same eligible extraction into one writer contra
   };
   const writes=[];
   const invoice=createInvoiceCapability({
-    decide:async()=>invoiceExtraction(),
+    decide:async()=>invoiceExtraction({
+      issue_date:"2026年07月21日",
+      total_with_tax:"￥290.00"
+    }),
     validate:validateInvoiceExtraction,
     derive:deriveInvoiceRuleDecision,
     writer:{archive:async input=>{
@@ -309,8 +312,14 @@ test("Feishu and WeChat pass the same eligible extraction into one writer contra
   assert.deepEqual(
     writes.map(({source,invoice:writtenInvoice,extension})=>({source,invoice:writtenInvoice,extension})),
     [
-      {source:prepared.file,invoice:invoiceExtraction().invoice,extension:"png"},
-      {source:prepared.file,invoice:invoiceExtraction().invoice,extension:"png"}
+      {source:prepared.file,invoice:invoiceExtraction({
+        issue_date:"2026-07-21",
+        total_with_tax:"290.00"
+      }).invoice,extension:"png"},
+      {source:prepared.file,invoice:invoiceExtraction({
+        issue_date:"2026-07-21",
+        total_with_tax:"290.00"
+      }).invoice,extension:"png"}
     ]
   );
   assert.equal(h.sends[0].text,h.sends[1].text);
