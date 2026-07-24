@@ -113,6 +113,52 @@ test("passes a normalized Chinese invoice date to the existing writer",async () 
   assert.match(result.reply,/开票日期：2026-07-21/);
 });
 
+test("normalizes clear date and amount display forms without mutating AI extraction",() => {
+  for (const [inputDate,inputAmount,expectedDate,expectedAmount] of [
+    ["2026年07月21日","￥498.00","2026-07-21","498.00"],
+    ["2026-7-21","¥498.0","2026-07-21","498.00"],
+    ["2026/07/21","1,498元","2026-07-21","1498.00"],
+    ["2026.7.21","1498","2026-07-21","1498.00"]
+  ]) {
+    const raw=extraction({invoice:{issue_date:inputDate,total_with_tax:inputAmount}});
+    const before=structuredClone(raw);
+    const decision=deriveInvoiceRuleDecision(raw);
+    assert.equal(decision.action,"archive_dining");
+    assert.equal(decision.reasonCode,"eligible");
+    assert.equal(decision.invoice.issue_date,expectedDate);
+    assert.equal(decision.invoice.total_with_tax,expectedAmount);
+    assert.deepEqual(raw,before);
+  }
+});
+
+test("invoice number, seller and item quality do not add business eligibility gates",() => {
+  for (const field of ["invoice_number","seller_name","item_name"]) {
+    const raw=extraction({invoice:{[field]:""},field_quality:{[field]:"missing"}});
+    const decision=deriveInvoiceRuleDecision(raw);
+    assert.equal(decision.action,"archive_dining");
+    assert.equal(decision.reasonCode,"eligible");
+  }
+});
+
+test("ambiguous or unsafe storage values never reach the writer",async () => {
+  for (const [issueDate,totalWithTax,reasonCode] of [
+    ["2026-02-30","498.00","issue_date_invalid"],
+    ["2026年7月","498.00","issue_date_invalid"],
+    ["2026-07-21","-498.00","total_invalid"],
+    ["2026-07-21","1,49.00","total_invalid"],
+    ["2026-07-21","4.98e2","total_invalid"]
+  ]) {
+    const raw=extraction({invoice:{issue_date:issueDate,total_with_tax:totalWithTax}});
+    const decision=deriveInvoiceRuleDecision(raw);
+    assert.equal(decision.action,"needs_clarification");
+    assert.equal(decision.reasonCode,reasonCode);
+    const h=harness({raw});
+    const result=await h.capability.handle(event);
+    assert.equal(result.status,"awaiting_clarification");
+    assert.equal(h.calls.write,0);
+  }
+});
+
 test("reuses a dispatcher-prepared image without downloading, inspecting or cleaning it again",async () => {
   const h=harness();
   const preparedImage={
@@ -193,12 +239,11 @@ for (const [label,raw,pattern] of [
   assert.equal(h.calls.cleanup,1);
 });
 
-test("missing, unclear, non-dining and invalid archive values never call writer",async () => {
+test("required missing, unclear and non-dining values never call writer",async () => {
   const cases=[
     [extraction({invoice:{buyer_name:""},field_quality:{buyer_name:"missing"}}),"awaiting_clarification",/必填字段缺失/],
     [extraction({invoice:{buyer_name:""},field_quality:{buyer_name:"unclear"}}),"awaiting_clarification",/必填字段无法清晰读取/],
-    [extraction({category:"non_dining"}),"rejected",/不属于当前已启用的餐饮发票类别/],
-    [extraction({invoice:{invoice_number:"TEST-20260724-001"}}),"awaiting_clarification",/发票号码格式/]
+    [extraction({category:"non_dining"}),"rejected",/不属于当前已启用的餐饮发票类别/]
   ];
   for (const [raw,status,pattern] of cases) {
     const h=harness({raw});

@@ -8,6 +8,7 @@ const INVOICE_FIELDS=new Set([
 const QUALITY_RESULTS=new Set(["clear","missing","unclear"]);
 const CATEGORIES=new Set(["dining","non_dining","uncertain"]);
 const DOCUMENT_RESULTS=new Set(["single_invoice","multiple_invoices","conflicting_fields","unclear"]);
+const REQUIRED_CLEAR_FIELDS=["buyer_name","buyer_tax_id","issue_date","total_with_tax"];
 
 export function validateInvoiceExtraction(extraction) {
   exactObject(extraction,TOP_FIELDS,"extraction");
@@ -37,9 +38,9 @@ export function deriveInvoiceRuleDecision(extraction) {
   }[extraction.document_verification];
   if (documentReason) return clarify(documentReason);
 
-  const qualities=Object.values(extraction.field_quality);
-  if (qualities.includes("missing")) return clarify("required_field_missing");
-  if (qualities.includes("unclear")) return clarify("required_field_unclear");
+  const requiredQualities=REQUIRED_CLEAR_FIELDS.map(field=>extraction.field_quality[field]);
+  if (requiredQualities.includes("missing")) return clarify("required_field_missing");
+  if (requiredQualities.includes("unclear")) return clarify("required_field_unclear");
 
   const nameMatches=extraction.invoice.buyer_name===BUYER_NAME;
   const taxMatches=extraction.invoice.buyer_tax_id===BUYER_TAX_ID;
@@ -49,17 +50,19 @@ export function deriveInvoiceRuleDecision(extraction) {
 
   if (extraction.category === "non_dining") return reject("non_dining");
   if (extraction.category === "uncertain") return clarify("category_uncertain");
-  if (!/^[A-Za-z0-9]{1,32}$/.test(extraction.invoice.invoice_number)) {
-    return clarify("invoice_number_invalid");
-  }
   const issueDate=normalizeIssueDate(extraction.invoice.issue_date);
   if (!issueDate) return clarify("issue_date_invalid");
-  if (!validAmount(extraction.invoice.total_with_tax)) return clarify("total_invalid");
+  const amount=normalizeAmount(extraction.invoice.total_with_tax);
+  if (!amount) return clarify("total_invalid");
 
   return {
     action:"archive_dining",
     reasonCode:"eligible",
-    invoice:{...structuredClone(extraction.invoice),issue_date:issueDate}
+    invoice:{
+      ...structuredClone(extraction.invoice),
+      issue_date:issueDate,
+      total_with_tax:amount
+    }
   };
 }
 
@@ -78,17 +81,25 @@ function exactObject(value,fields,label) {
 }
 
 function normalizeIssueDate(value) {
-  const match=/^(\d{4})-(\d{2})-(\d{2})$/.exec(value) ||
-    /^(\d{4})年(\d{2})月(\d{2})日$/.exec(value);
+  const text=value.trim();
+  const match=/^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(text) ||
+    /^(\d{4})\/(\d{1,2})\/(\d{1,2})$/.exec(text) ||
+    /^(\d{4})\.(\d{1,2})\.(\d{1,2})$/.exec(text) ||
+    /^(\d{4})年(\d{1,2})月(\d{1,2})日$/.exec(text);
   if (!match) return null;
   const year=Number(match[1]),month=Number(match[2]),day=Number(match[3]);
+  if (year<1000||year>9999) return null;
   const date=new Date(Date.UTC(year,month-1,day));
   if (date.getUTCFullYear()!==year ||
       date.getUTCMonth()!==month-1 ||
       date.getUTCDate()!==day) return null;
-  return `${match[1]}-${match[2]}-${match[3]}`;
+  return `${match[1]}-${match[2].padStart(2,"0")}-${match[3].padStart(2,"0")}`;
 }
 
-function validAmount(value) {
-  return /^(0|[1-9][0-9]*)\.[0-9]{2}$/.test(value) && Number(value)>0;
+function normalizeAmount(value) {
+  const match=/^[¥￥]?((?:0|[1-9][0-9]*|[1-9][0-9]{0,2}(?:,[0-9]{3})+)(?:\.[0-9]{1,2})?)元?$/.exec(value.trim());
+  if (!match) return null;
+  const [integer,fraction=""]=match[1].replaceAll(",","").split(".");
+  if (integer==="0"&&!/[1-9]/.test(fraction)) return null;
+  return `${integer}.${fraction.padEnd(2,"0")}`;
 }
