@@ -2,9 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {readFile} from "node:fs/promises";
 
-const skillRoot="/Volumes/ZHUTONG/LLW的私人助手/LLW/.agents/skills/filing-invoices";
+const skillsRoot=process.env.LLW_SKILLS_ROOT||"/Volumes/ZHUTONG/LLW的私人助手/LLW/.agents/skills";
+const skillRoot=`${skillsRoot}/filing-invoices`;
 
-test("invoice Skill is the explicit source for PDF document verification semantics",async () => {
+test("invoice Skill exposes an extraction-only contract and PDF document semantics",async () => {
   const [skill,schema,evalText]=await Promise.all([
     readFile(`${skillRoot}/SKILL.md`,"utf8"),
     readFile(`${skillRoot}/references/output-schema.json`,"utf8").then(JSON.parse),
@@ -24,8 +25,17 @@ test("invoice Skill is the explicit source for PDF document verification semanti
   assert.match(skill,/(?:多张发票|两张或更多独立发票).*拆分/s);
   assert.match(skill,/跨页.*冲突.*不得归档/s);
   assert.match(skill,/原始 PDF.*归档/s);
+  assert.match(skill,/AI 只负责逐字读取票面事实/);
+  assert.match(skill,/Node\.js 唯一决定归档、拒绝或澄清/);
+  assert.deepEqual(schema.required,["invoice","field_quality","category","document_verification"]);
+  for (const removed of ["action","confidence","reason","question","buyer_verification","file_format"]) {
+    assert.equal(JSON.stringify(schema).includes(`"${removed}"`),false);
+  }
+  assert.deepEqual(
+    schema.properties.field_quality.properties.buyer_name.enum,
+    ["clear","missing","unclear"]
+  );
   assert.deepEqual(schema.properties.document_verification.enum,["single_invoice","multiple_invoices","conflicting_fields","unclear"]);
-  assert.equal(schema.properties.invoice.properties.file_format.enum.includes("pdf"),true);
   const cases=evalText.trim().split("\n").map(line=>JSON.parse(line));
   assert.equal(cases.length>=3,true);
   assert.deepEqual(new Set(cases.map(item=>item.kind)),new Set(["positive","negative","boundary"]));
@@ -33,6 +43,6 @@ test("invoice Skill is the explicit source for PDF document verification semanti
     assert.equal(item.task,"invoice.visual");
     assert.equal(typeof item.id,"string");
     assert.equal(typeof item.input?.document?.format,"string");
-    assert.equal(typeof item.expected?.action,"string");
+    assert.equal("action" in item.expected,false);
   }
 });
