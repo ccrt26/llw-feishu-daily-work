@@ -888,11 +888,11 @@ node --test test/main-composition.test.mjs test/config.test.mjs test/dispatcher.
 - Consumes: 当前生产阶段三运行件和 Tasks 4.1–4.8 已验证源码。
 - Produces: 权限 `0700/0600` 的阶段四部署前备份、SHA-256 manifest 和 `/private/tmp` 恢复证据。
 
-- [ ] **Step 1: 只读解析精确备份源**
+- [x] **Step 1: 只读解析精确备份源**
 
   记录生产 Git提交、配置/状态版本、plist 路径、三个 Skill提交、PID/心跳和模型；禁止输出配置内容。
 
-- [ ] **Step 2: 创建受保护备份和 manifest**
+- [x] **Step 2: 创建受保护备份和 manifest**
 
   目录名固定为执行日：
 
@@ -902,11 +902,11 @@ node --test test/main-composition.test.mjs test/config.test.mjs test/dispatcher.
 
   manifest 每行只含 `relative_path mode bytes sha256`；不含原始绝对路径、标识或秘密。
 
-- [ ] **Step 3: 恢复到全新隔离目录**
+- [x] **Step 3: 恢复到全新隔离目录**
 
   使用 `mktemp -d /private/tmp/llw-v32-phase4-restore.XXXXXX`，恢复组件和 Skills bundle，复制脱敏/关闭网络的配置副本。
 
-- [ ] **Step 4: 验证恢复副本**
+- [x] **Step 4: 验证恢复副本**
 
   ```bash
   /usr/local/bin/npm test
@@ -915,9 +915,19 @@ node --test test/main-composition.test.mjs test/config.test.mjs test/dispatcher.
 
   Expected: 0 FAIL、Git对象完整、manifest 哈希全匹配；生产 PID/心跳/配置哈希不变。
 
-- [ ] **Step 5: 更新事实文档但不提交备份**
+- [x] **Step 5: 更新事实文档但不提交备份**
 
   只向 `SYSTEM_MAP.md` 和本计划写入备份目录名、布尔结果和测试计数。
+
+**执行证据（2026-07-24）**
+
+- 受保护回滚点：`v3-phase-4-pre-deploy-2026-07-24/`，目录 `0700`、全部工件 `0600`，最终 manifest 逐项匹配。
+- 生产快照：组件 `7837454`，三个正式 Skill 的仓库提交 `ba709b0`，配置/状态均为 version 4，当前模型 Codex，生产微信能力不存在。
+- bundle 恢复：组件和 Skills 的 `git fsck --full` 均通过；组件归档精确匹配，三个 Skill 逻辑文件精确匹配并通过 `3/3` 合同验证。U 盘上的 macOS `._*` AppleDouble 介质元数据不属于 Git 或 Skill 工件，未纳入归档。
+- 隔离回滚配置：阶段三 Schema 中不写入未知微信字段，以“微信能力不存在”表达关闭；`deepseekEnabled=false`、模型 `codex`，配置已脱敏且不会读取真实钥匙串或访问网络/正式 Vault。
+- 恢复组件完整回归：`240/240` PASS，`0` fail；LaunchAgent plist lint 通过。
+- 演练前后生产组件提交、配置/状态/模型/plist 哈希、PID `24048` 和运行次数均不变。心跳文件仅由同一生产进程正常推进 `updatedAt`，测试后仍新鲜；未停止、重启或部署生产。
+- `/private/tmp` 恢复副本和含保护快照的临时文件已删除；完整恢复证据保存在受保护回滚点中。
 
 **当前问题**
 
@@ -967,7 +977,7 @@ node --test test/main-composition.test.mjs test/config.test.mjs test/dispatcher.
 - Consumes: Task 4.9 可恢复快照；Tasks 4.2–4.8 已验证提交。
 - Produces: 先“代码部署、微信关闭”，再“所有者扫码、微信启用”的两道独立生产证据；最终模型 `codex`。
 
-- [ ] **Step 1: 门 A 批准后部署关闭状态**
+- [x] **Step 1: 门 A 批准后部署关闭状态**
 
   部署前精确检查：
 
@@ -979,13 +989,23 @@ node --test test/main-composition.test.mjs test/config.test.mjs test/dispatcher.
 
   替换代码和配置后只重启现有 `com.llw.feishu-daily-work`。
 
-- [ ] **Step 2: 验证门 A**
+  执行事实：生产组件为 `40518cc`，分支 `production/v32-phase4-wechat`；配置只新增四个微信字段且 `wechatEnabled=false`，其他既有字段逐项不变；模型为 Codex。现有 LaunchAgent 已重启一次，当前 PID `73789`、runs `6`、last exit code `0`。
+
+- [x] **Step 2: 验证门 A**
 
   在 60 秒窗口核对一个 Node 主进程、一个 lark 子进程、heartbeat 更新、微信网络/Keychain 0调用；发送一条所有者真实需要的低风险飞书任务。
+
+  自动检查已通过：完整生产目录回归 `270/270`；一个 Node 主进程和一个直属 lark-cli 消费者；heartbeat 正常推进；微信状态文件不存在；plist 和门 A 前 version 4 业务状态哈希不变；未执行扫码、微信 Keychain 读写或微信网络请求。
+
+  真实飞书验收已通过：相对门 A 前状态只新增 `1` 个飞书 outcome，`capability=daily-work`、`status=committed`、`replied=true`，无待回复和活动对话；只产生一个普通文件 `亚信工作/每日工作/2026年07月24日/工作记录.md`，验收后 SHA-256 为 `f5b773a48e7ed4e176592398a878faace41ee2b2923d17b4678c01f5c7195ea4`。验收后 PID、runs、单消费者、heartbeat、Codex 和微信关闭状态保持正常。
 
 - [ ] **Step 3: 门 B 独立批准后绑定并以测试 Vault 启用**
 
   项目所有者手工扫码；先把同一代码指向隔离测试 Vault，完成微信文字、图片、PDF、精确命令、重复和失败场景。
+
+  真实绑定首次执行在显示二维码前安全失败，固定错误码为 `wechat_response_not_json`；未产生 token、Keychain 写入或微信状态文件，生产仍为 `wechatEnabled=false`。只读诊断确认腾讯固定 HTTPS 二维码端点返回 `200`，1 MiB 内响应体是包含 `ret/qrcode/qrcode_img_content` 的合法 JSON，但实际 `content-type=application/octet-stream`，与固定文档及当前客户端要求的 JSON content-type 不一致。该事实属于协议边界变化，已按审批顺序停止；只有项目所有者单独批准“精确主机、精确端点、严格 JSON Schema、原字节上限下兼容 octet-stream”后才能用 RED→GREEN 修改并重试。
+
+  完整诊断证据、已排除原因、候选处理方案和供外部评审的问题见 `docs/reports/2026-07-24-wechat-gate-b-protocol-mismatch.md`。
 
 - [ ] **Step 4: 正式 Vault 独立批准后做有界验收**
 
