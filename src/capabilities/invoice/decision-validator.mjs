@@ -52,13 +52,14 @@ export function deriveInvoiceRuleDecision(extraction) {
   if (!/^[A-Za-z0-9]{1,32}$/.test(extraction.invoice.invoice_number)) {
     return clarify("invoice_number_invalid");
   }
-  if (!validDate(extraction.invoice.issue_date)) return clarify("issue_date_invalid");
+  const issueDate=normalizeIssueDate(extraction.invoice.issue_date);
+  if (!issueDate) return clarify("issue_date_invalid");
   if (!validAmount(extraction.invoice.total_with_tax)) return clarify("total_invalid");
 
   return {
     action:"archive_dining",
     reasonCode:"eligible",
-    invoice:structuredClone(extraction.invoice)
+    invoice:{...structuredClone(extraction.invoice),issue_date:issueDate}
   };
 }
 
@@ -76,14 +77,16 @@ function exactObject(value,fields,label) {
   for (const key of fields) if (!Object.hasOwn(value,key)) throw new Error(`missing_${label}_field`);
 }
 
-function validDate(value) {
-  const match=/^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
-  if (!match) return false;
+function normalizeIssueDate(value) {
+  const match=/^(\d{4})-(\d{2})-(\d{2})$/.exec(value) ||
+    /^(\d{4})年(\d{2})月(\d{2})日$/.exec(value);
+  if (!match) return null;
   const year=Number(match[1]),month=Number(match[2]),day=Number(match[3]);
   const date=new Date(Date.UTC(year,month-1,day));
-  return date.getUTCFullYear()===year &&
-    date.getUTCMonth()===month-1 &&
-    date.getUTCDate()===day;
+  if (date.getUTCFullYear()!==year ||
+      date.getUTCMonth()!==month-1 ||
+      date.getUTCDate()!==day) return null;
+  return `${match[1]}-${match[2]}-${match[3]}`;
 }
 
 function validAmount(value) {

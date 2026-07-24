@@ -27,6 +27,9 @@ test("invoice Skill exposes an extraction-only contract and PDF document semanti
   assert.match(skill,/原始 PDF.*归档/s);
   assert.match(skill,/AI 只负责逐字读取票面事实/);
   assert.match(skill,/Node\.js 唯一决定归档、拒绝或澄清/);
+  assert.match(skill,/`YYYY-MM-DD`.*`YYYY年MM月DD日`/s);
+  assert.match(skill,/Node\.js.*规范化.*`YYYY-MM-DD`/s);
+  assert.match(skill,/原始.*开票日期.*保持不变/s);
   assert.deepEqual(schema.required,["invoice","field_quality","category","document_verification"]);
   for (const removed of ["action","confidence","reason","question","buyer_verification","file_format"]) {
     assert.equal(JSON.stringify(schema).includes(`"${removed}"`),false);

@@ -135,16 +135,38 @@ test("maps document and category states to fixed non-writing decisions", () => {
   })),"category_uncertain");
 });
 
-test("preserves raw extracted values and applies existing archive format gates in Node", () => {
+test("normalizes the two approved date forms without mutating raw extraction", () => {
+  const chinese=clearExtraction({invoice:{issue_date:"2026年07月21日"}});
+  const chineseDecision=deriveInvoiceRuleDecision(chinese);
+  assert.equal(chineseDecision.action,"archive_dining");
+  assert.equal(chineseDecision.reasonCode,"eligible");
+  assert.equal(chineseDecision.invoice.issue_date,"2026-07-21");
+  assert.equal(chinese.invoice.issue_date,"2026年07月21日");
+
+  const iso=clearExtraction({invoice:{issue_date:"2026-07-21"}});
+  const isoDecision=deriveInvoiceRuleDecision(iso);
+  assert.equal(isoDecision.action,"archive_dining");
+  assert.equal(isoDecision.invoice.issue_date,"2026-07-21");
+  assert.equal(iso.invoice.issue_date,"2026-07-21");
+});
+
+test("preserves strict invoice, date and amount archive gates in Node", () => {
   assertNoArchive(deriveInvoiceRuleDecision(clearExtraction({
     invoice:{invoice_number:"TEST-20260724-001"}
   })),"invoice_number_invalid");
-  assertNoArchive(deriveInvoiceRuleDecision(clearExtraction({
-    invoice:{issue_date:"2026年07月24日"}
-  })),"issue_date_invalid");
-  assertNoArchive(deriveInvoiceRuleDecision(clearExtraction({
-    invoice:{issue_date:"2026-02-30"}
-  })),"issue_date_invalid");
+  for (const issue_date of [
+    "2026/07/21",
+    "26-07-21",
+    "2026年7月21日",
+    " 2026-07-21",
+    "2026-07-21 ",
+    "2026-02-30",
+    "2026年02月30日"
+  ]) {
+    assertNoArchive(deriveInvoiceRuleDecision(clearExtraction({
+      invoice:{issue_date}
+    })),"issue_date_invalid");
+  }
   assertNoArchive(deriveInvoiceRuleDecision(clearExtraction({
     invoice:{total_with_tax:"¥290.00"}
   })),"total_invalid");

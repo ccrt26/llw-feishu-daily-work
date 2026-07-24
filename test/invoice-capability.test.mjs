@@ -104,6 +104,15 @@ test("committed and existing image archives get independent exact outcomes",asyn
   assert.equal(secondHarness.calls.cleanup,1);
 });
 
+test("passes a normalized Chinese invoice date to the existing writer",async () => {
+  const h=harness({raw:extraction({invoice:{issue_date:"2026年07月21日"}})});
+  const result=await h.capability.handle(event);
+  assert.equal(result.status,"committed");
+  assert.equal(h.calls.write,1);
+  assert.equal(h.calls.writeInput.invoice.issue_date,"2026-07-21");
+  assert.match(result.reply,/开票日期：2026-07-21/);
+});
+
 test("reuses a dispatcher-prepared image without downloading, inspecting or cleaning it again",async () => {
   const h=harness();
   const preparedImage={
