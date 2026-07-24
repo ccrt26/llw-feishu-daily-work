@@ -29,7 +29,12 @@ export class InvoiceArchiveWriter {
     if (!monthInfo.isDirectory() || monthInfo.isSymbolicLink() || actualMonth !== join(archiveRoot,monthName)) throw new Error("vault_unavailable");
     for (let attempt=1;attempt<=3;attempt++) {
       const selected=await this.selectTarget(month,invoice.total_with_tax,extension,sourceHash);
-      if (selected.status !== "selected") return selected;
+      if (selected.status === "existing") {
+        return {
+          status:"existing",
+          relativePath:relative(vault,join(month,selected.fileName)).split(sep).join("/")
+        };
+      }
       const target=join(month,selected.fileName);
       const relativePath=relative(vault,target).split(sep).join("/");
       const id=attempt === 1 ? transactionId : `${transactionId}:${attempt}`;
@@ -79,17 +84,13 @@ export class InvoiceArchiveWriter {
       const candidate=parseAmountCandidate(entry.name,amount);
       if (!candidate) continue;
       const state=await targetState(join(month,entry.name),this.hashFile,sourceHash);
-      if (state === "same") return {status:"existing",relativePath:this.relativeArchivePath(month,entry.name)};
+      if (state === "same") return {status:"existing",fileName:entry.name};
       occupied.add(candidate.sequence);
     }
     let sequence=1;
     while (occupied.has(sequence)) sequence++;
     const fileName=sequence === 1 ? `${amount}.${extension}` : `${amount}-${sequence}.${extension}`;
     return {status:"selected",fileName};
-  }
-
-  relativeArchivePath(month,fileName) {
-    return relative(resolve(this.vaultRoot),join(month,fileName)).split(sep).join("/");
   }
 
   async validateVault() {

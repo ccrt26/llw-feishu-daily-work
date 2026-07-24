@@ -45,7 +45,10 @@ test("uses the smallest same-month sequence and SHA-256 idempotency",async () =>
     let result=await h.writer.archive({transactionId:"m2",source:h.source,invoice,extension:"png"});
     assert.equal(result.relativePath.endsWith("290.00-3.png"),true); assert.equal(result.status,"committed");
     result=await h.writer.archive({transactionId:"m3",source:h.source,invoice,extension:"png"});
-    assert.equal(result.status,"existing"); assert.equal(result.relativePath.endsWith("290.00-3.png"),true);
+    assert.deepEqual(result,{
+      status:"existing",
+      relativePath:"亚信工作/日常发票/餐饮发票/2026年07月/290.00-3.png"
+    });
   } finally { await rm(h.root,{recursive:true,force:true}); }
 });
 
