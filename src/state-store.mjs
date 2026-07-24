@@ -141,6 +141,7 @@ export class StateStore {
   async saveOutcome(messageId, outcome) {
     if (!this.hasOutcome(messageId)) {
       const stored = {...structuredClone(outcome), replied: false};
+      if (stored.replyTarget!==undefined) validateReplyTarget(stored.replyTarget);
       if (Array.isArray(stored.recordIds)) stored.recordIds = [...stored.recordIds];
       if (Array.isArray(stored.artifacts)) stored.artifacts = [...stored.artifacts];
       this.data.outcomes[messageId] = stored;
@@ -247,4 +248,13 @@ function pruneTransactions(transactions) {
     .filter(transaction => ["published","aborted"].includes(transaction.status))
     .sort((a,b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
   while (Object.keys(transactions).length > 2000 && eligible.length) delete transactions[eligible.shift().transactionId];
+}
+
+function validateReplyTarget(value) {
+  if (!value||typeof value!=="object"||Array.isArray(value)) throw new Error("invalid_reply_target");
+  const fields=value.source==="wechat"
+    ?new Set(["source","sourceMessageId","conversationId","contextToken"])
+    :new Set(["source","sourceMessageId","conversationId"]);
+  if (!["feishu","wechat"].includes(value.source)||Object.keys(value).length!==fields.size||Object.keys(value).some(key=>!fields.has(key))) throw new Error("invalid_reply_target");
+  for (const field of fields) if (typeof value[field]!=="string"||!value[field]) throw new Error("invalid_reply_target");
 }

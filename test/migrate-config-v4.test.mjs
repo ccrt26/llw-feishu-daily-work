@@ -50,8 +50,16 @@ test("atomically migrates exact v3 to v4 without printing protected values",asyn
     assert.equal(after.deepseekModel,"deepseek-v4-pro");
     assert.equal(after.deepseekKeychainService,"com.llw.deepseek-api");
     assert.equal(after.deepseekKeychainAccount,"llw-assistant");
+    assert.equal(after.wechatEnabled,false);
+    assert.equal(after.wechatStateFile,"/Users/test/wechat-state.json");
+    assert.equal(after.wechatKeychainService,"com.llw.wechat-ilink");
+    assert.equal(after.wechatKeychainAccount,"llw-assistant");
     assert.deepEqual(after.capabilities.invoice,{...before.capabilities.invoice,...pdfFields});
-    const {modelStateFile,deepseekEnabled,deepseekModel,deepseekKeychainService,deepseekKeychainAccount,...withoutModelFields}=after;
+    const {
+      modelStateFile,deepseekEnabled,deepseekModel,deepseekKeychainService,deepseekKeychainAccount,
+      wechatEnabled,wechatStateFile,wechatKeychainService,wechatKeychainAccount,
+      ...withoutModelFields
+    }=after;
     assert.deepEqual({...withoutModelFields,version:3,capabilities:{...after.capabilities,invoice:before.capabilities.invoice}},before);
     assert.equal((await stat(file)).mode & 0o777,0o600);
   } finally { await rm(dir,{recursive:true,force:true}); }

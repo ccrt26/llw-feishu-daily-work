@@ -5,7 +5,7 @@ import {handleModelCommand,parseLocalModelCommand,parseModelCommand} from "../sr
 const CODEX_SWITCH="模型已切换为 Codex。\n生效范围：下一条新任务。\n当前处理中任务不受影响。";
 const DEEPSEEK_SWITCH="模型已切换为 DeepSeek。\n生效范围：下一条新任务。\n当前处理中任务不受影响。\n注意：发票图片/PDF视觉判断暂不支持 DeepSeek。";
 
-test("accepts only the three exact Feishu and local model commands",() => {
+test("accepts only the three exact chat-entry and local model commands",() => {
   assert.equal(parseModelCommand("/llw-model status"),"status");
   assert.equal(parseModelCommand("/llw-model codex"),"codex");
   assert.equal(parseModelCommand("/llw-model deepseek"),"deepseek");

@@ -1,50 +1,73 @@
 const BUYER_NAME="亚信科技（成都）有限公司";
 const BUYER_TAX_ID="91510100732356360H";
-const TOP_FIELDS=new Set(["action","confidence","reason","question","invoice","buyer_verification","category","document_verification"]);
-const INVOICE_FIELDS=new Set(["invoice_number","issue_date","buyer_name","buyer_tax_id","seller_name","item_name","total_with_tax","file_format"]);
-const ACTIONS=new Set(["archive_dining","needs_clarification","reject"]);
-const CONFIDENCE=new Set(["high","medium","low"]);
-const BUYER_RESULTS=new Set(["exact_match","name_missing","name_unclear","name_mismatch","tax_id_missing","tax_id_unclear","tax_id_mismatch"]);
+const TOP_FIELDS=new Set(["invoice","field_quality","category","document_verification"]);
+const INVOICE_FIELDS=new Set([
+  "invoice_number","issue_date","buyer_name","buyer_tax_id",
+  "seller_name","item_name","total_with_tax"
+]);
+const QUALITY_RESULTS=new Set(["clear","missing","unclear"]);
 const CATEGORIES=new Set(["dining","non_dining","uncertain"]);
 const DOCUMENT_RESULTS=new Set(["single_invoice","multiple_invoices","conflicting_fields","unclear"]);
-const FORMATS=new Set(["jpeg","png","webp","pdf"]);
 
-export function validateInvoiceDecision(decision,{detectedFormat}) {
-  exactObject(decision,TOP_FIELDS,"decision");
-  exactObject(decision.invoice,INVOICE_FIELDS,"invoice");
-  if (!ACTIONS.has(decision.action)) throw new Error("invalid_action");
-  if (!CONFIDENCE.has(decision.confidence)) throw new Error("invalid_confidence");
-  if (!BUYER_RESULTS.has(decision.buyer_verification)) throw new Error("invalid_buyer_verification");
-  if (!CATEGORIES.has(decision.category)) throw new Error("invalid_category");
-  if (!DOCUMENT_RESULTS.has(decision.document_verification)) throw new Error("invalid_document_verification");
-  for (const field of ["reason","question"]) if (typeof decision[field] !== "string") throw new Error("invalid_decision_text");
-  if (!decision.reason.trim()) throw new Error("reason_required");
-  for (const field of INVOICE_FIELDS) if (typeof decision.invoice[field] !== "string") throw new Error("invalid_invoice_text");
-  if (!FORMATS.has(decision.invoice.file_format) || decision.invoice.file_format !== detectedFormat) throw new Error("format_mismatch");
-  if (detectedFormat !== "pdf" && decision.document_verification !== "single_invoice") throw new Error("invalid_document_verification_for_format");
+export function validateInvoiceExtraction(extraction) {
+  exactObject(extraction,TOP_FIELDS,"extraction");
+  exactObject(extraction.invoice,INVOICE_FIELDS,"invoice");
+  exactObject(extraction.field_quality,INVOICE_FIELDS,"field_quality");
+  if (!CATEGORIES.has(extraction.category)) throw new Error("invalid_category");
+  if (!DOCUMENT_RESULTS.has(extraction.document_verification)) throw new Error("invalid_document_verification");
 
-  const invoice=decision.invoice;
-  if (invoice.invoice_number && !/^[A-Za-z0-9]{1,32}$/.test(invoice.invoice_number)) throw new Error("invalid_invoice_number");
-  if (invoice.issue_date && !validDate(invoice.issue_date)) throw new Error("invalid_issue_date");
-  if (invoice.total_with_tax && !validAmount(invoice.total_with_tax)) throw new Error("invalid_total");
-
-  if (decision.action === "needs_clarification") {
-    if (!decision.question.trim()) throw new Error("question_required");
-  } else if (decision.question !== "") throw new Error("unexpected_question");
-
-  if (decision.action === "archive_dining") {
-    if (decision.document_verification !== "single_invoice") throw new Error("unsafe_document_verification");
-    if (decision.confidence !== "high") throw new Error("unsafe_archive_confidence");
-    if (decision.buyer_verification !== "exact_match") throw new Error("unsafe_buyer_verification");
-    if (invoice.buyer_name !== BUYER_NAME) throw new Error("buyer_name_mismatch");
-    if (invoice.buyer_tax_id !== BUYER_TAX_ID) throw new Error("buyer_tax_id_mismatch");
-    if (decision.category !== "dining") throw new Error("unsafe_invoice_category");
-    if (!/^[A-Za-z0-9]{1,32}$/.test(invoice.invoice_number)) throw new Error("invoice_number_required");
-    if (!validDate(invoice.issue_date)) throw new Error("issue_date_required");
-    if (!invoice.seller_name || !invoice.item_name) throw new Error("invoice_text_required");
-    if (!validAmount(invoice.total_with_tax)) throw new Error("total_required");
+  for (const field of INVOICE_FIELDS) {
+    const value=extraction.invoice[field];
+    const quality=extraction.field_quality[field];
+    if (typeof value !== "string") throw new Error("invalid_invoice_text");
+    if (!QUALITY_RESULTS.has(quality)) throw new Error("invalid_field_quality");
+    if ((quality === "clear" && !value.trim()) ||
+        (quality !== "clear" && value !== "")) {
+      throw new Error("invalid_field_quality_value_pair");
+    }
   }
-  return structuredClone(decision);
+  return structuredClone(extraction);
+}
+
+export function deriveInvoiceRuleDecision(extraction) {
+  const documentReason={
+    multiple_invoices:"multiple_invoices",
+    conflicting_fields:"conflicting_fields",
+    unclear:"document_unclear"
+  }[extraction.document_verification];
+  if (documentReason) return clarify(documentReason);
+
+  const qualities=Object.values(extraction.field_quality);
+  if (qualities.includes("missing")) return clarify("required_field_missing");
+  if (qualities.includes("unclear")) return clarify("required_field_unclear");
+
+  const nameMatches=extraction.invoice.buyer_name===BUYER_NAME;
+  const taxMatches=extraction.invoice.buyer_tax_id===BUYER_TAX_ID;
+  if (!nameMatches && !taxMatches) return reject("buyer_identity_mismatch");
+  if (!nameMatches) return reject("buyer_name_mismatch");
+  if (!taxMatches) return reject("buyer_tax_id_mismatch");
+
+  if (extraction.category === "non_dining") return reject("non_dining");
+  if (extraction.category === "uncertain") return clarify("category_uncertain");
+  if (!/^[A-Za-z0-9]{1,32}$/.test(extraction.invoice.invoice_number)) {
+    return clarify("invoice_number_invalid");
+  }
+  if (!validDate(extraction.invoice.issue_date)) return clarify("issue_date_invalid");
+  if (!validAmount(extraction.invoice.total_with_tax)) return clarify("total_invalid");
+
+  return {
+    action:"archive_dining",
+    reasonCode:"eligible",
+    invoice:structuredClone(extraction.invoice)
+  };
+}
+
+function reject(reasonCode) {
+  return {action:"reject",reasonCode};
+}
+
+function clarify(reasonCode) {
+  return {action:"needs_clarification",reasonCode};
 }
 
 function exactObject(value,fields,label) {
@@ -58,9 +81,11 @@ function validDate(value) {
   if (!match) return false;
   const year=Number(match[1]),month=Number(match[2]),day=Number(match[3]);
   const date=new Date(Date.UTC(year,month-1,day));
-  return date.getUTCFullYear() === year && date.getUTCMonth() === month-1 && date.getUTCDate() === day;
+  return date.getUTCFullYear()===year &&
+    date.getUTCMonth()===month-1 &&
+    date.getUTCDate()===day;
 }
 
 function validAmount(value) {
-  return /^(0|[1-9][0-9]*)\.[0-9]{2}$/.test(value) && Number(value) > 0;
+  return /^(0|[1-9][0-9]*)\.[0-9]{2}$/.test(value) && Number(value)>0;
 }

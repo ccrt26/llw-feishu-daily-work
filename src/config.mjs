@@ -3,7 +3,12 @@ import {constants as fsConstants} from "node:fs";
 import {access,lstat,mkdir,open,readFile,rename} from "node:fs/promises";
 import {dirname,isAbsolute,join,parse,resolve} from "node:path";
 
-const TOP_FIELDS=new Set(["version","vaultRoot","stateFile","heartbeatFile","modelStateFile","deepseekEnabled","deepseekModel","deepseekKeychainService","deepseekKeychainAccount","cliPath","codexPath","profile","senderId","chatId","capabilities"]);
+const TOP_FIELDS=new Set([
+  "version","vaultRoot","stateFile","heartbeatFile","modelStateFile",
+  "deepseekEnabled","deepseekModel","deepseekKeychainService","deepseekKeychainAccount",
+  "wechatEnabled","wechatStateFile","wechatKeychainService","wechatKeychainAccount",
+  "cliPath","codexPath","profile","senderId","chatId","capabilities"
+]);
 const DEEPSEEK_MODELS=new Set(["deepseek-v4-pro"]);
 const DAILY_FIELDS=new Set(["enabled","skillRoot"]);
 const INVOICE_FIELDS=new Set([
@@ -51,10 +56,12 @@ export async function validatePdfTools(invoice) {
 function validateConfig(config,requireBinding,configFile) {
   exact(config,TOP_FIELDS,"config");
   if (config.version !== 4) throw new Error("invalid_config_version");
-  for (const field of ["vaultRoot","stateFile","heartbeatFile","modelStateFile","cliPath","codexPath"]) absolute(config[field],field);
+  for (const field of ["vaultRoot","stateFile","heartbeatFile","modelStateFile","wechatStateFile","cliPath","codexPath"]) absolute(config[field],field);
   if (typeof config.deepseekEnabled!=="boolean") throw new Error("invalid_deepseek_enabled");
   if (!DEEPSEEK_MODELS.has(config.deepseekModel)) throw new Error("invalid_deepseek_model");
   for (const field of ["deepseekKeychainService","deepseekKeychainAccount"]) if (typeof config[field]!=="string"||!/^[A-Za-z0-9._@-]{1,128}$/.test(config[field])) throw new Error("invalid_deepseek_keychain_name");
+  if (typeof config.wechatEnabled!=="boolean") throw new Error("invalid_wechat_enabled");
+  for (const field of ["wechatKeychainService","wechatKeychainAccount"]) if (typeof config[field]!=="string"||!/^[A-Za-z0-9._@-]{1,128}$/.test(config[field])) throw new Error("invalid_wechat_keychain_name");
   if (typeof config.profile !== "string" || !config.profile) throw new Error("invalid_profile");
   for (const field of ["senderId","chatId"]) {
     if (config[field] !== null && (typeof config[field] !== "string" || !config[field])) throw new Error(`invalid_binding:${field}`);
@@ -67,8 +74,10 @@ function validateConfig(config,requireBinding,configFile) {
   absolute(daily.skillRoot,"daily-work.skillRoot");
   for (const field of ["skillRoot","tempRoot","archiveRoot"]) absolute(invoice[field],`invoice.${field}`);
   for (const field of ["pdfInfoPath","pdfToTextPath","pdfToPpmPath"]) absolute(invoice[field],`invoice.${field}`);
-  const protectedPaths=[configFile,config.vaultRoot,config.stateFile,config.heartbeatFile,config.cliPath,config.codexPath,daily.skillRoot,invoice.skillRoot,invoice.tempRoot,invoice.archiveRoot,invoice.pdfInfoPath,invoice.pdfToTextPath,invoice.pdfToPpmPath];
+  const protectedPaths=[configFile,config.vaultRoot,config.stateFile,config.heartbeatFile,config.wechatStateFile,config.cliPath,config.codexPath,daily.skillRoot,invoice.skillRoot,invoice.tempRoot,invoice.archiveRoot,invoice.pdfInfoPath,invoice.pdfToTextPath,invoice.pdfToPpmPath];
   if (protectedPaths.filter(value=>typeof value==="string").some(value=>foldedPath(value)===foldedPath(config.modelStateFile))) throw new Error("invalid_model_state_file_alias");
+  const nonWechatPaths=[configFile,config.vaultRoot,config.stateFile,config.heartbeatFile,config.modelStateFile,config.cliPath,config.codexPath,daily.skillRoot,invoice.skillRoot,invoice.tempRoot,invoice.archiveRoot,invoice.pdfInfoPath,invoice.pdfToTextPath,invoice.pdfToPpmPath];
+  if (nonWechatPaths.filter(value=>typeof value==="string").some(value=>foldedPath(value)===foldedPath(config.wechatStateFile))) throw new Error("invalid_wechat_state_file_alias");
   if (resolve(config.modelStateFile)!==resolve(join(dirname(config.stateFile),"model-state"))) throw new Error("invalid_model_state_file");
   if (invoice.archiveRoot !== join(config.vaultRoot,"亚信工作","日常发票","餐饮发票")) throw new Error("invalid_invoice_archive_root");
   if (invoice.maxFileBytes !== 20 * 1024 * 1024) throw new Error("invalid_max_file_bytes");
@@ -88,6 +97,11 @@ function normalizeLoadedConfig(config) {
   if (!Object.hasOwn(normalized,"deepseekModel")) normalized.deepseekModel="deepseek-v4-pro";
   if (!Object.hasOwn(normalized,"deepseekKeychainService")) normalized.deepseekKeychainService="com.llw.deepseek-api";
   if (!Object.hasOwn(normalized,"deepseekKeychainAccount")) normalized.deepseekKeychainAccount="llw-assistant";
+  const missingWechat=["wechatStateFile","wechatKeychainService","wechatKeychainAccount"].some(field=>!Object.hasOwn(normalized,field));
+  if (!Object.hasOwn(normalized,"wechatEnabled")||missingWechat) normalized.wechatEnabled=false;
+  if (!Object.hasOwn(normalized,"wechatStateFile")&&typeof normalized.stateFile==="string"&&isAbsolute(normalized.stateFile)) normalized.wechatStateFile=join(dirname(normalized.stateFile),"wechat-state.json");
+  if (!Object.hasOwn(normalized,"wechatKeychainService")) normalized.wechatKeychainService="com.llw.wechat-ilink";
+  if (!Object.hasOwn(normalized,"wechatKeychainAccount")) normalized.wechatKeychainAccount="llw-assistant";
   return normalized;
 }
 

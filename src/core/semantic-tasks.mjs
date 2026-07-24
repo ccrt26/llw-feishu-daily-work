@@ -21,6 +21,23 @@ export function createRouterTextTask({invoke=invokeIntentRouter,invokeDeepSeekCl
   };
 }
 
+export function createRouterVisualTask({invoke=invokeIntentRouter,...configuration}) {
+  const fixed=structuredClone(configuration);
+  return async input=>{
+    if (!validVisualInput(input)) throw new Error("invalid_router_visual_input");
+    if (input.model!=="codex") throw new Error("invalid_task_model");
+    return invoke({
+      ...fixed,
+      input:{
+        message:{type:"image",beijingTime:input.beijingTime},
+        conversation:null,
+        capabilities:structuredClone(input.capabilities)
+      },
+      imageFile:input.preparedImage.file
+    });
+  };
+}
+
 export function createDailyWorkInterpretTask({invoke=invokeCodex,invokeDeepSeekClient=invokeDeepSeek,deepseekEnabled=false,...configuration}) {
   const {deepseekModel,deepseekKeychainService,deepseekKeychainAccount,...codexConfiguration}=configuration;
   const fixed=structuredClone(codexConfiguration);
@@ -44,4 +61,16 @@ export function createInvoiceVisualTask({invoke=invokeInvoiceDecision,...configu
     if (!input||typeof input!=="object"||!input.analysisInput) throw new Error("invalid_invoice_visual_input");
     return invoke({...fixed,...input});
   };
+}
+
+function validVisualInput(input) {
+  if (!input||typeof input!=="object"||input.model!=="codex"||typeof input.beijingTime!=="string"||
+      !input.beijingTime||!Array.isArray(input.capabilities)) return false;
+  const image=input.preparedImage;
+  return !!image&&typeof image==="object"&&
+    typeof image.tempDir==="string"&&image.tempDir.length>0&&
+    typeof image.file==="string"&&image.file.length>0&&
+    new Set(["jpeg","png","webp"]).has(image.detectedFormat)&&
+    new Set(["jpg","jpeg","png","webp"]).has(image.archiveExtension)&&
+    Number.isSafeInteger(image.sizeBytes)&&image.sizeBytes>0;
 }

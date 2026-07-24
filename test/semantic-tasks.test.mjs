@@ -1,21 +1,45 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {createRouterTextTask,createDailyWorkInterpretTask,createInvoiceVisualTask} from "../src/core/semantic-tasks.mjs";
+import * as semanticTasks from "../src/core/semantic-tasks.mjs";
 import {FORBIDDEN_AI_INPUTS} from "./fixtures/forbidden-ai-inputs.mjs";
 
-test("exposes exactly the three named semantic task boundaries over existing clients",async () => {
+const {
+  createRouterTextTask,
+  createRouterVisualTask,
+  createDailyWorkInterpretTask,
+  createInvoiceVisualTask
+}=semanticTasks;
+
+test("exposes exactly the four named semantic task boundaries over existing clients",async () => {
   const calls=[];
   const invoke=async input=>{calls.push(structuredClone(input));return {ok:true};};
   const common={codexPath:"/runtime/codex",workspaceRoot:"/vault",skillRoot:"/skill",timeoutMs:321,invoke};
   const router=createRouterTextTask(common);
+  assert.equal(typeof createRouterVisualTask,"function");
+  const visual=createRouterVisualTask(common);
   const daily=createDailyWorkInterpretTask(common);
   const invoice=createInvoiceVisualTask(common);
   const routerInput={message:{type:"text",text:"记录工作",beijingTime:"2026-07-23 09:30:00"},conversation:null,capabilities:[]};
+  const visualInput={
+    model:"codex",
+    preparedImage:{tempDir:"/tmp/job-safe",file:"/tmp/job-safe/image.png",detectedFormat:"png",archiveExtension:"png",sizeBytes:123},
+    beijingTime:"2026-07-23 09:30:00",
+    capabilities:[{capability:"invoice",purpose:"处理发票",accepts:["image"],positive_examples:["发票图片"],negative_examples:["普通照片"],supports_continuation:false}]
+  };
   const dailyInput={message:{text:"今天完成评审",createTime:1784426400000},conversation:null,candidates:[]};
   const invoiceInput={analysisInput:{detectedFormat:"png"}};
-  await router(routerInput); await daily(dailyInput); await invoice(invoiceInput);
+  await router(routerInput); await visual(visualInput); await daily(dailyInput); await invoice(invoiceInput);
   assert.deepEqual(calls,[
     {codexPath:"/runtime/codex",workspaceRoot:"/vault",skillRoot:"/skill",timeoutMs:321,input:routerInput},
+    {
+      codexPath:"/runtime/codex",workspaceRoot:"/vault",skillRoot:"/skill",timeoutMs:321,
+      input:{
+        message:{type:"image",beijingTime:"2026-07-23 09:30:00"},
+        conversation:null,
+        capabilities:visualInput.capabilities
+      },
+      imageFile:"/tmp/job-safe/image.png"
+    },
     {codexPath:"/runtime/codex",workspaceRoot:"/vault",skillRoot:"/skill",timeoutMs:321,...dailyInput},
     {codexPath:"/runtime/codex",workspaceRoot:"/vault",skillRoot:"/skill",timeoutMs:321,...invoiceInput}
   ]);

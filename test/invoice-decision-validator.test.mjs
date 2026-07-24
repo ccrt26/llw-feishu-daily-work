@@ -1,86 +1,154 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {validateInvoiceDecision} from "../src/capabilities/invoice/decision-validator.mjs";
+import {
+  validateInvoiceExtraction,
+  deriveInvoiceRuleDecision
+} from "../src/capabilities/invoice/decision-validator.mjs";
 
-function validDecision() {
+const FIELDS=[
+  "invoice_number","issue_date","buyer_name","buyer_tax_id",
+  "seller_name","item_name","total_with_tax"
+];
+
+function clearExtraction(overrides={}) {
   return {
-    action:"archive_dining", confidence:"high", reason:"票面字段清晰且餐饮类别明确", question:"",
-    invoice:{invoice_number:"123456789012",issue_date:"2026-07-18",buyer_name:"亚信科技（成都）有限公司",buyer_tax_id:"91510100732356360H",seller_name:"成都餐饮有限公司",item_name:"餐饮服务",total_with_tax:"290.00",file_format:"png"},
-    buyer_verification:"exact_match", category:"dining", document_verification:"single_invoice"
+    invoice:{
+      invoice_number:"123456789012",
+      issue_date:"2026-07-18",
+      buyer_name:"亚信科技（成都）有限公司",
+      buyer_tax_id:"91510100732356360H",
+      seller_name:"测试餐饮有限公司",
+      item_name:"餐饮服务",
+      total_with_tax:"290.00",
+      ...(overrides.invoice||{})
+    },
+    field_quality:{
+      invoice_number:"clear",
+      issue_date:"clear",
+      buyer_name:"clear",
+      buyer_tax_id:"clear",
+      seller_name:"clear",
+      item_name:"clear",
+      total_with_tax:"clear",
+      ...(overrides.field_quality||{})
+    },
+    category:overrides.category??"dining",
+    document_verification:overrides.document_verification??"single_invoice"
   };
 }
 
-test("authorizes only a complete exact dining invoice", () => {
-  assert.deepEqual(validateInvoiceDecision(validDecision(),{detectedFormat:"png"}),validDecision());
+function assertNoArchive(decision,reasonCode) {
+  assert.equal(decision.reasonCode,reasonCode);
+  assert.notEqual(decision.action,"archive_dining");
+  assert.equal(Object.hasOwn(decision,"invoice"),false);
+}
+
+test("validates and deep-clones only the exact InvoiceExtraction shape", () => {
+  const extraction=clearExtraction();
+  const validated=validateInvoiceExtraction(extraction);
+  assert.deepEqual(validated,extraction);
+  assert.notEqual(validated,extraction);
+  assert.notEqual(validated.invoice,extraction.invoice);
+
+  assert.throws(
+    () => validateInvoiceExtraction({...extraction,action:"archive_dining"}),
+    /unknown_extraction_field/
+  );
+  const missing=clearExtraction();
+  delete missing.field_quality.seller_name;
+  assert.throws(() => validateInvoiceExtraction(missing),/missing_field_quality_field/);
 });
 
-test("rejects every unsafe archive mutation", () => {
-  const cases = [
-    d => { d.invoice.buyer_name="亚信科技(成都)有限公司"; },
-    d => { d.invoice.buyer_tax_id="915101007323563600"; },
-    d => { delete d.invoice.seller_name; },
-    d => { d.confidence="medium"; },
-    d => { d.category="non_dining"; },
-    d => { d.invoice.invoice_number="12-34"; },
-    d => { d.invoice.issue_date="2026-02-30"; },
-    d => { d.invoice.total_with_tax="0.00"; },
-    d => { d.invoice.total_with_tax="290.001"; },
-    d => { d.invoice.file_format="jpeg"; },
-    d => { d.question="是否归档？"; },
-    d => { d.invoice.extra="unsafe"; },
-    d => { d.extra="unsafe"; },
-    d => { d.buyer_verification="name_unclear"; },
-    d => { d.invoice.item_name=""; }
-  ];
-  for (const mutate of cases) {
-    const decision=validDecision(); mutate(decision);
-    assert.throws(() => validateInvoiceDecision(decision,{detectedFormat:"png"}));
+test("requires every value and quality pair to be internally consistent", () => {
+  for (const field of FIELDS) {
+    assert.throws(
+      () => validateInvoiceExtraction(clearExtraction({
+        invoice:{[field]:""},
+        field_quality:{[field]:"clear"}
+      })),
+      /invalid_field_quality_value_pair/
+    );
+    assert.throws(
+      () => validateInvoiceExtraction(clearExtraction({
+        field_quality:{[field]:"missing"}
+      })),
+      /invalid_field_quality_value_pair/
+    );
+    assert.throws(
+      () => validateInvoiceExtraction(clearExtraction({
+        field_quality:{[field]:"invented"}
+      })),
+      /invalid_field_quality/
+    );
   }
 });
 
-test("validates non-writing decisions but never turns them into archive permission", () => {
-  const unclear=validDecision();
-  unclear.action="needs_clarification"; unclear.confidence="low"; unclear.question="购买方税号无法辨认，请重新发送清晰票面。";
-  unclear.invoice.buyer_tax_id=""; unclear.buyer_verification="tax_id_unclear"; unclear.category="uncertain";
-  assert.equal(validateInvoiceDecision(unclear,{detectedFormat:"png"}).action,"needs_clarification");
-
-  const rejected=validDecision();
-  rejected.action="reject"; rejected.reason="购买方名称不匹配"; rejected.invoice.buyer_name="其他公司"; rejected.buyer_verification="name_mismatch";
-  assert.equal(validateInvoiceDecision(rejected,{detectedFormat:"png"}).action,"reject");
-  assert.throws(() => validateInvoiceDecision({...rejected,question:"说明一下"},{detectedFormat:"png"}),/unexpected_question/);
-  assert.throws(() => validateInvoiceDecision({...unclear,question:""},{detectedFormat:"png"}),/question_required/);
+test("derives the only archive authorization from a complete exact extraction", () => {
+  const decision=deriveInvoiceRuleDecision(validateInvoiceExtraction(clearExtraction()));
+  assert.deepEqual(decision,{
+    action:"archive_dining",
+    reasonCode:"eligible",
+    invoice:clearExtraction().invoice
+  });
 });
 
-test("pdf archive requires exactly one consistent invoice", () => {
-  const pdf=validDecision();
-  pdf.invoice.file_format="pdf";
-  assert.equal(validateInvoiceDecision(pdf,{detectedFormat:"pdf"}).document_verification,"single_invoice");
-  for (const state of ["multiple_invoices","conflicting_fields","unclear"]) {
-    const unsafe=structuredClone(pdf);
-    unsafe.document_verification=state;
-    assert.throws(() => validateInvoiceDecision(unsafe,{detectedFormat:"pdf"}),/unsafe_document_verification/);
+test("derives exact buyer mismatch outcomes without archive authorization", () => {
+  assertNoArchive(deriveInvoiceRuleDecision(clearExtraction({
+    invoice:{buyer_name:"其他测试公司"}
+  })),"buyer_name_mismatch");
+  assertNoArchive(deriveInvoiceRuleDecision(clearExtraction({
+    invoice:{buyer_tax_id:"OTHER"}
+  })),"buyer_tax_id_mismatch");
+  assertNoArchive(deriveInvoiceRuleDecision(clearExtraction({
+    invoice:{buyer_name:"其他测试公司",buyer_tax_id:"OTHER"}
+  })),"buyer_identity_mismatch");
+});
+
+test("maps every missing or unclear required field to clarification", () => {
+  for (const field of FIELDS) {
+    assertNoArchive(deriveInvoiceRuleDecision(clearExtraction({
+      invoice:{[field]:""},
+      field_quality:{[field]:"missing"}
+    })),"required_field_missing");
+    assertNoArchive(deriveInvoiceRuleDecision(clearExtraction({
+      invoice:{[field]:""},
+      field_quality:{[field]:"unclear"}
+    })),"required_field_unclear");
   }
 });
 
-test("document verification is required, exact and action-compatible", () => {
-  const missing=validDecision(); delete missing.document_verification;
-  assert.throws(() => validateInvoiceDecision(missing,{detectedFormat:"png"}),/missing_decision_field/);
-  const invalid=validDecision(); invalid.document_verification="invented";
-  assert.throws(() => validateInvoiceDecision(invalid,{detectedFormat:"png"}),/invalid_document_verification/);
-  for (const state of ["multiple_invoices","conflicting_fields","unclear"]) {
-    const clarify=validDecision();
-    clarify.action="needs_clarification"; clarify.confidence="low";
-    clarify.invoice.file_format="pdf";
-    clarify.document_verification=state; clarify.question="请重新发送一张发票一个文件的完整原件。";
-    assert.equal(validateInvoiceDecision(clarify,{detectedFormat:"pdf"}).action,"needs_clarification");
-  }
+test("maps document and category states to fixed non-writing decisions", () => {
+  assertNoArchive(deriveInvoiceRuleDecision(clearExtraction({
+    document_verification:"multiple_invoices"
+  })),"multiple_invoices");
+  assertNoArchive(deriveInvoiceRuleDecision(clearExtraction({
+    document_verification:"conflicting_fields"
+  })),"conflicting_fields");
+  assertNoArchive(deriveInvoiceRuleDecision(clearExtraction({
+    document_verification:"unclear"
+  })),"document_unclear");
+  assertNoArchive(deriveInvoiceRuleDecision(clearExtraction({
+    category:"non_dining"
+  })),"non_dining");
+  assertNoArchive(deriveInvoiceRuleDecision(clearExtraction({
+    category:"uncertain"
+  })),"category_uncertain");
 });
 
-test("non-PDF inputs cannot claim multi-page PDF document states", () => {
-  for (const state of ["multiple_invoices","conflicting_fields","unclear"]) {
-    const decision=validDecision();
-    decision.action="needs_clarification"; decision.confidence="low";
-    decision.document_verification=state; decision.question="请重新发送完整原件。";
-    assert.throws(() => validateInvoiceDecision(decision,{detectedFormat:"png"}),/invalid_document_verification_for_format/);
-  }
+test("preserves raw extracted values and applies existing archive format gates in Node", () => {
+  assertNoArchive(deriveInvoiceRuleDecision(clearExtraction({
+    invoice:{invoice_number:"TEST-20260724-001"}
+  })),"invoice_number_invalid");
+  assertNoArchive(deriveInvoiceRuleDecision(clearExtraction({
+    invoice:{issue_date:"2026年07月24日"}
+  })),"issue_date_invalid");
+  assertNoArchive(deriveInvoiceRuleDecision(clearExtraction({
+    invoice:{issue_date:"2026-02-30"}
+  })),"issue_date_invalid");
+  assertNoArchive(deriveInvoiceRuleDecision(clearExtraction({
+    invoice:{total_with_tax:"¥290.00"}
+  })),"total_invalid");
+  assertNoArchive(deriveInvoiceRuleDecision(clearExtraction({
+    invoice:{total_with_tax:"0.00"}
+  })),"total_invalid");
 });

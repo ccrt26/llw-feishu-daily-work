@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { normalizeEvent } from "../src/core/event-normalizer.mjs";
-import { checkSecurity } from "../src/core/security-gate.mjs";
+import { checkSecurity,checkIncomingSecurity } from "../src/core/security-gate.mjs";
 import { createRouterMessage } from "../src/core/router-message.mjs";
-import { createFeishuIncomingMessage } from "../src/core/incoming-message.mjs";
+import { createFeishuIncomingMessage,createWechatIncomingMessage } from "../src/core/incoming-message.mjs";
 
 const raw = {
   event_id: "e1",
@@ -48,6 +48,33 @@ test("allows only the bound sender in the bound p2p chat", () => {
   assert.deepEqual(checkSecurity({...event, senderId: "u2"}, binding), {ok:false, reason:"sender_not_allowed", notify:false});
   assert.deepEqual(checkSecurity({...event, chatId: "c2"}, binding), {ok:false, reason:"chat_not_allowed", notify:false});
   assert.deepEqual(checkSecurity({...event, chatType: "group"}, binding), {ok:false, reason:"chat_not_p2p", notify:false});
+});
+
+test("allows only the owner and conversation bound to each sanitized source",() => {
+  const feishu=createFeishuIncomingMessage(normalizeEvent(raw));
+  const wechat=createWechatIncomingMessage({
+    messageId:"1001",userId:"wx-owner",conversationId:"wx-owner",
+    createTimeMs:1784851200000,type:"text",text:"今天完成评审",
+    contextToken:"test-context"
+  });
+  const bindings={
+    feishu:{userId:"u1",conversationId:"c1"},
+    wechat:{userId:"wx-owner",conversationId:"wx-owner"}
+  };
+  assert.deepEqual(checkIncomingSecurity(feishu,bindings),{ok:true});
+  assert.deepEqual(checkIncomingSecurity(wechat,bindings),{ok:true});
+  assert.deepEqual(
+    checkIncomingSecurity({...wechat,userId:"wx-other"},bindings),
+    {ok:false,reason:"sender_not_allowed",notify:false}
+  );
+  assert.deepEqual(
+    checkIncomingSecurity({...wechat,conversationId:"wx-other"},bindings),
+    {ok:false,reason:"chat_not_allowed",notify:false}
+  );
+  assert.deepEqual(
+    checkIncomingSecurity(wechat,{feishu:bindings.feishu}),
+    {ok:false,reason:"invalid_binding",notify:false}
+  );
 });
 
 test("builds minimal router messages without Feishu identifiers or resource keys", () => {
