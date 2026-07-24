@@ -14,6 +14,149 @@ function json(value,{status=200,headers={}}={}) {
   });
 }
 
+function octetJson(value,{status=200,headers={}}={}) {
+  return new Response(JSON.stringify(value),{
+    status,
+    headers:{"content-type":"application/octet-stream",...headers}
+  });
+}
+
+test("accepts bounded octet-stream JSON objects for the four fixed iLink control operations",async () => {
+  const responses=[
+    octetJson(
+      {ret:0,qrcode:"test-qr-key",qrcode_img_content:"https://weixin.qq.com/test-qr"},
+      {headers:{"content-type":"application/octet-stream; charset=utf-8"}}
+    ),
+    octetJson({status:"confirmed",bot_token:TOKEN,ilink_bot_id:"bot-test",ilink_user_id:"wx-owner"}),
+    octetJson({ret:0,msgs:[],get_updates_buf:"cursor-2"}),
+    octetJson({})
+  ];
+  const api=createWechatApi({
+    baseUrl:BASE_URL,token:TOKEN,uIn:UIN,
+    fetchImpl:async()=>responses.shift()
+  });
+
+  assert.equal((await api.getQrCode()).qrcode,"test-qr-key");
+  assert.equal((await api.pollQrStatus({qrCode:"test-qr-key"})).status,"confirmed");
+  assert.equal((await api.getUpdates({cursor:"cursor-1"})).ret,0);
+  await api.sendMessage({
+    toUserId:"wx-owner",contextToken:"test-context",text:"处理完成",clientId:"client-1"
+  });
+
+  const structuredJsonApi=createWechatApi({
+    baseUrl:BASE_URL,token:TOKEN,uIn:UIN,
+    fetchImpl:async()=>json(
+      {ret:0,qrcode:"test-qr-key",qrcode_img_content:"https://weixin.qq.com/test-qr"},
+      {headers:{"content-type":"application/vnd.ilink+json; charset=utf-8"}}
+    )
+  });
+  assert.equal((await structuredJsonApi.getQrCode()).qrcode,"test-qr-key");
+});
+
+test("rejects every non-object JSON control response for JSON and octet-stream media types",async () => {
+  for (const contentType of ["application/json","application/octet-stream"]) {
+    for (const value of [[],["unexpected"],"unexpected",7,null]) {
+      const api=createWechatApi({
+        baseUrl:BASE_URL,token:TOKEN,uIn:UIN,
+        fetchImpl:async()=>new Response(JSON.stringify(value),{headers:{"content-type":contentType}})
+      });
+      await assert.rejects(
+        ()=>api.sendMessage({
+          toUserId:"wx-owner",contextToken:"test-context",text:"处理完成",clientId:"client-1"
+        }),
+        error=>error.message==="wechat_protocol_error"
+      );
+    }
+  }
+});
+
+test("requires successful ret and bounded fields for QR control responses",async () => {
+  const valid={
+    ret:0,
+    qrcode:"test-qr-key",
+    qrcode_img_content:"https://weixin.qq.com/test-qr",
+    ignored_upstream_field:"ignored"
+  };
+  for (const value of [
+    {...valid,ret:1},
+    {...valid,ret:"0"},
+    {...valid,qrcode:"q".repeat(4097)},
+    {...valid,qrcode_img_content:`https://weixin.qq.com/${"q".repeat(4097)}`}
+  ]) {
+    const api=createWechatApi({
+      baseUrl:BASE_URL,token:TOKEN,uIn:UIN,
+      fetchImpl:async()=>octetJson(value)
+    });
+    await assert.rejects(()=>api.getQrCode(),error=>error.message==="wechat_protocol_error");
+  }
+
+  const api=createWechatApi({
+    baseUrl:BASE_URL,token:TOKEN,uIn:UIN,
+    fetchImpl:async()=>octetJson(valid)
+  });
+  assert.deepEqual(await api.getQrCode(),{
+    qrcode:"test-qr-key",
+    qrcode_img_content:"https://weixin.qq.com/test-qr"
+  });
+});
+
+test("accepts only the fixed QR status enum",async () => {
+  for (const value of [
+    {status:"wait"},
+    {status:"scaned"},
+    {status:"expired"},
+    {status:"scaned_but_redirect",redirect_host:"ilink2.weixin.qq.com"},
+    {
+      status:"confirmed",
+      bot_token:TOKEN,
+      ilink_bot_id:"bot-test",
+      ilink_user_id:"wx-owner",
+      baseurl:"https://ilink2.weixin.qq.com"
+    }
+  ]) {
+    const api=createWechatApi({
+      baseUrl:BASE_URL,token:TOKEN,uIn:UIN,
+      fetchImpl:async()=>octetJson(value)
+    });
+    assert.equal((await api.pollQrStatus({qrCode:"test-qr-key"})).status,value.status);
+  }
+
+  for (const status of ["unknown","",7,null]) {
+    const api=createWechatApi({
+      baseUrl:BASE_URL,token:TOKEN,uIn:UIN,
+      fetchImpl:async()=>octetJson({status})
+    });
+    await assert.rejects(
+      ()=>api.pollQrStatus({qrCode:"test-qr-key"}),
+      error=>error.message==="wechat_protocol_error"
+    );
+  }
+});
+
+test("accepts only empty or successful object results from sendMessage",async () => {
+  for (const value of [{},{ret:0},{ret:0,ignored_upstream_field:"ignored"}]) {
+    const api=createWechatApi({
+      baseUrl:BASE_URL,token:TOKEN,uIn:UIN,
+      fetchImpl:async()=>octetJson(value)
+    });
+    await api.sendMessage({
+      toUserId:"wx-owner",contextToken:"test-context",text:"处理完成",clientId:"client-1"
+    });
+  }
+  for (const ret of [1,-1,"0",null]) {
+    const api=createWechatApi({
+      baseUrl:BASE_URL,token:TOKEN,uIn:UIN,
+      fetchImpl:async()=>octetJson({ret})
+    });
+    await assert.rejects(
+      ()=>api.sendMessage({
+        toUserId:"wx-owner",contextToken:"test-context",text:"处理完成",clientId:"client-1"
+      }),
+      error=>error.message==="wechat_protocol_error"
+    );
+  }
+});
+
 test("uses the fixed direct HTTPS protocol for QR, updates, replies and bounded media",async () => {
   const calls=[];
   const responses=[
@@ -87,7 +230,10 @@ test("maps unsafe, failed, non-JSON and oversized responses to value-free errors
   for (const [response,code] of [
     [new Response("secret detail",{status:503,headers:{"content-type":"text/plain"}}),"wechat_http_error"],
     [new Response("not-json",{headers:{"content-type":"text/plain"}}),"wechat_response_not_json"],
-    [new Response("x".repeat(1_048_577),{headers:{"content-type":"application/json"}}),"wechat_response_too_large"]
+    [new Response("not-json secret detail",{headers:{"content-type":"application/octet-stream"}}),"wechat_response_not_json"],
+    [new Response("x".repeat(1_048_577),{headers:{"content-type":"application/json"}}),"wechat_response_too_large"],
+    [new Response("x".repeat(1_048_577),{headers:{"content-type":"application/octet-stream"}}),"wechat_response_too_large"],
+    [new Response("{}",{headers:{"content-type":"text/html"}}),"wechat_response_not_json"]
   ]) {
     const api=createWechatApi({baseUrl:BASE_URL,token:TOKEN,uIn:UIN,fetchImpl:async()=>response});
     await assert.rejects(()=>api.getUpdates(),error=>error.message===code&&!error.message.includes(TOKEN));
@@ -98,6 +244,15 @@ test("maps unsafe, failed, non-JSON and oversized responses to value-free errors
     fetchImpl:async()=>{throw new DOMException("secret detail","AbortError");}
   });
   await assert.rejects(()=>timed.getUpdates(),error=>error.message==="wechat_timeout");
+
+  const redirected=createWechatApi({
+    baseUrl:BASE_URL,token:TOKEN,uIn:UIN,
+    fetchImpl:async()=>{throw new TypeError(`redirect ${TOKEN}`);}
+  });
+  await assert.rejects(
+    ()=>redirected.getUpdates(),
+    error=>error.message==="wechat_network_error"&&!error.message.includes(TOKEN)
+  );
 
   const brokenBody=createWechatApi({
     baseUrl:BASE_URL,token:TOKEN,uIn:UIN,

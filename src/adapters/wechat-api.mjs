@@ -5,6 +5,7 @@ const MAX_JSON_BYTES=1024*1024;
 const MAX_MEDIA_BYTES=20*1024*1024+16;
 const BASE_INFO={channel_version:"2.4.6",bot_agent:"LLWAssistant/1.0"};
 const CLIENT_VERSION=132102;
+const QR_STATUSES=new Set(["wait","scaned","scaned_but_redirect","confirmed","expired"]);
 
 export function createWechatApi({fetchImpl=fetch,baseUrl,token,uIn}) {
   if (typeof fetchImpl!=="function"||!validUin(uIn)||!validToken(token,true)) throw safeError("wechat_configuration_invalid");
@@ -17,7 +18,7 @@ export function createWechatApi({fetchImpl=fetch,baseUrl,token,uIn}) {
       {method:"POST",headers:headers(false),body:JSON.stringify({local_token_list:[]})},
       timeoutMs
     );
-    if (!nonempty(value?.qrcode)||!nonempty(value?.qrcode_img_content)) throw safeError("wechat_protocol_error");
+    if ((value.ret!==undefined&&value.ret!==0)||!bounded(value.qrcode,4096)||!bounded(value.qrcode_img_content,4096)) throw safeError("wechat_protocol_error");
     validateRemoteUrl(value.qrcode_img_content,"wechat_protocol_error");
     return {qrcode:value.qrcode,qrcode_img_content:value.qrcode_img_content};
   }
@@ -28,7 +29,7 @@ export function createWechatApi({fetchImpl=fetch,baseUrl,token,uIn}) {
     url.searchParams.set("qrcode",qrCode);
     if (verifyCode!==undefined) url.searchParams.set("verify_code",verifyCode);
     const value=await requestJson(url,{method:"GET",headers:commonHeaders()},timeoutMs);
-    if (!value||typeof value!=="object"||Array.isArray(value)||!nonempty(value.status)) throw safeError("wechat_protocol_error");
+    if (!QR_STATUSES.has(value.status)) throw safeError("wechat_protocol_error");
     return value;
   }
 
@@ -102,10 +103,13 @@ export function createWechatApi({fetchImpl=fetch,baseUrl,token,uIn}) {
   async function requestJson(url,options,timeoutMs) {
     const response=await request(url,options,timeoutMs);
     const contentType=response.headers.get("content-type")?.toLowerCase()||"";
-    if (!/^application\/(?:json|[a-z0-9.+-]+\+json)(?:;|$)/.test(contentType)) throw safeError("wechat_response_not_json");
+    if (!/^application\/(?:json|[a-z0-9.+-]+\+json|octet-stream)(?:;|$)/.test(contentType)) throw safeError("wechat_response_not_json");
     const bytes=await safeReadBounded(response,MAX_JSON_BYTES);
-    try { return JSON.parse(bytes.toString("utf8")); }
+    let value;
+    try { value=JSON.parse(bytes.toString("utf8")); }
     catch { throw safeError("wechat_response_not_json"); }
+    if (!value||typeof value!=="object"||Array.isArray(value)) throw safeError("wechat_protocol_error");
+    return value;
   }
 
   async function request(url,options,timeoutMs) {
