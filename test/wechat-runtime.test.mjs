@@ -95,6 +95,87 @@ test("contains network failures and bounded retries inside the WeChat listener",
   assert.deepEqual(channelState.writes,[]);
 });
 
+test("accepts the observed getUpdates shape without ret and ignores sync_buf",async () => {
+  const channelState=state();
+  const received=[],errors=[];
+  const replies=[
+    {msgs:[baseMessage],get_updates_buf:"cursor-2",sync_buf:"must-not-persist"},
+    {errcode:-14}
+  ];
+  const listener=await startWechatListener({
+    api:{getUpdates:async()=>replies.shift()},
+    state:channelState,
+    binding:{userId:owner,conversationId:owner},
+    onMessage:async message=>received.push(message),
+    onError:error=>errors.push(error),
+    retryDelayMs:0
+  });
+  await listener.done;
+  assert.equal(received.length,1);
+  assert.deepEqual(channelState.writes,["cursor-2"]);
+  assert.deepEqual(errors,[{stage:"wechat_poll",code:"wechat_auth_expired"}]);
+  assert.equal(JSON.stringify([received,channelState.writes,errors]).includes("must-not-persist"),false);
+});
+
+test("rejects every present nonzero or nonnumeric ret and errcode before side effects",async () => {
+  const invalidResponses=[
+    {ret:undefined,msgs:[baseMessage],get_updates_buf:"cursor-2"},
+    {ret:null,msgs:[baseMessage],get_updates_buf:"cursor-2"},
+    {ret:"0",msgs:[baseMessage],get_updates_buf:"cursor-2"},
+    {ret:{},msgs:[baseMessage],get_updates_buf:"cursor-2"},
+    {ret:1,msgs:[baseMessage],get_updates_buf:"cursor-2"},
+    {ret:0,errcode:undefined,msgs:[baseMessage],get_updates_buf:"cursor-2"},
+    {ret:0,errcode:null,msgs:[baseMessage],get_updates_buf:"cursor-2"},
+    {ret:0,errcode:"0",msgs:[baseMessage],get_updates_buf:"cursor-2"},
+    {ret:0,errcode:1,msgs:[baseMessage],get_updates_buf:"cursor-2"}
+  ];
+  for (const response of invalidResponses) {
+    const channelState=state();
+    const received=[],errors=[];
+    const replies=[response,{errcode:-14}];
+    const listener=await startWechatListener({
+      api:{getUpdates:async()=>replies.shift()},
+      state:channelState,
+      binding:{userId:owner,conversationId:owner},
+      onMessage:async message=>received.push(message),
+      onError:error=>errors.push(error),
+      retryDelayMs:0
+    });
+    await listener.done;
+    assert.deepEqual(received,[]);
+    assert.deepEqual(channelState.writes,[]);
+    assert.deepEqual(errors,[{stage:"wechat_poll",code:"wechat_protocol_error"}]);
+  }
+});
+
+test("validates required messages and cursor before delivering any message",async () => {
+  const invalidResponses=[
+    {ret:0,get_updates_buf:"cursor-2"},
+    {ret:0,msgs:null,get_updates_buf:"cursor-2"},
+    {ret:0,msgs:{},get_updates_buf:"cursor-2"},
+    {ret:0,msgs:[baseMessage]},
+    {ret:0,msgs:[baseMessage],sync_buf:"cursor-2"},
+    {ret:0,msgs:[baseMessage],get_updates_buf:2},
+    {ret:0,msgs:[baseMessage],get_updates_buf:"x".repeat(1024*1024+1)}
+  ];
+  for (const response of invalidResponses) {
+    const channelState=state();
+    const received=[],errors=[];
+    const listener=await startWechatListener({
+      api:{getUpdates:async()=>response},
+      state:channelState,
+      binding:{userId:owner,conversationId:owner},
+      onMessage:async message=>received.push(message),
+      onError:error=>errors.push(error),
+      retryDelayMs:0
+    });
+    await listener.done;
+    assert.deepEqual(received,[]);
+    assert.deepEqual(channelState.writes,[]);
+    assert.deepEqual(errors,[{stage:"wechat_poll",code:"wechat_protocol_error"}]);
+  }
+});
+
 test("keeps one image or PDF media reference only in the current in-memory resource table",async () => {
   const channelState=state();
   const received=[];

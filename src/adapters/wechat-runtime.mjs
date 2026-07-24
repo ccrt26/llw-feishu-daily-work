@@ -45,11 +45,18 @@ export async function startWechatListener({
       }
       if (stopped) break;
       failures=0;
-      if (response?.errcode===-14) {
+      const validResponse=response&&typeof response==="object"&&!Array.isArray(response);
+      if (validResponse&&response.errcode===-14) {
         await report(onError,"wechat_auth_expired");
         break;
       }
-      if (!response||typeof response!=="object"||Array.isArray(response)||response.ret!==0||!Array.isArray(response.msgs)) {
+      const retOk=validResponse&&(!Object.hasOwn(response,"ret")||
+        typeof response.ret==="number"&&response.ret===0);
+      const errcodeOk=validResponse&&(!Object.hasOwn(response,"errcode")||
+        typeof response.errcode==="number"&&response.errcode===0);
+      const nextCursor=validResponse?response.get_updates_buf:undefined;
+      if (!validResponse||!retOk||!errcodeOk||!Array.isArray(response.msgs)||
+          typeof nextCursor!=="string"||Buffer.byteLength(nextCursor,"utf8")>MAX_CURSOR_BYTES) {
         await report(onError,"wechat_protocol_error");
         break;
       }
@@ -67,12 +74,7 @@ export async function startWechatListener({
           await report(onError,"wechat_message_failed");
         }
       }
-      const nextCursor=response.get_updates_buf;
       if (failed) continue;
-      if (typeof nextCursor!=="string"||Buffer.byteLength(nextCursor,"utf8")>MAX_CURSOR_BYTES) {
-        await report(onError,"wechat_protocol_error");
-        break;
-      }
       try { await state.writeCursor(nextCursor); }
       catch {
         await report(onError,"wechat_state_write_failed");
