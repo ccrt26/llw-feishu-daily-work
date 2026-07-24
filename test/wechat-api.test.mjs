@@ -21,6 +21,13 @@ function octetJson(value,{status=200,headers={}}={}) {
   });
 }
 
+function rawJson(value,{status=200,headers={}}={}) {
+  return new Response(value,{
+    status,
+    headers:{"content-type":"application/json",...headers}
+  });
+}
+
 test("accepts bounded octet-stream JSON objects for the four fixed iLink control operations",async () => {
   const responses=[
     octetJson(
@@ -211,6 +218,74 @@ test("uses the fixed direct HTTPS protocol for QR, updates, replies and bounded 
   assert.equal(calls[4].options.headers?.Authorization,undefined);
   assert.equal(JSON.stringify(calls.slice(0,4)).includes(TOKEN),true);
   assert.equal(JSON.stringify(calls.map(call=>call.options.body||"")).includes(TOKEN),false);
+});
+
+test("preserves only getUpdates numeric message_id source text as exact strings",async () => {
+  const api=createWechatApi({
+    baseUrl:BASE_URL,token:TOKEN,uIn:UIN,
+    fetchImpl:async()=>rawJson(
+      '{"ret":0,"msgs":['+
+      '{"message_id":9007199254740992,"seq":9007199254740993},'+
+      '{"message_id":9007199254740993},'+
+      '{"message_id":1001},'+
+      '{"message_id":"9007199254740993"}'+
+      '],"get_updates_buf":"cursor-2"}'
+    )
+  });
+
+  const value=await api.getUpdates();
+  assert.deepEqual(value.msgs.map(message=>message.message_id),[
+    "9007199254740992",
+    "9007199254740993",
+    "1001",
+    "9007199254740993"
+  ]);
+  assert.equal(typeof value.msgs[0].seq,"number");
+});
+
+test("maps invalid numeric message_id source forms to null without changing composite values",async () => {
+  const api=createWechatApi({
+    baseUrl:BASE_URL,token:TOKEN,uIn:UIN,
+    fetchImpl:async()=>rawJson(
+      '{"ret":0,"msgs":['+
+      '{"message_id":1.5},'+
+      '{"message_id":1e3},'+
+      '{"message_id":-1},'+
+      '{"message_id":0},'+
+      '{"message_id":11111111111111111111111111111111},'+
+      '{"message_id":null},'+
+      '{"message_id":[]},'+
+      '{"message_id":{}}'+
+      '],"get_updates_buf":"cursor-2"}'
+    )
+  });
+
+  const value=await api.getUpdates();
+  assert.deepEqual(value.msgs.map(message=>message.message_id),[
+    null,null,null,null,null,null,[],{}
+  ]);
+});
+
+test("fails closed for a numeric message_id when JSON.parse source text is unavailable",{
+  concurrency:false
+},async () => {
+  const originalParse=JSON.parse;
+  JSON.parse=(text,reviver)=>{
+    if (typeof reviver!=="function") return originalParse(text);
+    return originalParse(text,(key,value)=>reviver(key,value,undefined));
+  };
+  try {
+    const api=createWechatApi({
+      baseUrl:BASE_URL,token:TOKEN,uIn:UIN,
+      fetchImpl:async()=>rawJson(
+        '{"ret":0,"msgs":[{"message_id":9007199254740993}],"get_updates_buf":"cursor-2"}'
+      )
+    });
+    const value=await api.getUpdates();
+    assert.equal(value.msgs[0].message_id,null);
+  } finally {
+    JSON.parse=originalParse;
+  }
 });
 
 test("maps unsafe, failed, non-JSON and oversized responses to value-free errors",async () => {

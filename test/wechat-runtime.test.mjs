@@ -1,8 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import {createWechatApi} from "../src/adapters/wechat-api.mjs";
 import {startWechatListener} from "../src/adapters/wechat-runtime.mjs";
+import {Dispatcher} from "../src/core/dispatcher.mjs";
 
 const owner="wx-owner";
+const apiBaseUrl="https://ilinkai.weixin.qq.com";
+const apiToken="test-secret-token";
+const apiUin="MTIzNDU2";
 const baseMessage={
   message_id:1001,
   from_user_id:owner,
@@ -22,6 +27,19 @@ function state(cursor="cursor-1") {
     readCursor:async()=>cursor,
     writeCursor:async value=>writes.push(value)
   };
+}
+
+function rawTextMessage(idToken,text='"/llw-model status"') {
+  return `{"message_id":${idToken},"from_user_id":"${owner}","to_user_id":"bot-test",`+
+    '"create_time_ms":1784851200000,"message_type":1,"message_state":2,'+
+    `"context_token":"test-context","item_list":[{"type":1,"text_item":{"text":${text}}}]}`;
+}
+
+function apiFromBodies(bodies) {
+  return createWechatApi({
+    baseUrl:apiBaseUrl,token:apiToken,uIn:apiUin,
+    fetchImpl:async()=>new Response(bodies.shift(),{headers:{"content-type":"application/json"}})
+  });
 }
 
 test("delivers only one bound p2p finished user text and atomically advances its cursor",async () => {
@@ -66,6 +84,89 @@ test("delivers only one bound p2p finished user text and atomically advances its
   assert.deepEqual(channelState.writes,["cursor-2"]);
   assert.deepEqual(errors,[{stage:"wechat_poll",code:"wechat_auth_expired"}]);
   assert.equal(JSON.stringify([received,errors]).includes("secret expired"),false);
+});
+
+test("keeps adjacent large JSON message IDs distinct through reply idempotency and deduplicates an exact repeat",async () => {
+  const first="9007199254740992";
+  const second="9007199254740993";
+  const api=apiFromBodies([
+    `{"msgs":[${rawTextMessage(first)},${rawTextMessage(second)},${rawTextMessage(second)}],"get_updates_buf":"cursor-2"}`,
+    '{"errcode":-14}'
+  ]);
+  const channelState=state();
+  const outcomes=new Map();
+  const sends=[];
+  const dispatcher=new Dispatcher({
+    binding:{senderId:"feishu-owner",chatId:"feishu-chat"},
+    bindings:{
+      feishu:{userId:"feishu-owner",conversationId:"feishu-chat"},
+      wechat:{userId:owner,conversationId:owner}
+    },
+    state:{
+      hasOutcome:key=>outcomes.has(key),
+      saveOutcome:async (key,value)=>{
+        if (!outcomes.has(key)) outcomes.set(key,{...structuredClone(value),replied:false});
+        return structuredClone(outcomes.get(key));
+      },
+      markReplied:async key=>{ outcomes.get(key).replied=true; }
+    },
+    capabilities:[],
+    intentRouter:{decide:async()=>{throw new Error("must_not_route");}},
+    messenger:{send:async value=>sends.push(structuredClone(value))},
+    modelMode:{read:async()=>"codex",write:async()=>{throw new Error("must_not_write");}},
+    deepseekEnabled:true
+  });
+  const errors=[];
+  const listener=await startWechatListener({
+    api,state:channelState,
+    binding:{userId:owner,conversationId:owner},
+    onMessage:message=>dispatcher.handleIncomingMessage(message),
+    onError:error=>errors.push(error),
+    retryDelayMs:0
+  });
+  await listener.done;
+
+  assert.deepEqual([...outcomes.keys()],[`wechat:${first}`,`wechat:${second}`]);
+  assert.deepEqual(sends.map(value=>value.replyTarget.sourceMessageId),[first,second]);
+  assert.deepEqual(sends.map(value=>value.idempotencyKey),[
+    `reply:wechat:${first}`,
+    `reply:wechat:${second}`
+  ]);
+  assert.deepEqual(channelState.writes,["cursor-2"]);
+  assert.deepEqual(errors,[{stage:"wechat_poll",code:"wechat_auth_expired"}]);
+});
+
+test("keeps invalid decimal forms out of the Dispatcher without exposing IDs or text in errors",async () => {
+  const marker="invalid-message-body-marker";
+  const api=apiFromBodies([
+    `{"msgs":[
+      ${rawTextMessage("1.5",JSON.stringify(marker))},
+      ${rawTextMessage("1e3",JSON.stringify(marker))},
+      ${rawTextMessage("-1",JSON.stringify(marker))},
+      ${rawTextMessage("0",JSON.stringify(marker))},
+      ${rawTextMessage("11111111111111111111111111111111",JSON.stringify(marker))},
+      ${rawTextMessage("null",JSON.stringify(marker))},
+      ${rawTextMessage("[]",JSON.stringify(marker))},
+      ${rawTextMessage("{}",JSON.stringify(marker))},
+      ${rawTextMessage('"1e3"',JSON.stringify(marker))},
+      ${rawTextMessage('"11111111111111111111111111111111"',JSON.stringify(marker))}
+    ],"get_updates_buf":"cursor-2"}`,
+    '{"errcode":-14}'
+  ]);
+  const received=[],errors=[];
+  const listener=await startWechatListener({
+    api,state:state(),
+    binding:{userId:owner,conversationId:owner},
+    onMessage:async message=>received.push(message),
+    onError:error=>errors.push(error),
+    retryDelayMs:0
+  });
+  await listener.done;
+
+  assert.deepEqual(received,[]);
+  assert.deepEqual(errors,[{stage:"wechat_poll",code:"wechat_auth_expired"}]);
+  assert.equal(JSON.stringify(errors).includes(marker),false);
+  assert.equal(JSON.stringify(errors).includes("11111111111111111111111111111111"),false);
 });
 
 test("contains network failures and bounded retries inside the WeChat listener",async () => {

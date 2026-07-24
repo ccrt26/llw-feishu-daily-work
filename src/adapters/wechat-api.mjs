@@ -43,7 +43,8 @@ export function createWechatApi({fetchImpl=fetch,baseUrl,token,uIn}) {
         body:JSON.stringify({get_updates_buf:cursor,base_info:BASE_INFO}),
         signal
       },
-      timeoutMs
+      timeoutMs,
+      reviveWechatMessageId
     );
     if (!value||typeof value!=="object"||Array.isArray(value)) throw safeError("wechat_protocol_error");
     return value;
@@ -100,13 +101,13 @@ export function createWechatApi({fetchImpl=fetch,baseUrl,token,uIn}) {
     return value;
   }
 
-  async function requestJson(url,options,timeoutMs) {
+  async function requestJson(url,options,timeoutMs,reviver) {
     const response=await request(url,options,timeoutMs);
     const contentType=response.headers.get("content-type")?.toLowerCase()||"";
     if (!/^application\/(?:json|[a-z0-9.+-]+\+json|octet-stream)(?:;|$)/.test(contentType)) throw safeError("wechat_response_not_json");
     const bytes=await safeReadBounded(response,MAX_JSON_BYTES);
     let value;
-    try { value=JSON.parse(bytes.toString("utf8")); }
+    try { value=JSON.parse(bytes.toString("utf8"),reviver); }
     catch { throw safeError("wechat_response_not_json"); }
     if (!value||typeof value!=="object"||Array.isArray(value)) throw safeError("wechat_protocol_error");
     return value;
@@ -238,6 +239,13 @@ function decodeAesKey(value) {
 function validUin(value) { return typeof value==="string"&&/^[A-Za-z0-9+/=]{4,128}$/.test(value)&&!value.includes("\n"); }
 function validToken(value,optional=false) { return optional&&value===undefined||bounded(value,4096)&&!value.includes("\n")&&!value.includes("\r"); }
 function requireToken(value) { if (!validToken(value)) throw safeError("wechat_auth_required"); }
+function reviveWechatMessageId(key,value,context) {
+  if (key!=="message_id") return value;
+  if (typeof value==="string") return value;
+  if (typeof value!=="number") return value;
+  const source=context?.source;
+  return typeof source==="string"&&/^[1-9][0-9]{0,30}$/.test(source)?source:null;
+}
 function nonempty(value) { return typeof value==="string"&&value.length>0; }
 function bounded(value,max) { return nonempty(value)&&Buffer.byteLength(value,"utf8")<=max; }
 function safeError(code) { return new Error(code); }
