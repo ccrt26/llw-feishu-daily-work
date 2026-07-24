@@ -24,25 +24,54 @@ async function harness(options={}) {
 test("commits a new primary target and verifies its bytes",async () => {
   const h=await harness();
   try {
-    const result=await h.writer.archive({transactionId:"m1",source:h.source,invoice,extension:"png"});
+    const result=await h.writer.archive({
+      transactionId:"m1",
+      source:h.source,
+      invoice:{issue_date:"2026-07-18",total_with_tax:"290.00"},
+      extension:"png"
+    });
     assert.deepEqual(result,{status:"committed",relativePath:"亚信工作/日常发票/餐饮发票/2026年07月/290.00.png"});
     assert.deepEqual(await readFile(join(h.month,"290.00.png")),Buffer.from("invoice-A"));
     assert.equal(h.state.listInvoiceTransactions().at(-1).status,"published");
   } finally { await rm(h.root,{recursive:true,force:true}); }
 });
 
-test("uses SHA-256 idempotency and exactly one fallback name",async () => {
+test("uses the smallest same-month sequence and SHA-256 idempotency",async () => {
   const h=await harness();
   try {
     await mkdir(h.month,{recursive:true});
     await writeFile(join(h.month,"290.00.png"),Buffer.from("other-primary"));
+    await writeFile(join(h.month,"290.00-2.png"),Buffer.from("other-second"));
     let result=await h.writer.archive({transactionId:"m2",source:h.source,invoice,extension:"png"});
-    assert.equal(result.relativePath.endsWith("290.00_INV123.png"),true); assert.equal(result.status,"committed");
+    assert.equal(result.relativePath.endsWith("290.00-3.png"),true); assert.equal(result.status,"committed");
     result=await h.writer.archive({transactionId:"m3",source:h.source,invoice,extension:"png"});
-    assert.equal(result.status,"existing"); assert.equal(result.relativePath.endsWith("290.00_INV123.png"),true);
-    await writeFile(join(h.month,"290.00_INV123.png"),Buffer.from("other-fallback"));
-    result=await h.writer.archive({transactionId:"m4",source:h.source,invoice,extension:"png"});
-    assert.deepEqual(result,{status:"awaiting_clarification",reason:"conflicting_invoice_files"});
+    assert.equal(result.status,"existing"); assert.equal(result.relativePath.endsWith("290.00-3.png"),true);
+  } finally { await rm(h.root,{recursive:true,force:true}); }
+});
+
+test("counts supported cross-extension names in one monthly sequence",async () => {
+  const h=await harness();
+  try {
+    await mkdir(h.month,{recursive:true});
+    await writeFile(join(h.month,"290.00.pdf"),Buffer.from("other-primary"));
+    const result=await h.writer.archive({transactionId:"cross-extension",source:h.source,invoice,extension:"png"});
+    assert.equal(result.status,"committed");
+    assert.equal(result.relativePath.endsWith("290.00-2.png"),true);
+  } finally { await rm(h.root,{recursive:true,force:true}); }
+});
+
+test("restarts amount naming in a different month",async () => {
+  const h=await harness();
+  try {
+    await mkdir(h.month,{recursive:true});
+    await writeFile(join(h.month,"290.00.png"),Buffer.from("other-july"));
+    const result=await h.writer.archive({
+      transactionId:"august",
+      source:h.source,
+      invoice:{...invoice,issue_date:"2026-08-01"},
+      extension:"png"
+    });
+    assert.deepEqual(result,{status:"committed",relativePath:"亚信工作/日常发票/餐饮发票/2026年08月/290.00.png"});
   } finally { await rm(h.root,{recursive:true,force:true}); }
 });
 
@@ -66,10 +95,9 @@ test("archives the original PDF with identical idempotency and conflict rules",a
     assert.equal(result.status,"existing");
     await writeFile(join(h.month,"290.00.pdf"),Buffer.from("different-primary"));
     result=await h.writer.archive({transactionId:"pdf-3",source:pdf,invoice,extension:"pdf"});
-    assert.equal(result.status,"committed"); assert.equal(result.relativePath.endsWith("290.00_INV123.pdf"),true);
-    await writeFile(join(h.month,"290.00_INV123.pdf"),Buffer.from("different-fallback"));
+    assert.equal(result.status,"committed"); assert.equal(result.relativePath.endsWith("290.00-2.pdf"),true);
     result=await h.writer.archive({transactionId:"pdf-4",source:pdf,invoice,extension:"pdf"});
-    assert.deepEqual(result,{status:"awaiting_clarification",reason:"conflicting_invoice_files"});
+    assert.equal(result.status,"existing"); assert.equal(result.relativePath.endsWith("290.00-2.pdf"),true);
   } finally { await rm(h.root,{recursive:true,force:true}); }
 });
 
@@ -79,7 +107,7 @@ test("rejects unsafe Vaults, symlink roots and path components",async () => {
     await rm(join(h.vault,".llw-system","SYSTEM_MAP.md"));
     await assert.rejects(h.writer.archive({transactionId:"bad",source:h.source,invoice,extension:"png"}),/vault_unavailable/);
     await writeFile(join(h.vault,".llw-system","SYSTEM_MAP.md"),"map");
-    await assert.rejects(h.writer.archive({transactionId:"bad2",source:h.source,invoice:{...invoice,invoice_number:"../X"},extension:"png"}),/invalid_archive_input/);
+    await assert.rejects(h.writer.archive({transactionId:"bad2",source:h.source,invoice:{...invoice,total_with_tax:"../290.00"},extension:"png"}),/invalid_archive_input/);
     await assert.rejects(h.writer.archive({transactionId:"bad3",source:h.source,invoice:{...invoice,issue_date:"2026-13-01"},extension:"png"}),/invalid_archive_input/);
     await rm(join(h.vault,"亚信工作","日常发票","餐饮发票"),{recursive:true,force:true});
     await symlink(h.root,join(h.vault,"亚信工作","日常发票","餐饮发票"));
@@ -105,7 +133,7 @@ test("COPYFILE_EXCL race re-evaluates collisions and never overwrites",async () 
   }});
   try {
     const result=await h.writer.archive({transactionId:"race",source:h.source,invoice,extension:"png"});
-    assert.equal(result.status,"committed"); assert.equal(result.relativePath.endsWith("290.00_INV123.png"),true);
+    assert.equal(result.status,"committed"); assert.equal(result.relativePath.endsWith("290.00-2.png"),true);
     assert.equal((await readFile(join(h.month,"290.00.png"))).toString(),"racing-other");
     assert.equal(h.state.listInvoiceTransactions()[0].status,"aborted");
   } finally { await rm(h.root,{recursive:true,force:true}); }

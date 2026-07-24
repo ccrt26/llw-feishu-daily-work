@@ -1,10 +1,11 @@
 import {createHash} from "node:crypto";
 import {createReadStream} from "node:fs";
 import {constants as fsConstants} from "node:fs";
-import {copyFile,lstat,mkdir,realpath} from "node:fs/promises";
+import {copyFile,lstat,mkdir,readdir,realpath} from "node:fs/promises";
 import {join,relative,resolve,sep} from "node:path";
 
 const ARCHIVE_PARTS=["亚信工作","日常发票","餐饮发票"];
+const ARCHIVE_EXTENSIONS=new Set(["jpg","jpeg","png","webp","pdf"]);
 
 export class InvoiceArchiveWriter {
   constructor({vaultRoot,state,hashFileFn=sha256File,copyFileFn=copyFile}) {
@@ -26,11 +27,8 @@ export class InvoiceArchiveWriter {
     const monthInfo=await lstat(month);
     const actualMonth=await realpath(month);
     if (!monthInfo.isDirectory() || monthInfo.isSymbolicLink() || actualMonth !== join(archiveRoot,monthName)) throw new Error("vault_unavailable");
-    const primary=`${invoice.total_with_tax}.${extension}`;
-    const fallback=`${invoice.total_with_tax}_${invoice.invoice_number}.${extension}`;
-
     for (let attempt=1;attempt<=3;attempt++) {
-      const selected=await this.selectTarget(month,primary,fallback,sourceHash);
+      const selected=await this.selectTarget(month,invoice.total_with_tax,extension,sourceHash);
       if (selected.status !== "selected") return selected;
       const target=join(month,selected.fileName);
       const relativePath=relative(vault,target).split(sep).join("/");
@@ -75,14 +73,19 @@ export class InvoiceArchiveWriter {
     }
   }
 
-  async selectTarget(month,primary,fallback,sourceHash) {
-    const primaryState=await targetState(join(month,primary),this.hashFile,sourceHash);
-    if (primaryState === "missing") return {status:"selected",fileName:primary};
-    if (primaryState === "same") return {status:"existing",relativePath:this.relativeArchivePath(month,primary)};
-    const fallbackState=await targetState(join(month,fallback),this.hashFile,sourceHash);
-    if (fallbackState === "missing") return {status:"selected",fileName:fallback};
-    if (fallbackState === "same") return {status:"existing",relativePath:this.relativeArchivePath(month,fallback)};
-    return {status:"awaiting_clarification",reason:"conflicting_invoice_files"};
+  async selectTarget(month,amount,extension,sourceHash) {
+    const occupied=new Set();
+    for (const entry of await readdir(month,{withFileTypes:true})) {
+      const candidate=parseAmountCandidate(entry.name,amount);
+      if (!candidate) continue;
+      const state=await targetState(join(month,entry.name),this.hashFile,sourceHash);
+      if (state === "same") return {status:"existing",relativePath:this.relativeArchivePath(month,entry.name)};
+      occupied.add(candidate.sequence);
+    }
+    let sequence=1;
+    while (occupied.has(sequence)) sequence++;
+    const fileName=sequence === 1 ? `${amount}.${extension}` : `${amount}-${sequence}.${extension}`;
+    return {status:"selected",fileName};
   }
 
   relativeArchivePath(month,fileName) {
@@ -135,5 +138,21 @@ function validateInput(transactionId,invoice,extension) {
   const validDate=/^(\d{4})-(\d{2})-(\d{2})$/.exec(invoice?.issue_date || "");
   const date=validDate && new Date(Date.UTC(Number(validDate[1]),Number(validDate[2])-1,Number(validDate[3])));
   const calendarOk=date && date.getUTCFullYear()===Number(validDate[1]) && date.getUTCMonth()===Number(validDate[2])-1 && date.getUTCDate()===Number(validDate[3]);
-  if (typeof transactionId !== "string" || !transactionId || !calendarOk || !/^[A-Za-z0-9]{1,32}$/.test(invoice?.invoice_number || "") || !/^(0|[1-9][0-9]*)\.[0-9]{2}$/.test(invoice?.total_with_tax || "") || !["jpg","jpeg","png","webp","pdf"].includes(extension)) throw new Error("invalid_archive_input");
+  if (typeof transactionId !== "string" || !transactionId || !calendarOk || !/^(0|[1-9][0-9]*)\.[0-9]{2}$/.test(invoice?.total_with_tax || "") || !ARCHIVE_EXTENSIONS.has(extension)) throw new Error("invalid_archive_input");
+}
+
+function parseAmountCandidate(fileName,amount) {
+  for (const extension of ARCHIVE_EXTENSIONS) {
+    const suffix=`.${extension}`;
+    if (!fileName.endsWith(suffix)) continue;
+    const stem=fileName.slice(0,-suffix.length);
+    if (stem === amount) return {sequence:1};
+    const prefix=`${amount}-`;
+    if (!stem.startsWith(prefix)) continue;
+    const rawSequence=stem.slice(prefix.length);
+    if (!/^[2-9][0-9]*$/.test(rawSequence)) continue;
+    const sequence=Number(rawSequence);
+    if (Number.isSafeInteger(sequence)) return {sequence};
+  }
+  return null;
 }
