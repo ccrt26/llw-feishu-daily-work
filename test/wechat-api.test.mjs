@@ -220,6 +220,37 @@ test("uses the fixed direct HTTPS protocol for QR, updates, replies and bounded 
   assert.equal(JSON.stringify(calls.map(call=>call.options.body||"")).includes(TOKEN),false);
 });
 
+test("accepts successful bounded CDN ciphertext when Content-Type is absent",async () => {
+  const ciphertext=Buffer.alloc(16,0x5a);
+  const api=createWechatApi({
+    baseUrl:BASE_URL,token:TOKEN,uIn:UIN,
+    fetchImpl:async()=>new Response(ciphertext)
+  });
+  assert.deepEqual(
+    await api.downloadEncryptedMedia({
+      url:"https://media.weixin.qq.com/test-media",
+      maxBytes:20
+    }),
+    ciphertext
+  );
+});
+
+test("continues rejecting an explicitly declared non-media CDN response",async () => {
+  const api=createWechatApi({
+    baseUrl:BASE_URL,token:TOKEN,uIn:UIN,
+    fetchImpl:async()=>new Response(Buffer.alloc(16),{
+      headers:{"content-type":"text/plain"}
+    })
+  });
+  await assert.rejects(
+    ()=>api.downloadEncryptedMedia({
+      url:"https://media.weixin.qq.com/test-media",
+      maxBytes:20
+    }),
+    error=>error.message==="wechat_media_invalid"
+  );
+});
+
 test("preserves only getUpdates numeric message_id source text as exact strings",async () => {
   const api=createWechatApi({
     baseUrl:BASE_URL,token:TOKEN,uIn:UIN,

@@ -78,8 +78,11 @@ export function createWechatApi({fetchImpl=fetch,baseUrl,token,uIn}) {
     const mediaUrl=validateRemoteUrl(url,"wechat_media_invalid");
     if (!Number.isSafeInteger(maxBytes)||maxBytes<=0||maxBytes>MAX_MEDIA_BYTES) throw safeError("wechat_media_invalid");
     const response=await request(mediaUrl,{method:"GET",headers:{}},timeoutMs);
-    const contentType=response.headers.get("content-type")?.split(";",1)[0].trim().toLowerCase();
-    if (!contentType||!(contentType==="application/octet-stream"||contentType==="application/pdf"||contentType.startsWith("image/"))) throw safeError("wechat_media_invalid");
+    const declaredContentType=response.headers.get("content-type");
+    if (declaredContentType!==null) {
+      const contentType=declaredContentType.split(";",1)[0].trim().toLowerCase();
+      if (!(contentType==="application/octet-stream"||contentType==="application/pdf"||contentType.startsWith("image/"))) throw safeError("wechat_media_invalid");
+    }
     return safeReadBounded(response,maxBytes);
   }
 
