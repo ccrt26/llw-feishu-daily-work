@@ -24,9 +24,6 @@ export function validateInvoiceDecision(decision,{detectedFormat}) {
   if (detectedFormat !== "pdf" && decision.document_verification !== "single_invoice") throw new Error("invalid_document_verification_for_format");
 
   const invoice=decision.invoice;
-  if (invoice.invoice_number && !/^[A-Za-z0-9]{1,32}$/.test(invoice.invoice_number)) throw new Error("invalid_invoice_number");
-  if (invoice.issue_date && !validDate(invoice.issue_date)) throw new Error("invalid_issue_date");
-  if (invoice.total_with_tax && !validAmount(invoice.total_with_tax)) throw new Error("invalid_total");
 
   if (decision.action === "needs_clarification") {
     if (!decision.question.trim()) throw new Error("question_required");

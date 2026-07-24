@@ -124,6 +124,20 @@ test("buyer mismatch and uncertain category never call writer",async () => {
   assert.equal(unclear.status,"awaiting_clarification"); assert.match(unclear.reply,/需要确认/); assert.equal(b.calls.write,0); assert.equal(b.calls.cleanup,1);
 });
 
+test("buyer mismatch returns the business rejection even when its unused invoice number is not archive-safe",async () => {
+  const rejected=decision("reject");
+  rejected.confidence="high";
+  rejected.reason="购买方名称不匹配";
+  rejected.invoice.buyer_name="其他公司";
+  rejected.invoice.invoice_number="TEST-20260724-001";
+  rejected.buyer_verification="name_mismatch";
+  const h=harness({raw:rejected});
+  const result=await h.capability.handle(event);
+  assert.equal(result.status,"rejected");
+  assert.match(result.reply,/未通过入库核验/);
+  assert.equal(h.calls.write,0);
+});
+
 test("missing, unclear, tax-mismatched and non-dining decisions never call writer",async () => {
   const mutations=[
     d=>{d.invoice.buyer_name="";d.buyer_verification="name_missing";d.question="购买方名称缺失，请重新发送清晰票面。";},

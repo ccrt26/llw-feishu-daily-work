@@ -51,6 +51,18 @@ test("validates non-writing decisions but never turns them into archive permissi
   assert.throws(() => validateInvoiceDecision({...unclear,question:""},{detectedFormat:"png"}),/question_required/);
 });
 
+test("non-writing decisions do not apply archive filename and value formatting rules", () => {
+  const rejected=validDecision();
+  rejected.action="reject";
+  rejected.reason="购买方名称不匹配";
+  rejected.invoice.buyer_name="其他公司";
+  rejected.invoice.invoice_number="TEST-20260724-001";
+  rejected.invoice.issue_date="2026年07月24日";
+  rejected.invoice.total_with_tax="¥200.00";
+  rejected.buyer_verification="name_mismatch";
+  assert.equal(validateInvoiceDecision(rejected,{detectedFormat:"png"}).action,"reject");
+});
+
 test("pdf archive requires exactly one consistent invoice", () => {
   const pdf=validDecision();
   pdf.invoice.file_format="pdf";
