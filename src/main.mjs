@@ -15,7 +15,7 @@ import {buildCapabilityRegistry} from "./capabilities/index.mjs";
 import {createInvoiceCapability} from "./capabilities/invoice/capability.mjs";
 import {inspectInvoiceFile} from "./capabilities/invoice/file-inspector.mjs";
 import {parseInvoiceResource} from "./capabilities/invoice/resource-marker.mjs";
-import {validateInvoiceDecision} from "./capabilities/invoice/decision-validator.mjs";
+import {validateInvoiceExtraction,deriveInvoiceRuleDecision} from "./capabilities/invoice/decision-validator.mjs";
 import {InvoiceArchiveWriter} from "./capabilities/invoice/archive-writer.mjs";
 import {prepareInvoicePdf} from "./capabilities/invoice/pdf-preparer.mjs";
 import {downloadLarkResource,scavengeInvoiceTempRoot} from "./adapters/lark-resource-downloader.mjs";
@@ -114,7 +114,8 @@ const invoiceCapability=createInvoiceCapability({
     timeoutMs:invoiceConfig.pdfPrepareTimeoutMs
   }),
   decide:invoiceVisual,
-  validate:validateInvoiceDecision,
+  validate:validateInvoiceExtraction,
+  derive:deriveInvoiceRuleDecision,
   writer:invoiceArchiveWriter
 });
 

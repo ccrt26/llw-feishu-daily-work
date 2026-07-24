@@ -3,7 +3,7 @@ import {rm} from "node:fs/promises";
 import {parseInvoiceResource} from "./resource-marker.mjs";
 import {failure,formatArchive,formatNonArchive,formatUnsupported} from "./receipt.mjs";
 
-export function createInvoiceCapability({download,inspect,preparePdf,decide,validate,writer,cleanup=defaultCleanup,parse=parseInvoiceResource}) {
+export function createInvoiceCapability({download,inspect,preparePdf,decide,validate,derive,writer,cleanup=defaultCleanup,parse=parseInvoiceResource}) {
   return {
     name:"invoice",
     async handle(event,{preparedImage}={}) {
@@ -38,7 +38,8 @@ export function createInvoiceCapability({download,inspect,preparePdf,decide,vali
         }
         stage="analyze";
         const raw=await decide({analysisInput});
-        const decision=validate(raw,{detectedFormat:analysisInput.detectedFormat});
+        const extraction=validate(raw);
+        const decision=derive(extraction);
         if (decision.action !== "archive_dining") return formatNonArchive(decision);
         stage="archive";
         const archived=await writer.archive({transactionId,source:analysisInput.originalFile,invoice:decision.invoice,extension:analysisInput.archiveExtension});

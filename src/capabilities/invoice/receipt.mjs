@@ -4,11 +4,31 @@ export function formatUnsupported(kind) {
 }
 
 export function formatNonArchive(decision) {
-  if (decision.document_verification === "multiple_invoices") return outcome("awaiting_clarification","发票未归档：需要确认。\n原因：检测到一份 PDF 可能包含多张发票。\n问题：请拆分为一张发票一个 PDF 后重新发送。");
-  if (decision.document_verification === "conflicting_fields") return outcome("awaiting_clarification","发票未归档：需要确认。\n原因：不同页面关键字段冲突。\n问题：请核对并发送正确的原始 PDF。");
-  if (decision.document_verification === "unclear") return outcome("awaiting_clarification","发票未归档：需要确认。\n原因：无法确认整份 PDF 只含一张完整发票。\n问题：请发送更清晰、完整的原始 PDF。");
-  if (decision.action === "reject") return outcome("rejected",`发票未归档：未通过入库核验。\n原因：${decision.reason}`);
-  return outcome("awaiting_clarification",`发票未归档：需要确认。\n原因：${decision.reason}\n问题：${decision.question}`);
+  const rejected={
+    buyer_name_mismatch:"购买方名称与指定归档主体不匹配。",
+    buyer_tax_id_mismatch:"购买方统一社会信用代码/纳税人识别号与指定归档主体不匹配。",
+    buyer_identity_mismatch:"购买方名称和统一社会信用代码/纳税人识别号均与指定归档主体不匹配。",
+    non_dining:"票面项目不属于当前已启用的餐饮发票类别。"
+  };
+  const clarification={
+    required_field_missing:["必填字段缺失。","请发送包含全部必要票面元素的完整发票原件。"],
+    required_field_unclear:["必填字段无法清晰读取。","请重新发送所有必要票面元素均清晰可见的完整发票原件。"],
+    category_uncertain:["无法可靠确认票面项目是否属于餐饮类别。","请发送项目名称清晰可见的完整发票原件。"],
+    multiple_invoices:["检测到一份 PDF 可能包含多张发票。","请拆分为一张发票一个 PDF 后重新发送。"],
+    conflicting_fields:["不同页面关键字段冲突。","请核对并发送正确的原始 PDF。"],
+    document_unclear:["无法确认整份文件只含一张完整发票。","请发送更清晰、完整的原始发票文件。"],
+    invoice_number_invalid:["发票号码格式不符合当前归档规则。","请核对并发送号码清晰、完整的发票原件。"],
+    issue_date_invalid:["开票日期格式或日期值不符合当前归档规则。","请核对并发送开票日期清晰、完整的发票原件。"],
+    total_invalid:["价税合计格式或金额值不符合当前归档规则。","请核对并发送价税合计清晰、完整的发票原件。"]
+  };
+  if (decision?.action==="reject"&&Object.hasOwn(rejected,decision.reasonCode)) {
+    return outcome("rejected",`发票未归档：未通过入库核验。\n原因：${rejected[decision.reasonCode]}`);
+  }
+  if (decision?.action==="needs_clarification"&&Object.hasOwn(clarification,decision.reasonCode)) {
+    const [reason,question]=clarification[decision.reasonCode];
+    return outcome("awaiting_clarification",`发票未归档：需要确认。\n原因：${reason}\n问题：${question}`);
+  }
+  throw new Error("invalid_invoice_rule_decision");
 }
 
 export function formatArchive(decision,archived) {
