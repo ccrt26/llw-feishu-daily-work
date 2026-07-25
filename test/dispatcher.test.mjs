@@ -21,7 +21,7 @@ const SENSITIVE_REPLY="检测到可能包含实际密钥、登录凭证或支付
 const CODEX_FAILURE_REPLY="当前模型 Codex 本次调用失败。\n系统没有切换模型，也没有执行写入。\n如需使用 DeepSeek，请手工发送：/llw-model deepseek";
 const DEEPSEEK_FAILURE_REPLY="当前模型 DeepSeek 本次调用失败。\n系统没有切换模型，也没有执行写入。\n如需使用 Codex，请手工发送：/llw-model codex";
 
-async function harness({decision,visualDecision,withPreparedImage,handle:capabilityHandler,status="committed",send,model="codex",deepseekEnabled=true,modelMode:providedModelMode,capabilityNames=["daily-work","invoice"]}={}) {
+async function harness({decision,visualDecision,withPreparedVisual,handle:capabilityHandler,status="committed",send,model="codex",deepseekEnabled=true,modelMode:providedModelMode,capabilityNames=["daily-work","invoice"]}={}) {
   const dir=await mkdtemp(join(tmpdir(),"llw-dispatcher-")); const file=join(dir,"state.json"); const state=await StateStore.open(file);
   const routerCalls=[],visualRouterCalls=[],runs=[],messages=[],contexts=[],sends=[];
   const capabilities=capabilityNames.map(name=>({name,routingContract:contract(name),handle:async (message,context)=>{runs.push(name);messages.push(structuredClone(message));contexts.push({model:context.model});return capabilityHandler?capabilityHandler(name,message,context):{status,reply:status==="ignored"?null:`${name}完成`,artifacts:status==="committed"?["p"]:[]};}}));
@@ -33,10 +33,7 @@ async function harness({decision,visualDecision,withPreparedImage,handle:capabil
       return typeof selected==="function"?selected(input):selected||{action:"route",capability:"invoice",confidence:"high",reasonCode:"visual_match"};
     }
   };
-  const runPreparedImage=withPreparedImage||((message,operation)=>operation({
-    tempDir:"/tmp/job-safe",file:"/tmp/job-safe/image.png",
-    detectedFormat:"png",archiveExtension:"png",sizeBytes:123
-  }));
+  const runPreparedVisual=withPreparedVisual||((message,operation)=>operation(imageVisual("/tmp/job-safe/image.png","/tmp/job-safe")));
   const modes=[],writes=[]; let selected=model;
   const modelMode=providedModelMode||{read:async()=>{modes.push(selected);return selected;},write:async value=>{writes.push(value);selected=value;}};
   const dispatcher=new Dispatcher({
@@ -45,7 +42,7 @@ async function harness({decision,visualDecision,withPreparedImage,handle:capabil
       feishu:{userId:"u1",conversationId:"c1"},
       wechat:{userId:"wx-owner",conversationId:"wx-owner"}
     },
-    state,capabilities,intentRouter,withPreparedImage:runPreparedImage,
+    state,capabilities,intentRouter,withPreparedVisual:runPreparedVisual,
     messenger:{send:send|| (async message=>sends.push(message))},modelMode,deepseekEnabled
   });
   return {file,state,routerCalls,visualRouterCalls,runs,messages,contexts,sends,modes,writes,dispatcher};
@@ -75,6 +72,27 @@ function invoiceExtraction(invoice={}) {
   };
 }
 
+function imageVisual(file="/tmp/job-safe/image.png",tempDir="/tmp/job-safe",format="png",extension="png") {
+  return {
+    tempDir,resourceType:"image",
+    analysisInput:{
+      originalFile:file,detectedFormat:format,archiveExtension:extension,
+      pageImages:[file],extractedText:"",documentFacts:{pageCount:1,textAvailable:false}
+    }
+  };
+}
+
+function pdfVisual() {
+  return {
+    tempDir:"/tmp/job-pdf",resourceType:"file",
+    analysisInput:{
+      originalFile:"/tmp/job-pdf/source.pdf",detectedFormat:"pdf",archiveExtension:"pdf",
+      pageImages:["/tmp/job-pdf/analysis/page-1.png","/tmp/job-pdf/analysis/page-2.png"],
+      extractedText:"safe invoice",documentFacts:{pageCount:2,textAvailable:true}
+    }
+  };
+}
+
 function wechatImage(messageId="m2") {
   return createWechatIncomingMessage({
     messageId,userId:"wx-owner",conversationId:"wx-owner",
@@ -100,13 +118,10 @@ test("routes once, invokes only the selected capability, persists before send an
 });
 
 test("routes one image by pixels using only enabled image capabilities and reuses the prepared image",async () => {
-  const prepared={
-    tempDir:"/tmp/job-one",file:"/tmp/job-one/image.png",
-    detectedFormat:"png",archiveExtension:"png",sizeBytes:456
-  };
+  const prepared=imageVisual("/tmp/job-one/image.png","/tmp/job-one");
   let prepareCalls=0,cleanupCalls=0,reused=false;
   const h=await harness({
-    withPreparedImage:async (message,operation)=>{
+    withPreparedVisual:async (message,operation)=>{
       prepareCalls++;
       assert.equal(message.attachments[0].type,"image");
       try { return await operation(prepared); }
@@ -114,13 +129,13 @@ test("routes one image by pixels using only enabled image capabilities and reuse
     },
     visualDecision:input=>{
       assert.equal(input.model,"codex");
-      assert.equal(input.preparedImage,prepared);
+      assert.equal(input.preparedVisual,prepared);
       assert.deepEqual(input.capabilities.map(item=>item.capability),["invoice"]);
       return {action:"route",capability:"invoice",confidence:"high",reasonCode:"visual_match"};
     },
     handle:async (name,_message,context)=>{
       assert.equal(name,"invoice");
-      reused=context.preparedImage===prepared;
+      reused=context.preparedVisual===prepared;
       return {status:"committed",reply:"已归档",artifacts:["p"]};
     }
   });
@@ -135,12 +150,9 @@ test("routes one image by pixels using only enabled image capabilities and reuse
 test("visual clarification cleans the image without creating or clearing a text conversation",async () => {
   let cleanupCalls=0;
   const h=await harness({
-    withPreparedImage:async (_message,operation)=>{
+    withPreparedVisual:async (_message,operation)=>{
       try {
-        return await operation({
-          tempDir:"/tmp/job-one",file:"/tmp/job-one/image.png",
-          detectedFormat:"png",archiveExtension:"png",sizeBytes:456
-        });
+        return await operation(imageVisual("/tmp/job-one/image.png","/tmp/job-one"));
       } finally { cleanupCalls++; }
     },
     visualDecision:{action:"clarify",question:"图片用途无法可靠判断。"}
@@ -162,12 +174,9 @@ test("visual clarification cleans the image without creating or clearing a text 
 test("visual unsupported invokes no business capability and returns one fixed no-capability reply",async () => {
   let cleanupCalls=0;
   const h=await harness({
-    withPreparedImage:async (_message,operation)=>{
+    withPreparedVisual:async (_message,operation)=>{
       try {
-        return await operation({
-          tempDir:"/tmp/job-one",file:"/tmp/job-one/photo.jpg",
-          detectedFormat:"jpeg",archiveExtension:"jpg",sizeBytes:456
-        });
+        return await operation(imageVisual("/tmp/job-one/photo.jpg","/tmp/job-one","jpeg","jpg"));
       } finally { cleanupCalls++; }
     },
     visualDecision:{action:"unsupported",reason:"模型自由文本不应直接作为回复"}
@@ -183,7 +192,7 @@ test("no enabled image capability returns unsupported before reading model state
   let prepareCalls=0;
   const h=await harness({
     capabilityNames:["daily-work"],
-    withPreparedImage:async()=>{prepareCalls++;throw new Error("must_not_prepare");}
+    withPreparedVisual:async()=>{prepareCalls++;throw new Error("must_not_prepare");}
   });
   const result=await h.dispatcher.handleRawEvent(raw);
   assert.equal(result.status,"rejected");
@@ -197,12 +206,9 @@ test("no enabled image capability returns unsupported before reading model state
 test("visual model failure cleans the image and uses the existing model-specific safe failure",async () => {
   let cleanupCalls=0;
   const h=await harness({
-    withPreparedImage:async (_message,operation)=>{
+    withPreparedVisual:async (_message,operation)=>{
       try {
-        return await operation({
-          tempDir:"/tmp/job-one",file:"/tmp/job-one/image.png",
-          detectedFormat:"png",archiveExtension:"png",sizeBytes:456
-        });
+        return await operation(imageVisual("/tmp/job-one/image.png","/tmp/job-one"));
       } finally { cleanupCalls++; }
     },
     visualDecision:()=>{ throw Object.assign(new Error("codex failed"),{category:"model_unavailable"}); }
@@ -216,7 +222,7 @@ test("visual model failure cleans the image and uses the existing model-specific
 
 test("image preparation failure returns a fixed safe attachment error without business work",async () => {
   const h=await harness({
-    withPreparedImage:async()=>{ throw Object.assign(new Error("download failed"),{code:"download_failed"}); }
+    withPreparedVisual:async()=>{ throw Object.assign(new Error("download failed"),{code:"download_failed"}); }
   });
   const result=await h.dispatcher.handleRawEvent(raw);
   assert.equal(result.status,"failed");
@@ -226,12 +232,9 @@ test("image preparation failure returns a fixed safe attachment error without bu
 });
 
 test("the same prepared image produces an entry-independent visual routing input for Feishu and WeChat",async () => {
-  const prepared={
-    tempDir:"/tmp/job-same",file:"/tmp/job-same/same.png",
-    detectedFormat:"png",archiveExtension:"png",sizeBytes:456
-  };
+  const prepared=imageVisual("/tmp/job-same/same.png","/tmp/job-same");
   const h=await harness({
-    withPreparedImage:async (_message,operation)=>operation(prepared),
+    withPreparedVisual:async (_message,operation)=>operation(prepared),
     visualDecision:{action:"route",capability:"invoice",confidence:"high",reasonCode:"visual_match"}
   });
   await h.dispatcher.handleRawEvent(raw);
@@ -249,10 +252,7 @@ test("the same prepared image produces an entry-independent visual routing input
 });
 
 test("Feishu and WeChat return the same deterministic buyer rejection from one invoice core",async () => {
-  const prepared={
-    tempDir:"/tmp/job-same",file:"/tmp/job-same/same.png",
-    detectedFormat:"png",archiveExtension:"png",sizeBytes:456
-  };
+  const prepared=imageVisual("/tmp/job-same/same.png","/tmp/job-same");
   let writerCalls=0;
   const invoice=createInvoiceCapability({
     decide:async()=>invoiceExtraction({buyer_name:"其他测试公司",buyer_tax_id:"OTHER"}),
@@ -261,7 +261,7 @@ test("Feishu and WeChat return the same deterministic buyer rejection from one i
     writer:{archive:async()=>{writerCalls++;throw new Error("must_not_write");}}
   });
   const h=await harness({
-    withPreparedImage:async (_message,operation)=>operation(prepared),
+    withPreparedVisual:async (_message,operation)=>operation(prepared),
     visualDecision:{action:"route",capability:"invoice",confidence:"high",reasonCode:"visual_match"},
     handle:async (name,message,context)=>{
       assert.equal(name,"invoice");
@@ -282,10 +282,7 @@ test("Feishu and WeChat return the same deterministic buyer rejection from one i
 });
 
 test("Feishu and WeChat pass the same eligible extraction into one writer contract",async () => {
-  const prepared={
-    tempDir:"/tmp/job-same",file:"/tmp/job-same/same.png",
-    detectedFormat:"png",archiveExtension:"png",sizeBytes:456
-  };
+  const prepared=imageVisual("/tmp/job-same/same.png","/tmp/job-same");
   const writes=[];
   const invoice=createInvoiceCapability({
     decide:async()=>invoiceExtraction({
@@ -300,7 +297,7 @@ test("Feishu and WeChat pass the same eligible extraction into one writer contra
     }}
   });
   const h=await harness({
-    withPreparedImage:async (_message,operation)=>operation(prepared),
+    withPreparedVisual:async (_message,operation)=>operation(prepared),
     visualDecision:{action:"route",capability:"invoice",confidence:"high",reasonCode:"visual_match"},
     handle:async (_name,message,context)=>invoice.handle(message,context)
   });
@@ -312,11 +309,11 @@ test("Feishu and WeChat pass the same eligible extraction into one writer contra
   assert.deepEqual(
     writes.map(({source,invoice:writtenInvoice,extension})=>({source,invoice:writtenInvoice,extension})),
     [
-      {source:prepared.file,invoice:invoiceExtraction({
+      {source:prepared.analysisInput.originalFile,invoice:invoiceExtraction({
         issue_date:"2026-07-21",
         total_with_tax:"290.00"
       }).invoice,extension:"png"},
-      {source:prepared.file,invoice:invoiceExtraction({
+      {source:prepared.analysisInput.originalFile,invoice:invoiceExtraction({
         issue_date:"2026-07-21",
         total_with_tax:"290.00"
       }).invoice,extension:"png"}
@@ -325,21 +322,34 @@ test("Feishu and WeChat pass the same eligible extraction into one writer contra
   assert.equal(h.sends[0].text,h.sends[1].text);
 });
 
-test("PDF keeps the existing text router path and never enters the visual router",async () => {
-  let prepareCalls=0;
+test("PDF is prepared once before visual routing and the selected capability reuses it",async () => {
+  const prepared=pdfVisual();
+  let prepareCalls=0,reused=false;
   const h=await harness({
-    withPreparedImage:async()=>{prepareCalls++;throw new Error("must_not_prepare");},
-    decision:{action:"route",capability:"invoice",confidence:"high",reasonCode:"attachment_match"}
+    withPreparedVisual:async (message,operation)=>{
+      prepareCalls++;
+      assert.equal(message.attachments[0].extension,"pdf");
+      return operation(prepared);
+    },
+    visualDecision:input=>{
+      assert.equal(input.preparedVisual,prepared);
+      return {action:"route",capability:"invoice",confidence:"high",reasonCode:"visual_match"};
+    },
+    handle:async (_name,_message,context)=>{
+      reused=context.preparedVisual===prepared;
+      return {status:"committed",reply:"已归档",artifacts:["p"]};
+    }
   });
   const result=await h.dispatcher.handleRawEvent({
     ...raw,message_type:"file",
     content:'<file key="file_abc" name="电子发票.pdf"/>'
   });
   assert.equal(result.status,"committed");
-  assert.equal(prepareCalls,0);
-  assert.equal(h.visualRouterCalls.length,0);
+  assert.equal(prepareCalls,1);
+  assert.equal(h.visualRouterCalls.length,1);
   assert.equal(h.routerCalls.length,1);
-  assert.equal(h.routerCalls[0].message.type,"file");
+  assert.equal(h.routerCalls[0].preparedVisual.resourceType,"file");
+  assert.equal(reused,true);
   assert.deepEqual(h.runs,["invoice"]);
 });
 
@@ -424,7 +434,7 @@ test("DeepSeek image is rejected before download, visual routing or capability w
   let prepareCalls=0;
   const h=await harness({
     model:"deepseek",
-    withPreparedImage:async()=>{prepareCalls++;throw new Error("must_not_prepare");},
+    withPreparedVisual:async()=>{prepareCalls++;throw new Error("must_not_prepare");},
     decision:{action:"route",capability:"invoice",confidence:"high",reasonCode:"attachment_match"}
   });
   const result=await h.dispatcher.handleRawEvent({...raw,content:"[Image: img_current-123]"});
@@ -438,7 +448,7 @@ test("DeepSeek PDF keeps the existing fixed rejection and never enters the visua
   let prepareCalls=0;
   const h=await harness({
     model:"deepseek",
-    withPreparedImage:async()=>{prepareCalls++;throw new Error("must_not_prepare");}
+    withPreparedVisual:async()=>{prepareCalls++;throw new Error("must_not_prepare");}
   });
   const result=await h.dispatcher.handleRawEvent({
     ...raw,message_type:"file",

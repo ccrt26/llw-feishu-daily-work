@@ -163,30 +163,22 @@ test("ambiguous or unsafe storage values never reach the writer",async () => {
   }
 });
 
-test("reuses a dispatcher-prepared image without downloading, inspecting or cleaning it again",async () => {
+test("reuses a dispatcher-prepared visual without downloading, inspecting or cleaning it again",async () => {
   const h=harness();
-  const preparedImage={
-    tempDir:"/tmp/job-shared",
-    file:"/tmp/job-shared/shared.webp",
-    detectedFormat:"webp",
-    archiveExtension:"webp",
-    sizeBytes:789
+  const analysisInput={
+    originalFile:"/tmp/job-shared/shared.webp",detectedFormat:"webp",archiveExtension:"webp",
+    pageImages:["/tmp/job-shared/shared.webp"],extractedText:"",
+    documentFacts:{pageCount:1,textAvailable:false}
   };
-  const result=await h.capability.handle(event,{model:"codex",preparedImage});
+  const preparedVisual={tempDir:"/tmp/job-shared",resourceType:"image",analysisInput};
+  const result=await h.capability.handle(event,{model:"codex",preparedVisual});
   assert.equal(result.status,"committed");
   assert.equal(h.calls.download,0);
   assert.equal(h.calls.inspect,0);
   assert.equal(h.calls.cleanup,0);
   assert.equal(h.calls.decide,1);
-  assert.deepEqual(h.calls.decideInput.analysisInput,{
-    originalFile:preparedImage.file,
-    detectedFormat:"webp",
-    archiveExtension:"webp",
-    pageImages:[preparedImage.file],
-    extractedText:"",
-    documentFacts:{pageCount:1,textAvailable:false}
-  });
-  assert.equal(h.calls.writeInput.source,preparedImage.file);
+  assert.deepEqual(h.calls.decideInput.analysisInput,analysisInput);
+  assert.equal(h.calls.writeInput.source,analysisInput.originalFile);
   assert.equal(h.calls.writeInput.extension,"webp");
 });
 

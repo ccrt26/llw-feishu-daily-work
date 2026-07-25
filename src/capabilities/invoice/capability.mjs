@@ -2,11 +2,12 @@ import {createHash} from "node:crypto";
 import {rm} from "node:fs/promises";
 import {parseInvoiceResource} from "./resource-marker.mjs";
 import {failure,formatArchive,formatNonArchive,formatUnsupported} from "./receipt.mjs";
+import {validatePreparedVisual} from "../../core/prepared-visual.mjs";
 
 export function createInvoiceCapability({download,inspect,preparePdf,decide,validate,derive,writer,cleanup=defaultCleanup,parse=parseInvoiceResource}) {
   return {
     name:"invoice",
-    async handle(event,{preparedImage}={}) {
+    async handle(event,{preparedVisual}={}) {
       let resource;
       try { resource=parse(event); }
       catch { return {status:"failed",reply:"附件标识无法安全解析，本文件未下载、未识别、未归档；请重新发送原文件。",artifacts:[]}; }
@@ -15,13 +16,11 @@ export function createInvoiceCapability({download,inspect,preparePdf,decide,vali
       let stage="download";
       try {
         let analysisInput;
-        if (preparedImage!==undefined) {
+        if (preparedVisual!==undefined) {
           stage="inspect";
-          assertPreparedImage(preparedImage,resource);
-          analysisInput={
-            originalFile:preparedImage.file,detectedFormat:preparedImage.detectedFormat,archiveExtension:preparedImage.archiveExtension,
-            pageImages:[preparedImage.file],extractedText:"",documentFacts:{pageCount:1,textAvailable:false}
-          };
+          validatePreparedVisual(preparedVisual);
+          if (resource.type!==preparedVisual.resourceType) throw coded("invalid_prepared_visual");
+          analysisInput=preparedVisual.analysisInput;
         } else {
           downloaded=await download({...resource,source:event.source,messageId:event.sourceMessageId});
           stage="inspect";
@@ -57,13 +56,4 @@ export function createInvoiceCapability({download,inspect,preparePdf,decide,vali
 
 function defaultCleanup(tempDir) { return rm(tempDir,{recursive:true,force:true}); }
 
-function assertPreparedImage(value,resource) {
-  if (resource.type!=="image"||!value||typeof value!=="object"||
-      typeof value.tempDir!=="string"||!value.tempDir||
-      typeof value.file!=="string"||!value.file||
-      !new Set(["jpeg","png","webp"]).has(value.detectedFormat)||
-      !new Set(["jpg","jpeg","png","webp"]).has(value.archiveExtension)||
-      !Number.isSafeInteger(value.sizeBytes)||value.sizeBytes<=0) {
-    throw Object.assign(new Error("invalid_prepared_image"),{code:"invalid_prepared_image"});
-  }
-}
+function coded(code) { return Object.assign(new Error(code),{code}); }

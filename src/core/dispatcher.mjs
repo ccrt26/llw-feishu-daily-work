@@ -4,14 +4,15 @@ import {createRouterMessage} from "./router-message.mjs";
 import {createFeishuIncomingMessage,createReplyTarget} from "./incoming-message.mjs";
 import {effectiveModel,handleModelCommand} from "./model-command.mjs";
 import {classifyAiFailure} from "./ai-failure.mjs";
+import {failure as invoiceFailure} from "../capabilities/invoice/receipt.mjs";
 
 export class Dispatcher {
-  constructor({binding,bindings,state,capabilities,intentRouter,withPreparedImage,messenger,modelMode,deepseekEnabled}) {
+  constructor({binding,bindings,state,capabilities,intentRouter,withPreparedVisual,messenger,modelMode,deepseekEnabled}) {
     this.binding=binding;
     this.bindings=bindings||{
       feishu:{userId:binding?.senderId,conversationId:binding?.chatId}
     };
-    this.state=state; this.capabilities=capabilities; this.intentRouter=intentRouter; this.withPreparedImage=withPreparedImage; this.messenger=messenger; this.modelMode=modelMode; this.deepseekEnabled=deepseekEnabled; this.queue=Promise.resolve();
+    this.state=state; this.capabilities=capabilities; this.intentRouter=intentRouter; this.withPreparedVisual=withPreparedVisual; this.messenger=messenger; this.modelMode=modelMode; this.deepseekEnabled=deepseekEnabled; this.queue=Promise.resolve();
   }
 
   handleRawEvent(raw) { const next=this.queue.then(()=>this.processRawEvent(raw)); this.queue=next.catch(()=>{}); return next; }
@@ -56,34 +57,38 @@ export class Dispatcher {
     const activeSnapshot=conversation?.model||dailyConversation?.model||null;
     let globalModel;
     const readGlobalModel=async()=>globalModel||=effectiveModel(await this.modelMode.read(),this.deepseekEnabled);
-    const imageTask=isSingleImage(message);
+    const imageTask=isSingleImage(message),pdfTask=isSinglePdf(message),visualTask=imageTask||pdfTask;
     let capabilityName="router",draft,model;
     try {
       const attachmentTask=message.attachments.length===1;
-      if (imageTask) {
-        const imageCapabilities=this.capabilities.filter(item=>item.routingContract.accepts.includes("image"));
-        if (!imageCapabilities.length) {
-          draft=visualUnsupported();
+      if (visualTask) {
+        const resourceType=imageTask?"image":"file";
+        const visualCapabilities=this.capabilities.filter(item=>item.routingContract.accepts.includes(resourceType));
+        if (!visualCapabilities.length) {
+          draft=visualUnsupported(message);
         } else {
           model=await readGlobalModel();
-          if (model==="deepseek") draft=deepseekImageUnsupported();
+          if (model==="deepseek") {
+            if (pdfTask) capabilityName="invoice";
+            draft=pdfTask?deepseekInvoiceUnsupported():deepseekImageUnsupported();
+          }
           else {
-            if (typeof this.withPreparedImage!=="function"||typeof this.intentRouter.decideVisual!=="function") throw new Error("visual_router_unavailable");
+            if (typeof this.withPreparedVisual!=="function"||typeof this.intentRouter.decideVisual!=="function") throw new Error("visual_router_unavailable");
             const routerMessage=createRouterMessage(message);
-            await this.withPreparedImage(message,async preparedImage=>{
+            await this.withPreparedVisual(message,async preparedVisual=>{
               let decision;
               try {
                 decision=await this.intentRouter.decideVisual({
-                  model,preparedImage,beijingTime:routerMessage.beijingTime,
-                  capabilities:imageCapabilities.map(item=>structuredClone(item.routingContract))
+                  model,preparedVisual,beijingTime:routerMessage.beijingTime,
+                  capabilities:visualCapabilities.map(item=>structuredClone(item.routingContract))
                 });
               } catch (error) { draft={...classifyAiFailure(error,model),artifacts:[]}; }
-              if (decision?.action==="clarify") draft=visualClarification();
-              else if (decision?.action==="unsupported") draft=visualUnsupported();
+              if (decision?.action==="clarify") draft=visualClarification(message);
+              else if (decision?.action==="unsupported") draft=visualUnsupported(message);
               else if (decision) {
                 ({capabilityName,draft}=await this.applyDecision(
                   message,conversation,decision,model,
-                  {dailyActive:!!dailyConversation,readGlobalModel,preparedImage}
+                  {dailyActive:!!dailyConversation,readGlobalModel,preparedVisual}
                 ));
               }
             });
@@ -101,15 +106,15 @@ export class Dispatcher {
           if (decision) ({capabilityName,draft}=await this.applyDecision(message,conversation,decision,model,{dailyActive:!!dailyConversation,readGlobalModel}));
         }
       }
-    } catch {
-      draft=imageTask
-        ?{status:"failed",reply:"图片准备失败，本次未交给 AI 或业务Skill、未写入 Obsidian；请重新发送受支持的原始图片。",artifacts:[]}
+    } catch (error) {
+      draft=visualTask
+        ?visualPreparationFailure(message,error)
         :{status:"failed",reply:"暂时无法判断你希望进行的操作，请告诉我你希望我处理什么。",artifacts:[]};
     }
     return this.persistAndSend(message,capabilityName,draft);
   }
 
-  async applyDecision(message,conversation,decision,model,{dailyActive,readGlobalModel,preparedImage}) {
+  async applyDecision(message,conversation,decision,model,{dailyActive,readGlobalModel,preparedVisual}) {
     if (decision.action==="unsupported") {
       if (decision.reason==="cancelled") {
         if (conversation) {
@@ -134,7 +139,7 @@ export class Dispatcher {
     }
     else if (newTask&&dailyActive) await this.state.clearConversation();
     const context={state:this.state,model:taskModel};
-    if (preparedImage) context.preparedImage=preparedImage;
+    if (preparedVisual) context.preparedVisual=preparedVisual;
     let draft=await capability.handle(createBusinessMessage(message),context);
     if (draft?.status==="not_applicable") draft={status:"awaiting_clarification",reply:"我暂时无法确定你希望进行的操作，请告诉我你希望我处理什么。",artifacts:[]};
     if (draft?.status==="awaiting_clarification") {
@@ -216,11 +221,27 @@ function createBusinessMessage(message) {
   };
   return value;
 }
-function visualClarification() { return {status:"awaiting_clarification",reply:"无法可靠判断这张图片属于哪个已启用能力。\n本次图片未保存、未交给业务Skill。\n请重新发送一张更清晰、内容完整的图片。",artifacts:[]}; }
-function visualUnsupported() { return {status:"rejected",reply:"当前没有可处理这类图片的已启用能力。",artifacts:[]}; }
+function visualClarification(message) {
+  if (isSinglePdf(message)) return {status:"awaiting_clarification",reply:"无法可靠判断这份 PDF 属于哪个已启用能力。\n本次文件未保存、未交给业务Skill。\n请重新发送内容清晰、完整的原始 PDF。",artifacts:[]};
+  return {status:"awaiting_clarification",reply:"无法可靠判断这张图片属于哪个已启用能力。\n本次图片未保存、未交给业务Skill。\n请重新发送一张更清晰、内容完整的图片。",artifacts:[]};
+}
+function visualUnsupported(message) {
+  return isSinglePdf(message)
+    ?{status:"rejected",reply:"当前没有可处理这类 PDF 的已启用能力。",artifacts:[]}
+    :{status:"rejected",reply:"当前没有可处理这类图片的已启用能力。",artifacts:[]};
+}
+function visualPreparationFailure(message,error) {
+  if (isSinglePdf(message)) {
+    if (typeof error?.code==="string"&&error.code.startsWith("pdf_")) return invoiceFailure("prepare_pdf",error.code);
+    if (typeof error?.code==="string"&&error.code.startsWith("download")) return invoiceFailure("download",error.code);
+    return invoiceFailure("inspect",error?.code);
+  }
+  return {status:"failed",reply:"图片准备失败，本次未交给 AI 或业务Skill、未写入 Obsidian；请重新发送受支持的原始图片。",artifacts:[]};
+}
 function deepseekInvoiceUnsupported() { return {status:"rejected",reply:"当前模型为 DeepSeek，但发票 PDF 需要 Codex 视觉判断。\n本次未调用模型、未归档文件、未写入 Obsidian。\n请先发送：/llw-model codex\n然后重新提交发票。",artifacts:[]}; }
 function deepseekImageUnsupported() { return {status:"rejected",reply:"当前模型为 DeepSeek，但图片需要 Codex 进行视觉路由。\n本次未下载图片、未调用模型、未调用业务Skill、未写入 Obsidian。\n请先发送：/llw-model codex\n然后重新提交图片。",artifacts:[]}; }
 function isSingleImage(message) { return message?.attachments?.length===1&&message.attachments[0]?.type==="image"; }
+function isSinglePdf(message) { return message?.attachments?.length===1&&message.attachments[0]?.type==="file"&&message.attachments[0]?.extension==="pdf"; }
 function isBoundMalformed(raw,binding) { return raw&&typeof raw==="object"&&raw.sender_id===binding.senderId&&raw.chat_id===binding.chatId&&raw.chat_type==="p2p"&&typeof raw.message_id==="string"&&raw.message_id.length>0; }
 function validateDraft(draft) {
   const statuses=new Set(["committed","existing","awaiting_clarification","rejected","failed","ignored"]);
