@@ -55,19 +55,37 @@ https://pypdfium2.readthedocs.io/en/stable/python_api.html
 
 Node.js 继续负责通用安全边界、超时、临时目录和输出复核；它不是第二套 PDF 能力。Codex 和 Node.js 发票业务职责保持不变。
 
+完整调用顺序如下。PDFium 只替换发票 Capability 内部原有的 Poppler 技术处理，不得绕过统一路由：
+
 ```text
-飞书 / 微信原始 PDF
-  → 现有下载器和文件头、大小、普通文件检查
-  → 一个受限 PDFium 子进程
-      ├─ 加密与结构检查
-      ├─ 页数检查
-      ├─ 全部页面文本提取
-      └─ 全部页面 PNG 渲染
-  → Node.js 复核固定输出清单和限制
-  → 现有 invoice.visual
-  → 现有确定性规则和 writer
-  → 归档用户发送的原始 PDF
+飞书 / 微信消息入口
+  → IncomingMessage 标准化
+  → 安全门和幂等
+  → 统一意图路由 Skill：feishu-intent-router
+      └─ router.text 只读取安全附件元信息
+          ├─ clarify / unsupported：结束，不下载附件、不调用业务 Skill
+          └─ route: invoice（high）
+              → invoice Capability
+                  → 现有下载器和文件头、大小、普通文件检查
+                  → 一个受限 PDFium 子进程
+                      ├─ 加密与结构检查
+                      ├─ 页数检查
+                      ├─ 全部页面文本提取
+                      └─ 全部页面 PNG 渲染
+                  → Node.js 复核固定输出清单和限制
+                  → invoice.visual
+                      └─ 按 filing-invoices Skill 提取票面事实
+                  → Node.js 现有确定性入库规则
+                  → 现有 writer
+                  → 归档用户发送的原始 PDF
 ```
+
+这里的四个名称不得混用：
+
+- `feishu-intent-router` 是统一意图路由 Skill。PDF 先由它根据安全附件元信息选择唯一 Capability；只有 `route: invoice / high` 才进入后续下载和发票处理。
+- `invoice` 是发票 Capability，负责串联下载、PDF 技术处理、AI 提取、确定性规则和 writer。
+- `filing-invoices` 是发票业务 Skill，定义票面字段、清晰完整性和业务输出合同。目前允许归档的业务类别只有餐饮，但该 Skill 仍须识别并拒绝非餐饮发票，因此不是一个独立的“餐饮发票 Skill”。
+- `invoice.visual` 是 `invoice` Capability 内调用 Codex 的语义任务，并非 Skill。它按照 `filing-invoices` 合同从 PDFium 页面提取事实和清晰度，不负责购买方匹配、是否入库或写文件；这些仍由后续 Node.js 确定性规则和 writer 负责。
 
 ## 4. 单一处理器边界
 
