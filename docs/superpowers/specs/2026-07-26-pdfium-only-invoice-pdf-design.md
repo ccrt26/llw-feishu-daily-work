@@ -1,8 +1,8 @@
 # 单一 PDFium 发票 PDF 处理器设计
 
 日期：2026-07-26  
-状态：设计已获项目所有者口头批准，等待书面规格复核  
-范围：V3.6.3 发票能力的 PDF 技术兼容修正，不改变业务语义
+状态：根据项目所有者复核意见补齐 PDF 内容路由，等待书面规格确认
+范围：V3.6.3 发票能力的 PDF 技术兼容修正，并补齐 PDF 的内容路由准备；不改变发票业务语义
 
 ## 1. 背景与根因
 
@@ -55,37 +55,44 @@ https://pypdfium2.readthedocs.io/en/stable/python_api.html
 
 Node.js 继续负责通用安全边界、超时、临时目录和输出复核；它不是第二套 PDF 能力。Codex 和 Node.js 发票业务职责保持不变。
 
-完整调用顺序如下。PDFium 只替换发票 Capability 内部原有的 Poppler 技术处理，不得绕过统一路由：
+现有代码对图片采用“先安全准备、再视觉路由、路由成功后复用准备结果”的顺序；但 PDF 在下载前由 `router.text` 只根据文件名、扩展名和资源类型路由，无法根据实际页面判断它是不是发票。本修正必须消除这项不一致。
+
+完整调用顺序如下。下载、文件检查和 PDFium 是通用的受限附件准备，不是发票业务 Skill；准备结果同时供统一路由和后续唯一业务 Capability 使用：
 
 ```text
 飞书 / 微信消息入口
   → IncomingMessage 标准化
   → 安全门和幂等
+  → 通用受限附件准备
+      → 下载到当前消息的私有临时目录
+      → 文件头、扩展名、大小、普通文件和无符号链接检查
+      → 一个受限 PDFium 子进程
+          ├─ 加密与结构检查
+          ├─ 页数检查
+          ├─ 全部页面文本提取
+          └─ 全部页面 PNG 渲染
+      → Node.js 复核固定输出清单和限制
   → 统一意图路由 Skill：feishu-intent-router
-      └─ router.text 只读取安全附件元信息
-          ├─ clarify / unsupported：结束，不下载附件、不调用业务 Skill
-          └─ route: invoice（high）
-              → invoice Capability
-                  → 现有下载器和文件头、大小、普通文件检查
-                  → 一个受限 PDFium 子进程
-                      ├─ 加密与结构检查
-                      ├─ 页数检查
-                      ├─ 全部页面文本提取
-                      └─ 全部页面 PNG 渲染
-                  → Node.js 复核固定输出清单和限制
-                  → invoice.visual
-                      └─ 按 filing-invoices Skill 提取票面事实
-                  → Node.js 现有确定性入库规则
-                  → 现有 writer
-                  → 归档用户发送的原始 PDF
+      → router.visual 查看全部已验证页面
+      ├─ clarify / unsupported：结束，不调用业务 Skill、不归档
+      └─ route: invoice（high）
+          → invoice Capability 复用同一份准备结果
+              → invoice.visual
+                  └─ 按 filing-invoices Skill 提取票面事实
+              → Node.js 现有确定性入库规则
+              → 现有 writer
+              → 归档用户发送的原始 PDF
+  → 无论结果如何都清理临时准备文件
 ```
 
 这里的四个名称不得混用：
 
-- `feishu-intent-router` 是统一意图路由 Skill。PDF 先由它根据安全附件元信息选择唯一 Capability；只有 `route: invoice / high` 才进入后续下载和发票处理。
-- `invoice` 是发票 Capability，负责串联下载、PDF 技术处理、AI 提取、确定性规则和 writer。
+- `feishu-intent-router` 是统一意图路由 Skill。PDF 完成通用技术准备后，由它查看实际页面并选择唯一 Capability；只有 `route: invoice / high` 才进入发票业务处理。
+- `invoice` 是发票 Capability，负责 AI 提取、确定性规则和 writer；它接收并复用已经下载、检查和渲染的准备结果，不得再次下载或再次运行 PDFium。
 - `filing-invoices` 是发票业务 Skill，定义票面字段、清晰完整性和业务输出合同。目前允许归档的业务类别只有餐饮，但该 Skill 仍须识别并拒绝非餐饮发票，因此不是一个独立的“餐饮发票 Skill”。
 - `invoice.visual` 是 `invoice` Capability 内调用 Codex 的语义任务，并非 Skill。它按照 `filing-invoices` 合同从 PDFium 页面提取事实和清晰度，不负责购买方匹配、是否入库或写文件；这些仍由后续 Node.js 确定性规则和 writer 负责。
+
+本修正不新增第二个路由器或新的业务 Skill。现有 `router.visual` 的受限输入由“一张已准备图片”扩展为“一至十张按页码排序的已准备页面”；它仍只输出 Capability 选择，不得提取或返回票面字段。`router.text` 继续处理纯文本和无需查看内容即可判断的附件元信息，但不得用于判断 PDF 内容是不是发票。
 
 ## 4. 单一处理器边界
 
@@ -178,7 +185,7 @@ Node.js 只向处理器提供：
 - 日期只确定月份、金额只确定文件名；
 - 同月同金额的 `金额`、`金额-2`、`金额-3` 顺序；
 - 原始 PDF 归档、SHA-256、事务、防覆盖和幂等；
-- 飞书、微信统一 Dispatcher、Router、Capability 和 writer；
+- 飞书、微信继续共用同一个 Dispatcher、Router、Capability 和 writer，不分叉第二套实现；
 - 正式微信启用状态；
 - 正式 Vault 的目录结构和既有资料。
 
@@ -218,6 +225,11 @@ Node.js 只向处理器提供：
 - 页面顺序、尺寸、PNG 头、总输出 100 MiB；
 - 超时、非零退出、异常 stdout、额外文件、缺页、重复页、目录和符号链接；
 - 临时目录清理；
+- PDF 必须在下载、文件检查和 PDFium 成功后才调用 `router.visual`；
+- `router.visual` 必须按顺序收到全部页面，且只输出路由结果；
+- 路由为 `clarify / unsupported` 时 `invoice.visual` 和 writer 调用数均为零；
+- 路由为 `invoice / high` 时，同一准备结果交给 invoice Capability，下载和 PDFium 调用数均仍为一次；
+- 飞书与微信相同 PDF 的准备、路由和业务调用顺序一致；
 - PDFium 版本、权限、运行件哈希和无网络安装；
 - 现有图片发票、飞书、微信、Router、业务规则、writer 和完整回归。
 
@@ -256,9 +268,10 @@ Node.js 只向处理器提供：
 
 项目所有者重新通过正式微信发送已用于诊断的原始 PDF。验收只读取脱敏状态并确认：
 
-- 路由为唯一 invoice；
-- PDFium 处理成功且全部临时输出已清理；
-- Codex 只调用一次；
+- PDF 先完成一次下载、文件检查和 PDFium 处理，再由 `router.visual` 路由为唯一 invoice；
+- `router.visual` 调用一次且只产生路由结果，`invoice.visual` 随后调用一次；
+- invoice Capability 复用同一准备结果，下载和 PDFium 均不重复；
+- 处理完成后全部临时输出已清理；
 - Node.js 结果符合现有购买方、税号、餐饮、日期和金额规则；
 - 成功时原始 PDF 进入现有月目录，源与目标 SHA-256 相同；
 - 同内容重复时返回 `existing`，不覆盖；
