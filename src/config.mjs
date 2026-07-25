@@ -1,6 +1,5 @@
 import {randomUUID} from "node:crypto";
-import {constants as fsConstants} from "node:fs";
-import {access,lstat,mkdir,open,readFile,rename} from "node:fs/promises";
+import {lstat,mkdir,open,readFile,rename} from "node:fs/promises";
 import {dirname,isAbsolute,join,parse,resolve} from "node:path";
 
 const TOP_FIELDS=new Set([
@@ -13,7 +12,7 @@ const DEEPSEEK_MODELS=new Set(["deepseek-v4-pro"]);
 const DAILY_FIELDS=new Set(["enabled","skillRoot"]);
 const INVOICE_FIELDS=new Set([
   "enabled","skillRoot","tempRoot","archiveRoot","maxFileBytes","aiTimeoutMs",
-  "pdfInfoPath","pdfToTextPath","pdfToPpmPath","maxPdfPages","maxPdfTextBytes","maxPdfRenderBytes","pdfPrepareTimeoutMs"
+  "pdfProcessorPath","maxPdfPages","maxPdfTextBytes","maxPdfRenderBytes","pdfPrepareTimeoutMs"
 ]);
 
 export async function loadConfig(file,{requireBinding=true}={}) {
@@ -41,18 +40,6 @@ export function bindingFromEvent(event) {
   return {senderId:event.sender_id,chatId:event.chat_id};
 }
 
-export async function validatePdfTools(invoice) {
-  for (const field of ["pdfInfoPath","pdfToTextPath","pdfToPpmPath"]) {
-    try {
-      const info=await lstat(invoice[field]);
-      if (!info.isFile() || info.isSymbolicLink()) throw new Error("unsafe");
-      await access(invoice[field],fsConstants.X_OK);
-    } catch {
-      throw new Error(`unsafe_pdf_tool:${field}`);
-    }
-  }
-}
-
 function validateConfig(config,requireBinding,configFile) {
   exact(config,TOP_FIELDS,"config");
   if (config.version !== 4) throw new Error("invalid_config_version");
@@ -73,10 +60,10 @@ function validateConfig(config,requireBinding,configFile) {
   if (typeof daily.enabled !== "boolean" || typeof invoice.enabled !== "boolean") throw new Error("invalid_capability_enabled");
   absolute(daily.skillRoot,"daily-work.skillRoot");
   for (const field of ["skillRoot","tempRoot","archiveRoot"]) absolute(invoice[field],`invoice.${field}`);
-  for (const field of ["pdfInfoPath","pdfToTextPath","pdfToPpmPath"]) absolute(invoice[field],`invoice.${field}`);
-  const protectedPaths=[configFile,config.vaultRoot,config.stateFile,config.heartbeatFile,config.wechatStateFile,config.cliPath,config.codexPath,daily.skillRoot,invoice.skillRoot,invoice.tempRoot,invoice.archiveRoot,invoice.pdfInfoPath,invoice.pdfToTextPath,invoice.pdfToPpmPath];
+  absolute(invoice.pdfProcessorPath,"invoice.pdfProcessorPath");
+  const protectedPaths=[configFile,config.vaultRoot,config.stateFile,config.heartbeatFile,config.wechatStateFile,config.cliPath,config.codexPath,daily.skillRoot,invoice.skillRoot,invoice.tempRoot,invoice.archiveRoot,invoice.pdfProcessorPath];
   if (protectedPaths.filter(value=>typeof value==="string").some(value=>foldedPath(value)===foldedPath(config.modelStateFile))) throw new Error("invalid_model_state_file_alias");
-  const nonWechatPaths=[configFile,config.vaultRoot,config.stateFile,config.heartbeatFile,config.modelStateFile,config.cliPath,config.codexPath,daily.skillRoot,invoice.skillRoot,invoice.tempRoot,invoice.archiveRoot,invoice.pdfInfoPath,invoice.pdfToTextPath,invoice.pdfToPpmPath];
+  const nonWechatPaths=[configFile,config.vaultRoot,config.stateFile,config.heartbeatFile,config.modelStateFile,config.cliPath,config.codexPath,daily.skillRoot,invoice.skillRoot,invoice.tempRoot,invoice.archiveRoot,invoice.pdfProcessorPath];
   if (nonWechatPaths.filter(value=>typeof value==="string").some(value=>foldedPath(value)===foldedPath(config.wechatStateFile))) throw new Error("invalid_wechat_state_file_alias");
   if (resolve(config.modelStateFile)!==resolve(join(dirname(config.stateFile),"model-state"))) throw new Error("invalid_model_state_file");
   if (invoice.archiveRoot !== join(config.vaultRoot,"亚信工作","日常发票","餐饮发票")) throw new Error("invalid_invoice_archive_root");

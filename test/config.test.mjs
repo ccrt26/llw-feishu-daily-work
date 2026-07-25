@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, mkdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { bindingFromEvent, loadConfig, saveConfig, validatePdfTools } from "../src/config.mjs";
+import { bindingFromEvent, loadConfig, saveConfig } from "../src/config.mjs";
 
 function config(overrides = {}) {
   const base = {
@@ -21,7 +21,7 @@ function config(overrides = {}) {
       invoice:{
         enabled:true,skillRoot:"/Volumes/test/LLW/.agents/skills/filing-invoices",tempRoot:"/Users/test/tmp/invoices",
         archiveRoot:"/Volumes/test/LLW/亚信工作/日常发票/餐饮发票",maxFileBytes:20971520,aiTimeoutMs:120000,
-        pdfInfoPath:"/Users/test/bin/pdfinfo",pdfToTextPath:"/Users/test/bin/pdftotext",pdfToPpmPath:"/Users/test/bin/pdftoppm",
+        pdfProcessorPath:"/Users/test/runtime/pdfium-5.11.0/pdfium-processor.py",
         maxPdfPages:10,maxPdfTextBytes:262144,maxPdfRenderBytes:104857600,pdfPrepareTimeoutMs:60000
       }
     }
@@ -46,7 +46,7 @@ test("saves mode-0600 config and validates required absolute paths", async () =>
   await assert.rejects(async () => saveConfig(file, config({wechatStateFile:"relative"})), /invalid_config_path:wechatStateFile/);
   await assert.rejects(async () => saveConfig(file, config({wechatKeychainService:""})), /invalid_wechat_keychain_name/);
   await assert.rejects(async () => saveConfig(file, {...config(),deepseekBaseUrl:"https:\/\/example.com"}), /unknown_config_field/);
-  for (const modelStateFile of [config().stateFile,config().heartbeatFile,config().cliPath,config().codexPath,config().capabilities.invoice.pdfInfoPath]) {
+  for (const modelStateFile of [config().stateFile,config().heartbeatFile,config().cliPath,config().codexPath,config().capabilities.invoice.pdfProcessorPath]) {
     await assert.rejects(async () => saveConfig(file, config({modelStateFile})), /invalid_model_state_file_alias/);
   }
   await assert.rejects(async () => saveConfig(file, config({capabilities:{...config().capabilities,invoice:{...config().capabilities.invoice,maxFileBytes:20971521}}})), /invalid_max_file_bytes/);
@@ -93,7 +93,7 @@ test("requires the fixed state-directory model path and rejects case-folded or s
   } finally { await rm(dir,{recursive:true,force:true}); }
 });
 
-test("version 4 requires exact PDF limits and absolute tool paths", async () => {
+test("version 4 requires exact PDF limits and one absolute processor path", async () => {
   const dir = await mkdtemp(join(tmpdir(), "llw-config-pdf-"));
   const file = join(dir, "config.json");
   try {
@@ -107,28 +107,12 @@ test("version 4 requires exact PDF limits and absolute tool paths", async () => 
       const invoice={...config().capabilities.invoice,[field]:value};
       await assert.rejects(() => saveConfig(file,config({capabilities:{...config().capabilities,invoice}})),new RegExp(code));
     }
-    const invoice={...config().capabilities.invoice,pdfInfoPath:"pdfinfo"};
+    const invoice={...config().capabilities.invoice,pdfProcessorPath:"pdfium-processor.py"};
     await assert.rejects(() => saveConfig(file,config({capabilities:{...config().capabilities,invoice}})),/invalid_config_path/);
-  } finally { await rm(dir,{recursive:true,force:true}); }
-});
-
-test("PDF tools must be executable regular files and never symbolic links", async () => {
-  const dir=await mkdtemp(join(tmpdir(),"llw-pdf-tools-"));
-  const executable=join(dir,"tool");
-  const noExecute=join(dir,"no-execute");
-  const directory=join(dir,"directory");
-  const link=join(dir,"link");
-  try {
-    await writeFile(executable,"#!/bin/sh\nexit 0\n",{mode:0o700});
-    await writeFile(noExecute,"x",{mode:0o600});
-    await mkdir(directory);
-    await symlink(executable,link);
-    await assert.doesNotReject(() => validatePdfTools({pdfInfoPath:executable,pdfToTextPath:executable,pdfToPpmPath:executable}));
-    for (const unsafe of [noExecute,directory,link]) {
-      await assert.rejects(() => validatePdfTools({pdfInfoPath:unsafe,pdfToTextPath:executable,pdfToPpmPath:executable}),/unsafe_pdf_tool/);
+    for (const legacy of ["pdfInfoPath","pdfToTextPath","pdfToPpmPath"]) {
+      const mixed={...config().capabilities.invoice,[legacy]:"/legacy/tool"};
+      await assert.rejects(()=>saveConfig(file,config({capabilities:{...config().capabilities,invoice:mixed}})),/unknown_capability_field/);
     }
-    await chmod(executable,0o600);
-    await assert.rejects(() => validatePdfTools({pdfInfoPath:executable,pdfToTextPath:executable,pdfToPpmPath:executable}),/unsafe_pdf_tool/);
   } finally { await rm(dir,{recursive:true,force:true}); }
 });
 
