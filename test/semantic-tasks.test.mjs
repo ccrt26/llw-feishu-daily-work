@@ -22,7 +22,13 @@ test("exposes exactly the four named semantic task boundaries over existing clie
   const routerInput={message:{type:"text",text:"记录工作",beijingTime:"2026-07-23 09:30:00"},conversation:null,capabilities:[]};
   const visualInput={
     model:"codex",
-    preparedImage:{tempDir:"/tmp/job-safe",file:"/tmp/job-safe/image.png",detectedFormat:"png",archiveExtension:"png",sizeBytes:123},
+    preparedVisual:{
+      tempDir:"/tmp/job-safe",resourceType:"image",
+      analysisInput:{
+        originalFile:"/tmp/job-safe/image.png",detectedFormat:"png",archiveExtension:"png",
+        pageImages:["/tmp/job-safe/image.png"],extractedText:"",documentFacts:{pageCount:1,textAvailable:false}
+      }
+    },
     beijingTime:"2026-07-23 09:30:00",
     capabilities:[{capability:"invoice",purpose:"处理发票",accepts:["image"],positive_examples:["发票图片"],negative_examples:["普通照片"],supports_continuation:false}]
   };
@@ -38,7 +44,7 @@ test("exposes exactly the four named semantic task boundaries over existing clie
         conversation:null,
         capabilities:visualInput.capabilities
       },
-      imageFile:"/tmp/job-safe/image.png"
+      imageFiles:["/tmp/job-safe/image.png"]
     },
     {codexPath:"/runtime/codex",workspaceRoot:"/vault",skillRoot:"/skill",timeoutMs:321,...dailyInput},
     {codexPath:"/runtime/codex",workspaceRoot:"/vault",skillRoot:"/skill",timeoutMs:321,...invoiceInput}

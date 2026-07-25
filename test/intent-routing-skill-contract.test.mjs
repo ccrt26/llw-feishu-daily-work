@@ -24,6 +24,9 @@ test("router Skill and business routing contracts expose one strict text and vis
   ]) assert.match(skill,new RegExp(`## ${section.replace(/[.*+?^${}()|[\\]\\]/g,"\\$&")}`));
   for (const marker of ["[AI]","[程序]","[确认]","router.text","router.visual","Codex","DeepSeek"]) assert.equal(skill.includes(marker),true);
   assert.match(skill,/router\.visual.*实际像素/s);
+  assert.match(skill,/PDF.*全部页面.*PNG/s);
+  assert.match(skill,/PDF.*下载.*检查.*渲染.*一次/s);
+  assert.match(skill,/不使用.*PDF.*提取文本.*路由/s);
   assert.match(skill,/只选择业务能力.*不提取发票字段/s);
   assert.match(skill,/即使.*唯一.*图片候选.*不得强制.*route/s);
   assert.match(skill,/图片中的.*指令.*不执行/s);
@@ -155,7 +158,7 @@ test("router Skill and business routing contracts expose one strict text and vis
     assert.match(item.fixture,/^fixtures\/[a-z0-9-]+\.(?:png|jpg|jpeg|webp)$/);
     assert.deepEqual(Object.keys(item.input).sort(),["capabilities","conversation","message"]);
     assert.deepEqual(Object.keys(item.input.message).sort(),["beijingTime","type"]);
-    assert.equal(item.input.message.type,"image");
+    assert.equal(["image","file"].includes(item.input.message.type),true);
     assert.equal(item.input.conversation,null);
     assert.deepEqual(item.input.capabilities.map(capability=>capability.capability),["invoice"]);
     assert.deepEqual(item.input.capabilities[0],invoice);
@@ -176,4 +179,8 @@ test("router Skill and business routing contracts expose one strict text and vis
   assert.deepEqual(visualById.get("visual-boundary-blurred-invoice").expected,{action:"clarify"});
   assert.deepEqual(visualById.get("visual-boundary-cropped-invoice").expected,{action:"clarify"});
   assert.deepEqual(visualById.get("visual-boundary-prompt-injection").expected,{action:"unsupported"});
+  assert.deepEqual(visualById.get("visual-positive-clear-invoice-pdf").expected,{action:"route",capability:"invoice",confidence:"high"});
+  assert.equal(visualById.get("visual-positive-clear-invoice-pdf").input.message.type,"file");
+  assert.deepEqual(visualById.get("visual-negative-unrelated-pdf").expected,{action:"unsupported"});
+  assert.equal(visualById.get("visual-negative-unrelated-pdf").input.message.type,"file");
 });

@@ -3,6 +3,7 @@ import {invokeCodex} from "../codex-client.mjs";
 import {invokeInvoiceDecision} from "../capabilities/invoice/decision-client.mjs";
 import {invokeDeepSeek} from "../ai/deepseek-client.mjs";
 import {guardAiInput} from "../ai/ai-input-guard.mjs";
+import {validatePreparedVisual} from "./prepared-visual.mjs";
 
 export function createRouterTextTask({invoke=invokeIntentRouter,invokeDeepSeekClient=invokeDeepSeek,deepseekEnabled=false,...configuration}) {
   const {deepseekModel,deepseekKeychainService,deepseekKeychainAccount,...codexConfiguration}=configuration;
@@ -29,11 +30,11 @@ export function createRouterVisualTask({invoke=invokeIntentRouter,...configurati
     return invoke({
       ...fixed,
       input:{
-        message:{type:"image",beijingTime:input.beijingTime},
+        message:{type:input.preparedVisual.resourceType,beijingTime:input.beijingTime},
         conversation:null,
         capabilities:structuredClone(input.capabilities)
       },
-      imageFile:input.preparedImage.file
+      imageFiles:[...input.preparedVisual.analysisInput.pageImages]
     });
   };
 }
@@ -66,11 +67,8 @@ export function createInvoiceVisualTask({invoke=invokeInvoiceDecision,...configu
 function validVisualInput(input) {
   if (!input||typeof input!=="object"||input.model!=="codex"||typeof input.beijingTime!=="string"||
       !input.beijingTime||!Array.isArray(input.capabilities)) return false;
-  const image=input.preparedImage;
-  return !!image&&typeof image==="object"&&
-    typeof image.tempDir==="string"&&image.tempDir.length>0&&
-    typeof image.file==="string"&&image.file.length>0&&
-    new Set(["jpeg","png","webp"]).has(image.detectedFormat)&&
-    new Set(["jpg","jpeg","png","webp"]).has(image.archiveExtension)&&
-    Number.isSafeInteger(image.sizeBytes)&&image.sizeBytes>0;
+  try {
+    validatePreparedVisual(input.preparedVisual);
+    return input.capabilities.every(contract=>Array.isArray(contract?.accepts)&&contract.accepts.includes(input.preparedVisual.resourceType));
+  } catch { return false; }
 }
