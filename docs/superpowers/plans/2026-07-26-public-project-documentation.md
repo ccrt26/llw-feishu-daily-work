@@ -147,8 +147,8 @@ Expected: one documentation-only commit on `agent/public-project-docs`.
 Ensure the header contains:
 
 ```markdown
-日期：2026-07-26  
-状态：已按书面规格完成实现、原子部署和正式微信验收  
+日期：2026-07-26
+状态：已按书面规格完成实现、原子部署和正式微信验收
 范围：V3.6.3 发票能力的 PDF 技术兼容修正，并补齐 PDF 的内容路由准备；不改变发票业务语义
 ```
 
@@ -314,10 +314,11 @@ Expected: one documentation-only commit on `agent/public-project-readme`.
 
 - [ ] **Step 1: Scan only the changed public documents for prohibited literal patterns**
 
-Run once per repository against the changed Markdown files:
+Run against the public-facing README, project overview, V3.6.3 record, and Skills README. The implementation specification and plan are separately covered by `git diff --check` and reviewer inspection because they contain the scanner command itself:
 
 ```bash
-rg -n '/Users/|/Volumes/|BEGIN (RSA|OPENSSH|EC) PRIVATE KEY|sk-[A-Za-z0-9]|(app|open|union|chat|message)_id[[:space:]]*[:=]|resource_key[[:space:]]*[:=]' <changed-markdown-files>
+private_pattern='/Users''/|/Volumes''/|BEGIN (RSA|OPENSSH|EC) PRIVATE KEY|s''k-[A-Za-z0-9]{20,}|(app|open|union|chat|message)_id[[:space:]]*[:=]|resource_key[[:space:]]*[:=]|\b[0-9][0-9A-Z]{17}\b|有限公司'
+rg -n "$private_pattern" README.md docs/PROJECT_OVERVIEW.md docs/superpowers/specs/2026-07-26-pdfium-only-invoice-pdf-design.md
 ```
 
 Expected: no matches. Explanatory references to generic concepts such as “token” are allowed only when no value or identifier follows them.
