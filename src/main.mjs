@@ -17,6 +17,8 @@ import {createKnowledgeIngestCapability} from "./capabilities/knowledge-ingest/c
 import {createKnowledgeLibraryCatalog} from "./capabilities/knowledge-ingest/library-catalog.mjs";
 import {KnowledgeWriter} from "./capabilities/knowledge-ingest/knowledge-writer.mjs";
 import {prepareKnowledgeFile,prepareKnowledgeText} from "./capabilities/knowledge-ingest/source-preparer.mjs";
+import {prepareKnowledgeOfficeFile} from "./capabilities/knowledge-ingest/office-source-preparer.mjs";
+import {createFeishuDocumentExporter} from "./capabilities/knowledge-ingest/feishu-document-exporter.mjs";
 import {inspectInvoiceFile} from "./capabilities/invoice/file-inspector.mjs";
 import {parseInvoiceResource} from "./capabilities/invoice/resource-marker.mjs";
 import {validateInvoiceExtraction,deriveInvoiceRuleDecision} from "./capabilities/invoice/decision-validator.mjs";
@@ -190,6 +192,12 @@ if (knowledgeEnabled) {
     vaultRoot:config.vaultRoot,
     libraries:knowledgeConfig.libraries
   });
+  const feishuDocumentExporter=createFeishuDocumentExporter({
+    cliPath:config.cliPath,
+    profile:config.profile,
+    tempRoot:knowledgeConfig.tempRoot,
+    timeoutMs:knowledgeConfig.aiTimeoutMs
+  });
   const downloadKnowledgeResource=({
     source,sourceMessageId,attachment
   })=>{
@@ -210,9 +218,9 @@ if (knowledgeEnabled) {
         resourceId:attachment.sourceAttachmentId,
         resources:wechatResources,
         tempRoot:knowledgeConfig.tempRoot,
-        maxFileBytes:knowledgeConfig.maxSourceBytes,
+        maxFileBytes:20*1024*1024,
         timeoutMs:knowledgeConfig.aiTimeoutMs,
-        allowedFileExtensions:["txt","md"]
+        allowedFileExtensions:["txt","md","docx","pptx","xlsx"]
       });
     }
     throw Object.assign(new Error("download_failed"),{code:"download_failed"});
@@ -224,10 +232,21 @@ if (knowledgeEnabled) {
     sourcePreparer:({text})=>prepareKnowledgeText({
       text,maxSourceBytes:knowledgeConfig.maxSourceBytes
     }),
-    filePreparer:input=>prepareKnowledgeFile({
-      ...input,maxSourceBytes:knowledgeConfig.maxSourceBytes
-    }),
+    filePreparer:input=>new Set(["docx","pptx","xlsx"]).has(input.extension)
+      ?prepareKnowledgeOfficeFile({
+        ...input,
+        maxSourceBytes:20*1024*1024,
+        maxExtractedBytes:knowledgeConfig.maxSourceBytes,
+        processorPath:new URL(
+          "./capabilities/knowledge-ingest/ooxml_processor.py",import.meta.url
+        ),
+        timeoutMs:30_000
+      })
+      :prepareKnowledgeFile({
+        ...input,maxSourceBytes:knowledgeConfig.maxSourceBytes
+      }),
     download:downloadKnowledgeResource,
+    documentExporter:feishuDocumentExporter.exportSnapshot,
     skillVersion:privateSkillCatalog.skills.find(
       item=>item.name==="llw-knowledge-ingest"
     ).version

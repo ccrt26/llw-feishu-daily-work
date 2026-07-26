@@ -77,7 +77,11 @@ function detectExtension(value,type,claimedExtension) {
   if (type==="file") {
     const pdf=value.subarray(0,5).toString("ascii")==="%PDF-";
     if (claimedExtension==="pdf") return pdf?"pdf":null;
-    if (pdf||value.subarray(0,4).equals(Buffer.from([0x50,0x4b,0x03,0x04]))||
+    const zip=value.subarray(0,4).equals(Buffer.from([0x50,0x4b,0x03,0x04]));
+    if (new Set(["docx","pptx","xlsx"]).has(claimedExtension)) {
+      return zip?claimedExtension:null;
+    }
+    if (pdf||zip||
         value.subarray(0,8).equals(Buffer.from([0xd0,0xcf,0x11,0xe0,0xa1,0xb1,0x1a,0xe1]))) {
       return null;
     }
@@ -90,9 +94,11 @@ function detectExtension(value,type,claimedExtension) {
 }
 
 function validAllowedExtensions(value) {
-  return Array.isArray(value)&&value.length>=1&&value.length<=3&&
+  return Array.isArray(value)&&value.length>=1&&value.length<=6&&
     new Set(value).size===value.length&&
-    value.every(extension=>new Set(["pdf","txt","md"]).has(extension));
+    value.every(extension=>
+      new Set(["pdf","txt","md","docx","pptx","xlsx"]).has(extension)
+    );
 }
 
 function coded(code) { return Object.assign(new Error(code),{code}); }

@@ -93,10 +93,31 @@ test("downloads allowlisted TXT and Markdown once while the default remains PDF-
   assert.equal(calls,0);
 });
 
+test("downloads allowlisted OOXML containers once while rejecting ZIP content for text",async()=>{
+  const ooxml=Buffer.from([0x50,0x4b,0x03,0x04,0x01,0x02,0x03]);
+  for (const extension of ["docx","pptx","xlsx"]) {
+    const {root,result}=await run(ooxml,{
+      type:"file",displayName:`资料.${extension}`,extension,
+      allowedFileExtensions:["txt","md","docx","pptx","xlsx"]
+    });
+    try {
+      assert.equal(result.file.endsWith(`.${extension}`),true);
+      assert.deepEqual(await readFile(result.file),ooxml);
+    } finally { await rm(root,{recursive:true,force:true}); }
+  }
+  await assert.rejects(
+    run(ooxml,{
+      type:"file",displayName:"伪造.txt",extension:"txt",
+      allowedFileExtensions:["txt","md","docx","pptx","xlsx"]
+    }),
+    error=>error.code==="download_output_unsafe"
+  );
+});
+
 test("rejects file display-extension mismatch and malformed extension allowlists",async()=>{
   let calls=0;
   for (const allowedFileExtensions of [
-    [],["txt","txt"],["docx"],["txt","/md"]
+    [],["txt","txt"],["docx","exe"],["txt","/md"]
   ]) {
     await assert.rejects(
       run(Buffer.from("text"),{

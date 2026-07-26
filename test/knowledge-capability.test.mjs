@@ -58,10 +58,12 @@ function stateHarness() {
 }
 
 function harness({
-  decision=baseDecision,decideError,writerResult,download,filePreparer,cleanup
+  decision=baseDecision,decideError,writerResult,download,filePreparer,cleanup,
+  documentExporter
 }={}) {
   const calls={
-    catalog:0,prepare:[],decide:[],commit:[],create:[],download:[],filePrepare:[],cleanup:[]
+    catalog:0,prepare:[],decide:[],commit:[],create:[],download:[],filePrepare:[],
+    documentExport:[],cleanup:[]
   };
   const state=stateHarness();
   const writer={
@@ -99,6 +101,11 @@ function harness({
       if (filePreparer) return filePreparer(input);
       return {...prepared("synthetic file"),sourceKind:"file",detectedFormat:"txt",
         displayName:input.displayName,content:"synthetic file"};
+    },
+    async documentExporter(input) {
+      calls.documentExport.push(structuredClone(input));
+      if (documentExporter) return documentExporter(input);
+      throw new Error("unexpected_document_export");
     },
     async cleanup(tempDir) {
       calls.cleanup.push(tempDir);
@@ -187,6 +194,90 @@ test("reuses one bounded pending request for one TXT or Markdown download and cl
     assert.deepEqual(h.state.calls,[["clear"]]);
     assert.equal(h.state.pending,null);
   }
+});
+
+test("prepares each Office attachment once and keeps binary bytes out of the AI decision",async()=>{
+  for (const extension of ["docx","pptx","xlsx"]) {
+    const content=`# ${extension.toUpperCase()} 提取内容\n\n合成资料。`;
+    const sourceBytes=Buffer.from([0x50,0x4b,0x03,0x04,extension.length,0xff]);
+    const displayName=`source.${extension}`;
+    const fileSource={
+      version:1,sourceKind:"file",detectedFormat:extension,displayName,
+      sizeBytes:sourceBytes.length,
+      sha256:createHash("sha256").update(sourceBytes).digest("hex"),
+      jobSourceName:`source.${extension}`,safeSourceReference:"",
+      content,sourceBytes
+    };
+    const h=harness({
+      download:async()=>({
+        tempDir:`/tmp/synthetic-${extension}`,
+        file:`/tmp/synthetic-${extension}/attachment.${extension}`
+      }),
+      filePreparer:async()=>fileSource
+    });
+    const request=`把下一份 ${extension.toUpperCase()} 保存到工作资料`;
+    await h.state.state.setKnowledgePending({
+      request,startedAt:"2026-07-26T05:00:00.000Z",model:"codex"
+    });
+    h.state.calls.length=0;
+    const result=await h.capability.handle({
+      ...message(),text:undefined,attachments:[{
+        type:"file",sourceAttachmentId:`file_${extension}`,
+        displayName,extension
+      }]
+    },{state:h.state.state,model:"codex"});
+    assert.equal(result.status,"committed");
+    assert.equal(h.calls.download.length,1);
+    assert.equal(h.calls.filePrepare.length,1);
+    assert.equal(h.calls.decide.length,1);
+    assert.deepEqual(h.calls.decide[0].source,{
+      version:1,sourceKind:"file",detectedFormat:extension,displayName,
+      sizeBytes:sourceBytes.length,sha256:fileSource.sha256,
+      jobSourceName:`source.${extension}`,safeSourceReference:""
+    });
+    assert.equal(JSON.stringify(h.calls.decide[0]).includes("sourceBytes"),false);
+    assert.equal(Buffer.compare(h.calls.commit[0].source.sourceBytes,sourceBytes),0);
+    assert.deepEqual(h.calls.cleanup,[`/tmp/synthetic-${extension}`]);
+  }
+});
+
+test("exports one explicit Feishu document link once and records only a hashed source reference",async()=>{
+  const sourceBytes=Buffer.from([0x50,0x4b,0x03,0x04,0x01]);
+  const content="# Word 文档\n\n飞书快照正文";
+  const h=harness({
+    documentExporter:async()=>({
+      tempDir:"/tmp/synthetic-feishu-snapshot",
+      file:"/tmp/synthetic-feishu-snapshot/snapshot.docx",
+      extension:"docx",displayName:"交流方案.docx",
+      safeSourceReference:`feishu:${"a".repeat(64)}`
+    }),
+    filePreparer:async input=>({
+      version:1,sourceKind:"file",detectedFormat:"docx",
+      displayName:input.displayName,sizeBytes:sourceBytes.length,
+      sha256:createHash("sha256").update(sourceBytes).digest("hex"),
+      jobSourceName:"source.docx",safeSourceReference:"",
+      content,sourceBytes
+    })
+  });
+  const request="把这个飞书文档导入工作资料：https://example.feishu.cn/docx/token_abc";
+  const result=await h.capability.handle(message(request),{
+    state:h.state.state,model:"codex"
+  });
+  assert.equal(result.status,"committed");
+  assert.deepEqual(h.calls.documentExport,[{
+    url:"https://example.feishu.cn/docx/token_abc"
+  }]);
+  assert.equal(h.calls.prepare.length,0);
+  assert.equal(h.calls.filePrepare.length,1);
+  assert.equal(h.calls.decide[0].source.sourceKind,"feishu_document");
+  assert.equal(
+    h.calls.decide[0].source.safeSourceReference,
+    `feishu:${"a".repeat(64)}`
+  );
+  assert.equal(JSON.stringify(h.calls.decide[0]).includes("token_abc"),false);
+  assert.equal(JSON.stringify(h.calls.decide[0]).includes("sourceBytes"),false);
+  assert.equal(h.calls.commit[0].source.sourceKind,"feishu_document");
+  assert.deepEqual(h.calls.cleanup,["/tmp/synthetic-feishu-snapshot"]);
 });
 
 test("does not download unsupported or unrequested attachments and always cleans failed prepared jobs",async()=>{
@@ -291,7 +382,7 @@ test("stores a bounded 24-hour next-file intent without paths or attachment data
   const result=await h.capability.handle(input,{state:h.state.state,model:"codex"});
   assert.deepEqual(result,{
     status:"awaiting_clarification",
-    reply:"已记住本次入库要求，请在 24 小时内发送一份 TXT 或 Markdown 文件。\n文件到达前不会创建目录或写入知识库。",
+    reply:"已记住本次入库要求，请在 24 小时内发送一份 TXT、Markdown、DOCX、PPTX 或 XLSX 文件。\n文件到达前不会创建目录或写入知识库。",
     artifacts:[]
   });
   assert.deepEqual(h.state.pending,{

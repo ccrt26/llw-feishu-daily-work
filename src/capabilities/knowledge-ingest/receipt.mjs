@@ -1,6 +1,6 @@
 const REJECTED={
   save_intent_missing:"本次未写入：没有检测到明确的知识入库要求。",
-  unsupported_format:"本次未写入：当前版本只支持直接文字、TXT 和 Markdown。",
+  unsupported_format:"本次未写入：当前版本只支持直接文字、TXT、Markdown、DOCX、PPTX、XLSX 和受支持的飞书文档快照。",
   source_unreadable:"本次未写入：来源无法安全读取，请重新发送完整原件。",
   source_incomplete:"本次未写入：来源内容不完整，请重新发送完整原件。",
   multiple_sources:"本次未写入：每次只处理一个来源，请分开发送。",
@@ -75,14 +75,14 @@ export function formatKnowledgeQuestion(decision,library,libraries) {
 export function formatKnowledgePending() {
   return outcome(
     "awaiting_clarification",
-    "已记住本次入库要求，请在 24 小时内发送一份 TXT 或 Markdown 文件。\n文件到达前不会创建目录或写入知识库。"
+    "已记住本次入库要求，请在 24 小时内发送一份 TXT、Markdown、DOCX、PPTX 或 XLSX 文件。\n文件到达前不会创建目录或写入知识库。"
   );
 }
 
 export function formatKnowledgeAttachmentNeedsRequest() {
   return outcome(
     "rejected",
-    "请先用文字说明这份资料要保存到哪个资料库或现有目录，再发送一份 TXT 或 Markdown 文件；本次附件未下载、未写入。"
+    "请先用文字说明这份资料要保存到哪个资料库或现有目录，再发送一份 TXT、Markdown、DOCX、PPTX 或 XLSX 文件；本次附件未下载、未写入。"
   );
 }
 

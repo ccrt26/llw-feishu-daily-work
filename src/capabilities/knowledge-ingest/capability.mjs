@@ -9,9 +9,11 @@ import {
 
 export function createKnowledgeIngestCapability({
   decide,writer,catalog,sourcePreparer,filePreparer,download,
-  cleanup=defaultCleanup,skillVersion
+  documentExporter,cleanup=defaultCleanup,skillVersion
 }) {
-  async function processPrepared({request,source,content,libraries,state,startedAt,allowPending}) {
+  async function processPrepared({
+    request,source,content,sourceBytes,libraries,state,startedAt,allowPending
+  }) {
     const raw=await decide({
       model:"codex",request,source,sourceContent:content,
       allowedLibraries:libraries,taskSummary:null
@@ -25,7 +27,9 @@ export function createKnowledgeIngestCapability({
         title:decision.title,
         summary:decision.summary,
         tags:[...decision.tags],
-        source:{...source,content},
+        source:sourceBytes
+          ?{...source,content,sourceBytes}
+          :{...source,content},
         skillVersion,
         preserveSource:decision.preserve_source
       });
@@ -59,6 +63,32 @@ export function createKnowledgeIngestCapability({
     name:"knowledge-ingest",
     async handle(message,{state,model="codex"}={}) {
       if (model!=="codex") return formatKnowledgeCodexOnly();
+      const documentRequest=feishuDocumentRequest(message);
+      if (documentRequest) {
+        let exported;
+        try {
+          exported=await documentExporter({url:documentRequest.url});
+          const preparedFile=await filePreparer({
+            file:exported.file,
+            displayName:exported.displayName,
+            extension:exported.extension
+          });
+          const {content,sourceBytes,...source}=preparedFile;
+          source.sourceKind="feishu_document";
+          source.safeSourceReference=exported.safeSourceReference;
+          const libraries=await catalog();
+          return await processPrepared({
+            request:documentRequest.safeRequest,source,content,sourceBytes,
+            libraries,state,startedAt:message.receivedAt,allowPending:false
+          });
+        } catch {
+          return formatKnowledgeFailure();
+        } finally {
+          if (exported?.tempDir) {
+            try { await cleanup(exported.tempDir); } catch { /* scavenger retries */ }
+          }
+        }
+      }
       if (validDirectTextMessage(message)) {
         try {
           const request=message.text.trim();
@@ -93,10 +123,10 @@ export function createKnowledgeIngestCapability({
           displayName:attachment.displayName,
           extension:attachment.extension
         });
-        const {content,...source}=preparedFile;
+        const {content,sourceBytes,...source}=preparedFile;
         const libraries=await catalog();
         return await processPrepared({
-          request:pending.request,source,content,libraries,state,
+          request:pending.request,source,content,sourceBytes,libraries,state,
           startedAt:pending.startedAt,allowPending:false
         });
       } catch {
@@ -120,7 +150,7 @@ function validKnowledgeFileMessage(message) {
   const attachment=message.attachments[0];
   return Boolean(
     attachment&&attachment.type==="file"&&
-    new Set(["txt","md"]).has(attachment.extension)&&
+    new Set(["txt","md","docx","pptx","xlsx"]).has(attachment.extension)&&
     typeof attachment.displayName==="string"&&attachment.displayName
   );
 }
@@ -138,4 +168,27 @@ function validDirectTextMessage(message) {
     typeof message.receivedAt==="string"&&
     Number.isFinite(Date.parse(message.receivedAt))
   );
+}
+
+function feishuDocumentRequest(message) {
+  if (!validDirectTextMessage(message)) return null;
+  const urls=[...message.text.matchAll(/https:\/\/[^\s<>()]+/gu)]
+    .map(match=>match[0]);
+  if (urls.length!==1) return null;
+  try {
+    const url=new URL(urls[0]);
+    const host=url.hostname.toLowerCase();
+    if (!(host==="feishu.cn"||host.endsWith(".feishu.cn")||
+          host==="larksuite.com"||host.endsWith(".larksuite.com"))||
+        !/^\/(?:docx?|sheets|slides|wiki|base|bitable)\/[A-Za-z0-9_-]+\/?$/u
+          .test(url.pathname)) {
+      return null;
+    }
+    return {
+      url:urls[0],
+      safeRequest:message.text.replace(urls[0],"[飞书文档快照]").trim()
+    };
+  } catch {
+    return null;
+  }
 }

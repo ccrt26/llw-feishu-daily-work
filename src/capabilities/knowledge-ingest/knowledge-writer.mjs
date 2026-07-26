@@ -4,10 +4,12 @@ import {
 } from "node:fs/promises";
 import {isAbsolute,join,relative,resolve,sep} from "node:path";
 
-const SOURCE_FIELDS=new Set([
+const TEXT_SOURCE_FIELDS=new Set([
   "version","sourceKind","detectedFormat","displayName","sizeBytes","sha256",
   "jobSourceName","safeSourceReference","content"
 ]);
+const OFFICE_SOURCE_FIELDS=new Set([...TEXT_SOURCE_FIELDS,"sourceBytes"]);
+const OFFICE_FORMATS=new Set(["docx","pptx","xlsx"]);
 const RESERVED=/^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/iu;
 const MAX_SCAN_DIRECTORIES=4096;
 
@@ -43,7 +45,9 @@ export class KnowledgeWriter {
       lock=await acquireLibraryLock(context.libraryReal);
       const existing=await findExisting(context.libraryReal,knowledgeId);
       if (existing) {
-        const verified=await verifyItem(existing.path,{knowledgeId});
+        const verified=await verifyItem(existing.path,{
+          knowledgeId,source:input.source,preserveSource:input.preserveSource
+        });
         return resultFor("existing",context,input.libraryKey,knowledgeId,existing.path,verified.files);
       }
       const title=normalizeTitle(input.title);
@@ -52,8 +56,11 @@ export class KnowledgeWriter {
       await chmod(stage,0o700);
       const markdown=renderKnowledgeMarkdown({...input,knowledgeId});
       await writeSynced(join(stage,"knowledge.md"),markdown);
-      if (input.source.sourceKind==="file"&&input.preserveSource) {
-        await writeSynced(join(stage,input.source.jobSourceName),input.source.content);
+      if (sourceHasFile(input.source)&&input.preserveSource) {
+        await writeSynced(
+          join(stage,input.source.jobSourceName),
+          input.source.sourceBytes||input.source.content
+        );
       }
       await syncDirectory(stage);
       await verifyItem(stage,{knowledgeId,expectedMarkdown:markdown,source:input.source,
@@ -147,17 +154,21 @@ function validateCommitInput(input) {
 }
 
 function validateSource(source) {
+  const fields=OFFICE_FORMATS.has(source?.detectedFormat)
+    ?OFFICE_SOURCE_FIELDS:TEXT_SOURCE_FIELDS;
   if (!source||typeof source!=="object"||Array.isArray(source)||
-      Object.keys(source).length!==SOURCE_FIELDS.size||
-      Object.keys(source).some(field=>!SOURCE_FIELDS.has(field))||
-      source.version!==1||!new Set(["text","file"]).has(source.sourceKind)||
-      !new Set(["text","txt","md"]).has(source.detectedFormat)||
+      Object.keys(source).length!==fields.size||
+      Object.keys(source).some(field=>!fields.has(field))||
+      source.version!==1||
+      !new Set(["text","file","feishu_document"]).has(source.sourceKind)||
+      !new Set(["text","txt","md","docx","pptx","xlsx"]).has(source.detectedFormat)||
       typeof source.displayName!=="string"||!source.displayName||
       [...source.displayName].length>255||/[\\/\u0000-\u001f\u007f]/u.test(source.displayName)||
       !Number.isSafeInteger(source.sizeBytes)||source.sizeBytes<1||
       !/^[a-f0-9]{64}$/u.test(source.sha256)||
-      !/^source\.(?:txt|md)$/u.test(source.jobSourceName)||
-      source.safeSourceReference!==""||typeof source.content!=="string"||
+      !/^source\.(?:txt|md|docx|pptx|xlsx)$/u.test(source.jobSourceName)||
+      !validSourceReference(source.sourceKind,source.safeSourceReference)||
+      typeof source.content!=="string"||
       !source.content.trim()||source.content.includes("\0")) {
     throw new Error("invalid_source");
   }
@@ -169,15 +180,32 @@ function validateSource(source) {
       !sameFileFormat(source.detectedFormat,source.jobSourceName)) {
     throw new Error("invalid_source");
   }
-  const bytes=Buffer.byteLength(source.content,"utf8");
-  const digest=createHash("sha256").update(source.content,"utf8").digest("hex");
-  if (bytes!==source.sizeBytes||bytes>262_144||digest!==source.sha256) {
-    throw new Error("invalid_source");
+  const contentBytes=Buffer.byteLength(source.content,"utf8");
+  if (contentBytes>262_144) throw new Error("invalid_source");
+  if (OFFICE_FORMATS.has(source.detectedFormat)) {
+    if (!new Set(["file","feishu_document"]).has(source.sourceKind)||
+        !Buffer.isBuffer(source.sourceBytes)||
+        source.sourceBytes.length!==source.sizeBytes||
+        source.sourceBytes.length>20*1024*1024||
+        createHash("sha256").update(source.sourceBytes).digest("hex")!==source.sha256) {
+      throw new Error("invalid_source");
+    }
+  } else {
+    const digest=createHash("sha256").update(source.content,"utf8").digest("hex");
+    if (contentBytes!==source.sizeBytes||digest!==source.sha256) {
+      throw new Error("invalid_source");
+    }
   }
 }
 
 function sameFileFormat(format,name) {
-  return (format==="txt"&&name==="source.txt")||(format==="md"&&name==="source.md");
+  return new Set(["txt","md","docx","pptx","xlsx"]).has(format)&&
+    name===`source.${format}`;
+}
+
+function validSourceReference(kind,value) {
+  if (kind==="feishu_document") return /^feishu:[a-f0-9]{64}$/u.test(value||"");
+  return value==="";
 }
 
 function validateSegments(segments) {
@@ -255,6 +283,9 @@ function renderKnowledgeMarkdown({
   const tagLines=tags.length
     ? tags.map(tag=>`  - ${JSON.stringify(tag)}`).join("\n")
     : "  []";
+  const sourceReference=source.safeSourceReference
+    ?[`safe_source_reference: ${JSON.stringify(source.safeSourceReference)}`]
+    :[];
   return [
     "---",
     'llw_schema: "knowledge-item/v1"',
@@ -268,6 +299,7 @@ function renderKnowledgeMarkdown({
     `source_display_name: ${JSON.stringify(source.displayName)}`,
     `source_sha256: ${JSON.stringify(source.sha256)}`,
     `source_size_bytes: ${source.sizeBytes}`,
+    ...sourceReference,
     `skill_version: ${JSON.stringify(skillVersion)}`,
     `preserve_source: ${preserveSource}`,
     "---",
@@ -317,7 +349,7 @@ async function verifyItem(path,{knowledgeId,expectedMarkdown,source,preserveSour
     throw new Error("invalid_item");
   }
   const expected=["knowledge.md"];
-  if (source?.sourceKind==="file"&&preserveSource) expected.push(source.jobSourceName);
+  if (sourceHasFile(source)&&preserveSource) expected.push(source.jobSourceName);
   const entries=(await readdir(path)).sort();
   if (entries.length!==expected.length||
       entries.some((entry,index)=>entry!==expected.sort()[index])) {
@@ -335,7 +367,7 @@ async function verifyItem(path,{knowledgeId,expectedMarkdown,source,preserveSour
       (expectedMarkdown!==undefined&&markdown!==expectedMarkdown)) {
     throw new Error("invalid_item_content");
   }
-  if (source?.sourceKind==="file"&&preserveSource) {
+  if (sourceHasFile(source)&&preserveSource) {
     const raw=await readFile(join(path,source.jobSourceName));
     if (createHash("sha256").update(raw).digest("hex")!==source.sha256) {
       throw new Error("invalid_source_copy");
@@ -347,7 +379,7 @@ async function verifyItem(path,{knowledgeId,expectedMarkdown,source,preserveSour
 async function writeSynced(path,content) {
   const handle=await open(path,"wx",0o600);
   try {
-    await handle.writeFile(content,"utf8");
+    await handle.writeFile(content,typeof content==="string"?"utf8":undefined);
     await handle.sync();
   } finally {
     await handle.close();
@@ -410,6 +442,10 @@ function resultFor(status,context,libraryKey,knowledgeId,path,files) {
     status,knowledgeId,libraryKey,relativePath:base,
     files:files.map(name=>`${base}/${name}`)
   };
+}
+
+function sourceHasFile(source) {
+  return source&&new Set(["file","feishu_document"]).has(source.sourceKind);
 }
 
 function inside(parent,child) {

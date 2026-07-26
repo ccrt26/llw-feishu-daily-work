@@ -68,7 +68,9 @@ test("keeps knowledge ingest doubly disabled while retaining one bounded candida
     'createKnowledgeLibraryCatalog',
     'prepareKnowledgeText',
     'prepareKnowledgeFile',
-    'KnowledgeWriter'
+    'KnowledgeWriter',
+    'prepareKnowledgeOfficeFile',
+    'createFeishuDocumentExporter'
   ]) assert.equal(source.includes(expected),true);
   assert.match(source,/const knowledgeEnabled=knowledgeCandidateEnabled\(\{/);
   assert.match(source,/allowlistEnabled:knowledgePolicy\.enabled/);
@@ -76,6 +78,8 @@ test("keeps knowledge ingest doubly disabled while retaining one bounded candida
   assert.match(source,/if \(knowledgeEnabled\) \{/);
   assert.match(source,/knowledgeIngest:knowledgeCapability/);
   assert.match(source,/"knowledge-ingest":knowledgeEnabled/);
+  assert.match(source,/allowedFileExtensions:\["txt","md","docx","pptx","xlsx"\]/);
+  assert.match(source,/documentExporter:feishuDocumentExporter\.exportSnapshot/);
   assert.equal(source.includes("console.log(knowledge"),false);
   const {PRIVATE_SKILL_ALLOWLIST,knowledgeCandidateEnabled}=await import("../src/main.mjs");
   const policy=PRIVATE_SKILL_ALLOWLIST.find(item=>item.name==="llw-knowledge-ingest");

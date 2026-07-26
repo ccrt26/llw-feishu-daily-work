@@ -97,6 +97,60 @@ test("keeps work and personal roots disjoint and preserves an optional Markdown 
   } finally { await rm(h.root,{recursive:true,force:true}); }
 });
 
+test("preserves one verified Office source byte-for-byte without placing binary in Markdown",async()=>{
+  const h=await harness();
+  const sourceBytes=Buffer.from([
+    0x50,0x4b,0x03,0x04,0x00,0x01,0x02,0x03,0xff,0x00,0x7f
+  ]);
+  const officeSource={
+    version:1,sourceKind:"file",detectedFormat:"docx",
+    displayName:"交流方案.docx",sizeBytes:sourceBytes.length,
+    sha256:createHash("sha256").update(sourceBytes).digest("hex"),
+    jobSourceName:"source.docx",safeSourceReference:"",
+    content:"# Word 文档\n\n交流方案正文",sourceBytes
+  };
+  try {
+    const result=await h.writer.commit(commitInput({
+      source:officeSource,title:"Office 交流方案",preserveSource:true
+    }));
+    const item=join(h.root,result.relativePath);
+    assert.deepEqual((await readdir(item)).sort(),["knowledge.md","source.docx"]);
+    assert.equal(Buffer.compare(await readFile(join(item,"source.docx")),sourceBytes),0);
+    const markdown=await readFile(join(item,"knowledge.md"),"utf8");
+    assert.match(markdown,/source_format: "docx"/);
+    assert.match(markdown,/交流方案正文/);
+    assert.equal(markdown.includes(sourceBytes.toString("latin1")),false);
+  } finally { await rm(h.root,{recursive:true,force:true}); }
+});
+
+test("records only a bounded hashed Feishu source reference and remains snapshot-idempotent",async()=>{
+  const h=await harness();
+  const sourceBytes=Buffer.from([0x50,0x4b,0x03,0x04,0x09,0x08,0x07]);
+  const snapshot={
+    version:1,sourceKind:"feishu_document",detectedFormat:"docx",
+    displayName:"飞书交流方案.docx",sizeBytes:sourceBytes.length,
+    sha256:createHash("sha256").update(sourceBytes).digest("hex"),
+    jobSourceName:"source.docx",
+    safeSourceReference:`feishu:${"a".repeat(64)}`,
+    content:"# Word 文档\n\n飞书快照正文",sourceBytes
+  };
+  try {
+    const first=await h.writer.commit(commitInput({
+      source:snapshot,title:"飞书交流方案",preserveSource:true
+    }));
+    const duplicate=await h.writer.commit(commitInput({
+      source:snapshot,title:"另一个标题",preserveSource:true
+    }));
+    assert.equal(first.status,"created");
+    assert.equal(duplicate.status,"existing");
+    assert.equal(duplicate.relativePath,first.relativePath);
+    const markdown=await readFile(join(h.root,first.relativePath,"knowledge.md"),"utf8");
+    assert.match(markdown,/source_kind: "feishu_document"/);
+    assert.match(markdown,new RegExp(`safe_source_reference: "feishu:${"a".repeat(64)}"`));
+    assert.equal(markdown.includes("doxcn"),false);
+  } finally { await rm(h.root,{recursive:true,force:true}); }
+});
+
 test("creates only safe empty category folders and is idempotent",async()=>{
   const h=await harness();
   try {
