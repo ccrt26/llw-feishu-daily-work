@@ -1,6 +1,7 @@
 import {invokeIntentRouter} from "./intent-router-client.mjs";
 import {invokeCodex} from "../codex-client.mjs";
 import {invokeInvoiceDecision} from "../capabilities/invoice/decision-client.mjs";
+import {invokeKnowledgeDecision} from "../capabilities/knowledge-ingest/decision-client.mjs";
 import {invokeDeepSeek} from "../ai/deepseek-client.mjs";
 import {guardAiInput} from "../ai/ai-input-guard.mjs";
 import {validatePreparedVisual} from "./prepared-visual.mjs";
@@ -61,6 +62,21 @@ export function createInvoiceVisualTask({invoke=invokeInvoiceDecision,...configu
   return async input=>{
     if (!input||typeof input!=="object"||!input.analysisInput) throw new Error("invalid_invoice_visual_input");
     return invoke({...fixed,...input});
+  };
+}
+
+export function createKnowledgeIngestTask({invoke=invokeKnowledgeDecision,...configuration}) {
+  const fixed=structuredClone(configuration);
+  return async input=>{
+    if (!input||typeof input!=="object"||typeof input.request!=="string"||
+        !input.source||typeof input.sourceContent!=="string"||
+        !Array.isArray(input.allowedLibraries)) {
+      throw new Error("invalid_knowledge_ingest_input");
+    }
+    const {model="codex",...taskInput}=input;
+    if (model!=="codex") throw new Error("invalid_task_model");
+    guardAiInput("knowledge.ingest",taskInput);
+    return invoke({...fixed,input:taskInput});
   };
 }
 

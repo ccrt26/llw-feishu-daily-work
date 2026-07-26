@@ -17,6 +17,22 @@ const dailyInput=(text,candidate={})=>({
   }]
 });
 
+const knowledgeInput=text=>({
+  request:"保存这份资料",
+  source:{
+    version:1,sourceKind:"text",detectedFormat:"text",displayName:"message.txt",
+    sizeBytes:Buffer.byteLength(text),sha256:"a".repeat(64),
+    jobSourceName:"source.txt",safeSourceReference:""
+  },
+  sourceContent:text,
+  allowedLibraries:[{
+    libraryKey:"work-knowledge",displayName:"工作资料",
+    aliases:["工作文档"],
+    existingFolders:[["亚信工作","交流方案"]]
+  }],
+  taskSummary:null
+});
+
 function rejected(task,input) {
   try { guardAiInput(task,input); } catch (error) { return error; }
   assert.fail("expected ai_input_rejected");
@@ -80,4 +96,30 @@ test("keeps structural rejections free of a content reason code",()=>{
 
 test("keeps the 32 KiB serialized boundary",()=>{
   assert.throws(()=>guardAiInput("router.text",routerInput("工".repeat(40_000))),/ai_input_rejected/);
+});
+
+test("allows only bounded AI-safe knowledge ingest context",()=>{
+  const input=knowledgeInput("一份普通的交流方案说明。");
+  assert.deepEqual(guardAiInput("knowledge.ingest",input),input);
+  assert.throws(
+    ()=>guardAiInput("knowledge.ingest",{...input,vaultRoot:"/private/vault"}),
+    /ai_input_rejected/
+  );
+  assert.throws(
+    ()=>guardAiInput("knowledge.ingest",{
+      ...input,
+      allowedLibraries:[{...input.allowedLibraries[0],existingFolders:[["../outside"]]}]
+    }),
+    /ai_input_rejected/
+  );
+});
+
+test("scans knowledge content and safe catalog labels for prohibited values",()=>{
+  const credential=knowledgeInput("API Key: actual-api-key");
+  assert.equal(rejected("knowledge.ingest",credential).reasonCode,"credential");
+  const payment=knowledgeInput("支付密码: actual-password");
+  assert.equal(rejected("knowledge.ingest",payment).reasonCode,"payment");
+  const catalog=knowledgeInput("普通内容");
+  catalog.allowedLibraries[0].displayName="Authorization: Bearer actual-token";
+  assert.equal(rejected("knowledge.ingest",catalog).reasonCode,"credential");
 });

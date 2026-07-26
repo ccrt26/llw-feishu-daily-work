@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, readdir, writeFile } from "node:fs/promises";
+import {join} from "node:path";
 
 const args = process.argv.slice(2);
 const outputIndex = args.indexOf("--output-last-message");
@@ -13,6 +14,10 @@ if (process.env.FAKE_CODEX_MODE === "transient") {
   if (attempts === 1) process.exit(9);
 }
 if (process.env.FAKE_ARGS_FILE) await writeFile(process.env.FAKE_ARGS_FILE, JSON.stringify(args));
+if (process.env.FAKE_CWD_FILE) {
+  const skills=await readdir(join(process.cwd(),".agents","skills"));
+  await writeFile(process.env.FAKE_CWD_FILE,JSON.stringify({cwd:process.cwd(),skills}));
+}
 let stdin = "";
 for await (const chunk of process.stdin) stdin += chunk;
 if (process.env.FAKE_STDIN_FILE) await writeFile(process.env.FAKE_STDIN_FILE, stdin);

@@ -1,4 +1,5 @@
 const MAX_INPUT_BYTES=32 * 1024;
+const MAX_KNOWLEDGE_INPUT_BYTES=512 * 1024;
 const ROUTER_ROOT=new Set(["message","conversation","capabilities"]);
 const ROUTER_CONVERSATION=new Set(["capability","question","startedAt"]);
 const ROUTING_CONTRACT=new Set(["capability","purpose","accepts","positive_examples","negative_examples","supports_continuation"]);
@@ -7,6 +8,12 @@ const DAILY_MESSAGE=new Set(["ok","messageId","text","createTime"]);
 const DAILY_CONVERSATION=new Set(["id","status","turns","candidateIds","model"]);
 const DAILY_TURN=new Set(["role","text","createTime"]);
 const DAILY_CANDIDATE=new Set(["record_id","date","occurred_time","occurred_end_time","title","people","location","summary","follow_ups"]);
+const KNOWLEDGE_ROOT=new Set(["request","source","sourceContent","allowedLibraries","taskSummary"]);
+const KNOWLEDGE_SOURCE=new Set([
+  "version","sourceKind","detectedFormat","displayName","sizeBytes","sha256",
+  "jobSourceName","safeSourceReference"
+]);
+const KNOWLEDGE_LIBRARY=new Set(["libraryKey","displayName","aliases","existingFolders"]);
 
 const PRIVATE_KEY_HEADER=/-----BEGIN (?:PRIVATE KEY|RSA PRIVATE KEY|EC PRIVATE KEY|OPENSSH PRIVATE KEY)-----/u;
 const BEARER_VALUE=/\bauthorization\s*:\s*bearer\s+([^\s,，;；。！？?]+)/iu;
@@ -36,9 +43,11 @@ export function prepareGuardedAiInput(task,input) {
       };
     }
     else if (task==="daily-work.interpret") prepared=prepareDaily(input);
+    else if (task==="knowledge.ingest") prepared=prepareKnowledge(input);
     else reject();
     const serialized=JSON.stringify(prepared.context);
-    if (Buffer.byteLength(serialized,"utf8")>MAX_INPUT_BYTES) reject();
+    const maxBytes=task==="knowledge.ingest"?MAX_KNOWLEDGE_INPUT_BYTES:MAX_INPUT_BYTES;
+    if (Buffer.byteLength(serialized,"utf8")>maxBytes) reject();
     for (const value of modelTextValues(task,prepared.context)) {
       if (detectPaymentCredential(value)) reject("payment");
       if (detectStrongCredentialFormat(value)||detectNamedCredentialValue(value)) reject("credential");
@@ -88,6 +97,17 @@ function* modelTextValues(task,context) {
     if (typeof context.conversation?.question==="string") yield context.conversation.question;
     return;
   }
+  if (task==="knowledge.ingest") {
+    yield context.request;
+    yield context.sourceContent;
+    yield context.source.displayName;
+    for (const library of context.allowedLibraries) {
+      yield library.displayName;
+      yield* library.aliases;
+      for (const segments of library.existingFolders) yield* segments;
+    }
+    return;
+  }
   yield context.message.text;
   for (const turn of context.conversation?.turns||[]) yield turn.text;
   for (const candidate of context.candidates) {
@@ -97,6 +117,53 @@ function* modelTextValues(task,context) {
     yield candidate.summary;
     yield* candidate.follow_ups;
   }
+}
+
+function prepareKnowledge(input) {
+  exact(input,KNOWLEDGE_ROOT);
+  if (!text(input.request,12_000)||typeof input.sourceContent!=="string"||
+      !input.sourceContent.trim()||input.sourceContent.includes("\0")||
+      Buffer.byteLength(input.sourceContent,"utf8")>262_144||
+      input.taskSummary!==null) {
+    reject();
+  }
+  exact(input.source,KNOWLEDGE_SOURCE);
+  const source=input.source;
+  if (source.version!==1||!new Set(["text","file"]).has(source.sourceKind)||
+      !new Set(["text","txt","md"]).has(source.detectedFormat)||
+      !safeLabel(source.displayName,255)||!Number.isSafeInteger(source.sizeBytes)||
+      source.sizeBytes<1||source.sizeBytes!==Buffer.byteLength(input.sourceContent,"utf8")||
+      !/^[a-f0-9]{64}$/u.test(source.sha256)||
+      !/^source\.(?:txt|md)$/u.test(source.jobSourceName)||
+      source.safeSourceReference!=="") {
+    reject();
+  }
+  if (!Array.isArray(input.allowedLibraries)||input.allowedLibraries.length<1||
+      input.allowedLibraries.length>16) {
+    reject();
+  }
+  const keys=new Set();
+  for (const library of input.allowedLibraries) {
+    exact(library,KNOWLEDGE_LIBRARY);
+    if (!/^[a-z][a-z0-9_-]{0,63}$/u.test(library.libraryKey)||
+        keys.has(library.libraryKey)||!safeLabel(library.displayName,64)||
+        !Array.isArray(library.aliases)||library.aliases.length>20||
+        library.aliases.some(alias=>!safeLabel(alias,64))||
+        !Array.isArray(library.existingFolders)||library.existingFolders.length>256) {
+      reject();
+    }
+    keys.add(library.libraryKey);
+    for (const segments of library.existingFolders) {
+      if (!Array.isArray(segments)||segments.length<1||segments.length>5||
+          segments.some(segment=>!safeLabel(segment,64))) {
+        reject();
+      }
+    }
+  }
+  return {
+    context:structuredClone(input),
+    validation:{libraryKeys:[...keys]}
+  };
 }
 
 function validateRouter(input) {
@@ -163,6 +230,11 @@ function only(value,fields) {
   if (!value||typeof value!=="object"||Array.isArray(value)||Object.keys(value).some(key=>!fields.has(key))) reject();
 }
 function text(value,max) { return typeof value==="string"&&value.length>0&&value.length<=max; }
+function safeLabel(value,max) {
+  return text(value,max)&&value===value.trim()&&value===value.normalize("NFC")&&
+    value!=="."&&value!==".."&&!value.startsWith(".")&&
+    !/[\\/\u0000-\u001f\u007f]/u.test(value);
+}
 function stringArray(value,maxItems,maxLength) { return Array.isArray(value)&&value.length<=maxItems&&value.every(item=>text(item,maxLength)); }
 function validTimestamp(value) { return Number.isFinite(value)&&Number.isFinite(new Date(value).getTime()); }
 function beijingTimestamp(milliseconds) { return new Intl.DateTimeFormat("sv-SE",{timeZone:"Asia/Shanghai",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hourCycle:"h23"}).format(new Date(milliseconds)); }

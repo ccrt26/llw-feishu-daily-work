@@ -7,10 +7,11 @@ const {
   createRouterTextTask,
   createRouterVisualTask,
   createDailyWorkInterpretTask,
-  createInvoiceVisualTask
+  createInvoiceVisualTask,
+  createKnowledgeIngestTask
 }=semanticTasks;
 
-test("exposes exactly the four named semantic task boundaries over existing clients",async () => {
+test("exposes the five named semantic task boundaries over existing clients",async () => {
   const calls=[];
   const invoke=async input=>{calls.push(structuredClone(input));return {ok:true};};
   const common={codexPath:"/runtime/codex",workspaceRoot:"/vault",skillRoot:"/skill",timeoutMs:321,invoke};
@@ -19,6 +20,7 @@ test("exposes exactly the four named semantic task boundaries over existing clie
   const visual=createRouterVisualTask(common);
   const daily=createDailyWorkInterpretTask(common);
   const invoice=createInvoiceVisualTask(common);
+  const knowledge=createKnowledgeIngestTask(common);
   const routerInput={message:{type:"text",text:"记录工作",beijingTime:"2026-07-23 09:30:00"},conversation:null,capabilities:[]};
   const visualInput={
     model:"codex",
@@ -34,7 +36,24 @@ test("exposes exactly the four named semantic task boundaries over existing clie
   };
   const dailyInput={message:{text:"今天完成评审",createTime:1784426400000},conversation:null,candidates:[]};
   const invoiceInput={analysisInput:{detectedFormat:"png"}};
-  await router(routerInput); await visual(visualInput); await daily(dailyInput); await invoice(invoiceInput);
+  const knowledgeInput={
+    model:"codex",
+    request:"Save a synthetic note.",
+    source:{
+      version:1,sourceKind:"text",detectedFormat:"text",displayName:"message.txt",
+      sizeBytes:22,sha256:"a".repeat(64),jobSourceName:"source.txt",safeSourceReference:""
+    },
+    sourceContent:"Save a synthetic note.",
+    allowedLibraries:[{
+      libraryKey:"work-knowledge",displayName:"Synthetic Work",
+      aliases:[],existingFolders:[]
+    }],
+    taskSummary:null
+  };
+  const {model:knowledgeModel,...knowledgeTaskInput}=knowledgeInput;
+  assert.equal(knowledgeModel,"codex");
+  await router(routerInput); await visual(visualInput); await daily(dailyInput);
+  await invoice(invoiceInput); await knowledge(knowledgeInput);
   assert.deepEqual(calls,[
     {codexPath:"/runtime/codex",workspaceRoot:"/vault",skillRoot:"/skill",timeoutMs:321,input:routerInput},
     {
@@ -47,7 +66,11 @@ test("exposes exactly the four named semantic task boundaries over existing clie
       imageFiles:["/tmp/job-safe/image.png"]
     },
     {codexPath:"/runtime/codex",workspaceRoot:"/vault",skillRoot:"/skill",timeoutMs:321,...dailyInput},
-    {codexPath:"/runtime/codex",workspaceRoot:"/vault",skillRoot:"/skill",timeoutMs:321,...invoiceInput}
+    {codexPath:"/runtime/codex",workspaceRoot:"/vault",skillRoot:"/skill",timeoutMs:321,...invoiceInput},
+    {
+      codexPath:"/runtime/codex",workspaceRoot:"/vault",skillRoot:"/skill",timeoutMs:321,
+      input:knowledgeTaskInput
+    }
   ]);
 });
 
@@ -57,6 +80,7 @@ test("rejects missing task inputs before calling a semantic client",async () => 
   await assert.rejects(()=>createRouterTextTask(common)(),/invalid_router_text_input/);
   await assert.rejects(()=>createDailyWorkInterpretTask(common)(),/invalid_daily_work_interpret_input/);
   await assert.rejects(()=>createInvoiceVisualTask(common)(),/invalid_invoice_visual_input/);
+  await assert.rejects(()=>createKnowledgeIngestTask(common)(),/invalid_knowledge_ingest_input/);
   assert.equal(calls,0);
 });
 
