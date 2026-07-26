@@ -403,3 +403,93 @@ test("persists invoice archive transactions and terminal status", async () => {
   const reopened = await StateStore.open(file);
   assert.deepEqual(reopened.listInvoiceTransactions(),[{transactionId:"tx-1",targetRelativePath:"亚信工作/日常发票/餐饮发票/2026年07月/10.00.png",sourceHash:"a".repeat(64),status:"published",createdAt:store.listInvoiceTransactions()[0].createdAt}]);
 });
+
+test("persists one exact Codex-only knowledge pending request in state version 4",async()=>{
+  const {file}=await fresh();
+  const store=await StateStore.open(file);
+  const pending={
+    request:"把我接下来发送的一份文件保存到工作资料库",
+    startedAt:"2026-07-26T06:00:00.000Z",
+    model:"codex"
+  };
+  assert.deepEqual(store.getCapabilityState("knowledge-ingest"),{pending:null});
+  await store.setKnowledgePending(pending);
+  assert.deepEqual(
+    await store.getKnowledgePending(Date.parse("2026-07-27T05:59:59.999Z")),
+    pending
+  );
+  const persisted=JSON.parse(await readFile(file,"utf8"));
+  assert.equal(persisted.version,4);
+  assert.deepEqual(persisted.capabilityState["knowledge-ingest"],{pending});
+  assert.deepEqual(Object.keys(persisted.capabilityState["knowledge-ingest"]),["pending"]);
+  assert.equal(JSON.stringify(persisted).includes("sourceAttachmentId"),false);
+  assert.equal(JSON.stringify(persisted).includes("/private/tmp"),false);
+});
+
+test("expires, explicitly clears and never replaces one open knowledge pending request",async()=>{
+  const {file}=await fresh();
+  const store=await StateStore.open(file);
+  const pending={
+    request:"保存下一份文件",
+    startedAt:"2026-07-26T06:00:00.000Z",
+    model:"codex"
+  };
+  await store.setKnowledgePending(pending);
+  await assert.rejects(
+    store.setKnowledgePending({...pending,request:"替换请求"}),
+    /knowledge_pending_exists/
+  );
+  assert.equal(
+    await store.getKnowledgePending(Date.parse("2026-07-27T06:00:00.000Z")),
+    null
+  );
+  assert.deepEqual(store.getCapabilityState("knowledge-ingest"),{pending:null});
+  await store.setKnowledgePending(pending);
+  await store.clearKnowledgePending();
+  await store.clearKnowledgePending();
+  assert.equal(await store.getKnowledgePending(),null);
+});
+
+test("rejects knowledge pending fields, paths, identifiers, bytes and non-Codex models",async()=>{
+  const {file}=await fresh();
+  const store=await StateStore.open(file);
+  const base={
+    request:"保存下一份文件",
+    startedAt:"2026-07-26T06:00:00.000Z",
+    model:"codex"
+  };
+  for (const value of [
+    {...base,model:"deepseek"},
+    {...base,sourceAttachmentId:"file_secret"},
+    {...base,tempPath:"/private/tmp/job"},
+    {...base,bytes:Buffer.from("secret").toString("base64")},
+    {...base,request:""},
+    {...base,request:"x".repeat(12_001)},
+    {...base,startedAt:"not-a-date"}
+  ]) {
+    await assert.rejects(
+      store.setKnowledgePending(value),
+      /invalid_knowledge_pending/
+    );
+  }
+  assert.deepEqual(store.getCapabilityState("knowledge-ingest"),{pending:null});
+});
+
+test("adds the strict knowledge pending slot when loading an existing version-4 state",async()=>{
+  const {file}=await fresh();
+  await writeFile(file,JSON.stringify({
+    version:4,
+    capabilityState:{
+      "daily-work":{conversation:null},invoice:{},router:{conversation:null},
+      "task-session":{session:null}
+    },
+    outcomes:{}
+  }));
+  const store=await StateStore.open(file);
+  assert.equal(store.version(),4);
+  assert.deepEqual(store.getCapabilityState("knowledge-ingest"),{pending:null});
+  assert.deepEqual(
+    JSON.parse(await readFile(file,"utf8")).capabilityState["knowledge-ingest"],
+    {pending:null}
+  );
+});

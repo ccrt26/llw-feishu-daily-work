@@ -26,12 +26,14 @@ export class StateStore {
         if (!data.capabilityState.invoice) data.capabilityState.invoice = {};
         if (!data.capabilityState.router) data.capabilityState.router = {conversation: null};
         ensureTaskSessionSlot(data);
+        if (ensureKnowledgePendingSlot(data)) migrated=true;
       } else if (parsed?.version === 3 && parsed.capabilityState && typeof parsed.capabilityState === "object" && parsed.outcomes && typeof parsed.outcomes === "object") {
         data={version:4,capabilityState:structuredClone(parsed.capabilityState),outcomes:structuredClone(parsed.outcomes)};
         if (!data.capabilityState["daily-work"]) data.capabilityState["daily-work"]={conversation:null};
         if (!data.capabilityState.invoice) data.capabilityState.invoice={};
         data.capabilityState.router={conversation:null};
         ensureTaskSessionSlot(data);
+        ensureKnowledgePendingSlot(data);
         migrated=true;
       } else if (parsed?.version === 2 && parsed.outcomes && typeof parsed.outcomes === "object") {
         data = migratedState(parsed.conversation || null, parsed.outcomes);
@@ -44,6 +46,7 @@ export class StateStore {
       if (error.code !== "ENOENT") throw error;
     }
     ensureTaskSessionSlot(data);
+    if (ensureKnowledgePendingSlot(data)) migrated=true;
     const storedTaskSession=data.capabilityState["task-session"].session;
     if (storedTaskSession!==null) {
       data.capabilityState["task-session"].session=validateTaskSession(storedTaskSession,{
@@ -132,6 +135,34 @@ export class StateStore {
 
   async clearRouterConversation() {
     this.data.capabilityState.router={conversation:null};
+    await this.persist();
+  }
+
+  async getKnowledgePending(nowMs=Date.now()) {
+    const pending=this.data.capabilityState["knowledge-ingest"].pending;
+    if (pending===null) return null;
+    validateKnowledgePending(pending);
+    if (!Number.isFinite(nowMs)) throw new Error("invalid_knowledge_pending_time");
+    const age=nowMs-Date.parse(pending.startedAt);
+    if (age>=0&&age<24*60*60*1000) return structuredClone(pending);
+    this.data.capabilityState["knowledge-ingest"]={pending:null};
+    await this.persist();
+    return null;
+  }
+
+  async setKnowledgePending(pending) {
+    validateKnowledgePending(pending);
+    if (this.data.capabilityState["knowledge-ingest"].pending!==null) {
+      throw new Error("knowledge_pending_exists");
+    }
+    this.data.capabilityState["knowledge-ingest"]={pending:structuredClone(pending)};
+    await this.persist();
+    return structuredClone(pending);
+  }
+
+  async clearKnowledgePending() {
+    if (this.data.capabilityState["knowledge-ingest"].pending===null) return;
+    this.data.capabilityState["knowledge-ingest"]={pending:null};
     await this.persist();
   }
 
@@ -242,6 +273,7 @@ function emptyState() {
       "daily-work":{conversation:null},
       invoice:{},
       router:{conversation:null},
+      "knowledge-ingest":{pending:null},
       "task-session":{session:null}
     },
     outcomes: {}
@@ -255,6 +287,7 @@ function migratedState(conversation, outcomes) {
       "daily-work":{conversation},
       invoice:{},
       router:{conversation:null},
+      "knowledge-ingest":{pending:null},
       "task-session":{session:null}
     },
     outcomes: structuredClone(outcomes)
@@ -272,6 +305,38 @@ function ensureTaskSessionSlot(data) {
       Object.keys(slot).length!==1||!Object.hasOwn(slot,"session")||
       (slot.session!==null&&(typeof slot.session!=="object"||Array.isArray(slot.session)))) {
     throw new Error("invalid_task_session");
+  }
+}
+
+function ensureKnowledgePendingSlot(data) {
+  if (!Object.hasOwn(data.capabilityState,"knowledge-ingest")) {
+    data.capabilityState["knowledge-ingest"]={pending:null};
+    return true;
+  }
+  const slot=data.capabilityState["knowledge-ingest"];
+  if (!slot||typeof slot!=="object"||Array.isArray(slot)||
+      Object.getPrototypeOf(slot)!==Object.prototype||
+      Object.keys(slot).length!==1||!Object.hasOwn(slot,"pending")) {
+    throw new Error("invalid_knowledge_pending");
+  }
+  if (slot.pending!==null) validateKnowledgePending(slot.pending);
+  return false;
+}
+
+function validateKnowledgePending(value) {
+  const fields=new Set(["request","startedAt","model"]);
+  if (!value||typeof value!=="object"||Array.isArray(value)||
+      Object.getPrototypeOf(value)!==Object.prototype||
+      Object.keys(value).length!==fields.size||
+      Object.keys(value).some(field=>!fields.has(field))||
+      typeof value.request!=="string"||!value.request.trim()||
+      value.request!==value.request.trim()||value.request.includes("\0")||
+      [...value.request].length>12_000||
+      Buffer.byteLength(value.request,"utf8")>32_768||
+      typeof value.startedAt!=="string"||
+      !Number.isFinite(Date.parse(value.startedAt))||
+      value.model!=="codex") {
+    throw new Error("invalid_knowledge_pending");
   }
 }
 
