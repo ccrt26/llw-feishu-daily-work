@@ -2,12 +2,14 @@ import {randomUUID} from "node:crypto";
 import {lstat,mkdir,open,readFile,rename} from "node:fs/promises";
 import {dirname,isAbsolute,join,parse,resolve} from "node:path";
 
-const TOP_FIELDS=new Set([
+const V4_TOP_FIELDS=new Set([
   "version","vaultRoot","stateFile","heartbeatFile","modelStateFile",
   "deepseekEnabled","deepseekModel","deepseekKeychainService","deepseekKeychainAccount",
   "wechatEnabled","wechatStateFile","wechatKeychainService","wechatKeychainAccount",
   "cliPath","codexPath","profile","senderId","chatId","capabilities"
 ]);
+const V5_TOP_FIELDS=new Set([...V4_TOP_FIELDS,"privateSkills"]);
+const PRIVATE_SKILLS_FIELDS=new Set(["root","manifestPath","expectedManifestSha256"]);
 const DEEPSEEK_MODELS=new Set(["deepseek-v4-pro"]);
 const DAILY_FIELDS=new Set(["enabled","skillRoot"]);
 const INVOICE_FIELDS=new Set([
@@ -41,9 +43,16 @@ export function bindingFromEvent(event) {
 }
 
 function validateConfig(config,requireBinding,configFile) {
-  exact(config,TOP_FIELDS,"config");
-  if (config.version !== 4) throw new Error("invalid_config_version");
+  if (config?.version!==4&&config?.version!==5) throw new Error("invalid_config_version");
+  exact(config,config.version===5?V5_TOP_FIELDS:V4_TOP_FIELDS,"config");
   for (const field of ["vaultRoot","stateFile","heartbeatFile","modelStateFile","wechatStateFile","cliPath","codexPath"]) absolute(config[field],field);
+  if (config.version===5) {
+    exact(config.privateSkills,PRIVATE_SKILLS_FIELDS,"private_skills");
+    absolute(config.privateSkills.root,"privateSkills.root");
+    absolute(config.privateSkills.manifestPath,"privateSkills.manifestPath");
+    if (config.privateSkills.manifestPath!==join(config.privateSkills.root,"manifest.json")) throw new Error("invalid_private_skills_manifest");
+    if (typeof config.privateSkills.expectedManifestSha256!=="string"||!/^[0-9a-f]{64}$/.test(config.privateSkills.expectedManifestSha256)) throw new Error("invalid_private_skills_hash");
+  }
   if (typeof config.deepseekEnabled!=="boolean") throw new Error("invalid_deepseek_enabled");
   if (!DEEPSEEK_MODELS.has(config.deepseekModel)) throw new Error("invalid_deepseek_model");
   for (const field of ["deepseekKeychainService","deepseekKeychainAccount"]) if (typeof config[field]!=="string"||!/^[A-Za-z0-9._@-]{1,128}$/.test(config[field])) throw new Error("invalid_deepseek_keychain_name");
@@ -61,9 +70,10 @@ function validateConfig(config,requireBinding,configFile) {
   absolute(daily.skillRoot,"daily-work.skillRoot");
   for (const field of ["skillRoot","tempRoot","archiveRoot"]) absolute(invoice[field],`invoice.${field}`);
   absolute(invoice.pdfProcessorPath,"invoice.pdfProcessorPath");
-  const protectedPaths=[configFile,config.vaultRoot,config.stateFile,config.heartbeatFile,config.wechatStateFile,config.cliPath,config.codexPath,daily.skillRoot,invoice.skillRoot,invoice.tempRoot,invoice.archiveRoot,invoice.pdfProcessorPath];
+  const privatePaths=config.version===5?[config.privateSkills.root,config.privateSkills.manifestPath]:[];
+  const protectedPaths=[configFile,config.vaultRoot,config.stateFile,config.heartbeatFile,config.wechatStateFile,config.cliPath,config.codexPath,daily.skillRoot,invoice.skillRoot,invoice.tempRoot,invoice.archiveRoot,invoice.pdfProcessorPath,...privatePaths];
   if (protectedPaths.filter(value=>typeof value==="string").some(value=>foldedPath(value)===foldedPath(config.modelStateFile))) throw new Error("invalid_model_state_file_alias");
-  const nonWechatPaths=[configFile,config.vaultRoot,config.stateFile,config.heartbeatFile,config.modelStateFile,config.cliPath,config.codexPath,daily.skillRoot,invoice.skillRoot,invoice.tempRoot,invoice.archiveRoot,invoice.pdfProcessorPath];
+  const nonWechatPaths=[configFile,config.vaultRoot,config.stateFile,config.heartbeatFile,config.modelStateFile,config.cliPath,config.codexPath,daily.skillRoot,invoice.skillRoot,invoice.tempRoot,invoice.archiveRoot,invoice.pdfProcessorPath,...privatePaths];
   if (nonWechatPaths.filter(value=>typeof value==="string").some(value=>foldedPath(value)===foldedPath(config.wechatStateFile))) throw new Error("invalid_wechat_state_file_alias");
   if (resolve(config.modelStateFile)!==resolve(join(dirname(config.stateFile),"model-state"))) throw new Error("invalid_model_state_file");
   if (invoice.archiveRoot !== join(config.vaultRoot,"亚信工作","日常发票","餐饮发票")) throw new Error("invalid_invoice_archive_root");

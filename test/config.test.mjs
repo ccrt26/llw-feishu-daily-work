@@ -29,6 +29,19 @@ function config(overrides = {}) {
   return {...base,...overrides};
 }
 
+function configV5(overrides={}) {
+  return {
+    ...config(),
+    version:5,
+    privateSkills:{
+      root:"/Volumes/test/LLW/.agents/skills",
+      manifestPath:"/Volumes/test/LLW/.agents/skills/manifest.json",
+      expectedManifestSha256:"a".repeat(64)
+    },
+    ...overrides
+  };
+}
+
 test("saves mode-0600 config and validates required absolute paths", async () => {
   const dir = await mkdtemp(join(tmpdir(), "llw-config-"));
   const file = join(dir, "config.json");
@@ -122,6 +135,31 @@ test("requires binding only for service startup", async () => {
   await saveConfig(file, config({senderId: null, chatId: null}), {requireBinding: false});
   await assert.rejects(() => loadConfig(file), /binding_missing/);
   assert.equal((await loadConfig(file, {requireBinding: false})).senderId, null);
+});
+
+test("version 5 requires one exact private Skill root, manifest and expected hash",async()=>{
+  const dir=await mkdtemp(join(tmpdir(),"llw-config-v5-"));
+  const file=join(dir,"config.json");
+  try {
+    await saveConfig(file,configV5());
+    assert.deepEqual(await loadConfig(file),configV5());
+    for (const privateSkills of [
+      {...configV5().privateSkills,root:"relative"},
+      {...configV5().privateSkills,manifestPath:"relative"},
+      {...configV5().privateSkills,manifestPath:"/Volumes/test/LLW/.agents/other.json"},
+      {...configV5().privateSkills,expectedManifestSha256:"A".repeat(64)},
+      {...configV5().privateSkills,expectedManifestSha256:"a".repeat(63)},
+      {...configV5().privateSkills,extra:true}
+    ]) {
+      await assert.rejects(
+        ()=>saveConfig(file,configV5({privateSkills})),
+        /invalid_private_skills|invalid_config_path|unknown_private_skills_field/
+      );
+    }
+    const {privateSkills,...missing}=configV5();
+    await assert.rejects(()=>saveConfig(file,missing),/missing_config_field/);
+    await assert.rejects(()=>saveConfig(file,{...configV5(),version:6}),/invalid_config_version/);
+  } finally { await rm(dir,{recursive:true,force:true}); }
 });
 
 test("binds only the exact phrase from a p2p text event", () => {
