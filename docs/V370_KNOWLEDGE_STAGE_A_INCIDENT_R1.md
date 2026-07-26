@@ -4,13 +4,15 @@
 
 - Production capability `knowledge-ingest` remains enabled for the bounded
   Stage A acceptance window.
-- Production received the managed-root Writer fix, but real Feishu and WeChat
-  acceptance exposed a second Writer compatibility defect on the managed
-  external volume. The final compatibility fix has passed local verification
-  and is pending deployment.
+- The managed-root and managed-external-volume Writer fixes are deployed at
+  production commit `eced0ab`.
+- One new real Feishu request committed successfully. One new real WeChat
+  request returned the correct idempotent `existing` result for the same
+  knowledge item.
 - `assistant-work` remains disabled.
 - The existing service remains healthy and has no unreplied outcomes.
-- No knowledge artifact was created by any failed attempt.
+- The failed attempts created no artifacts; final acceptance produced one
+  verified logical knowledge artifact.
 
 This report is intentionally sanitized. It contains no message body, platform
 identifier, credential, private library content, or machine-specific private
@@ -104,7 +106,7 @@ The managed-library catalog was inspected read-only:
 Additional checks:
 
 - runtime config is version 5;
-- `knowledge-ingest` was true during each attempt and is now false;
+- `knowledge-ingest` is enabled for Stage A;
 - `assistant-work` stayed false;
 - the protected Codex executable exists and reports its expected version;
 - formal selected-Skill files are owned by the service user and have no
@@ -201,8 +203,34 @@ TDD and verification evidence:
 - complete integration regression: 467/467;
 - no real model or external API was invoked by these tests.
 
-This evidence is not yet a production-acceptance claim. Deployment and one new
-real Feishu plus one new real WeChat acceptance remain required.
+## Deployment and real acceptance
+
+- integration and production branches were synchronized at `eced0ab`;
+- the exact pre-deployment production commit `089b6de` is preserved in the
+  protected baseline `v370-knowledge-external-volume-pre-fix-2026-07-27`;
+- the rollback bundle records complete history and its manifest enforces a
+  `0700` directory plus `0600` files;
+- production knowledge target tests passed 30/30 after fast-forward;
+- the existing LaunchAgent restarted once, heartbeat advanced, the error log
+  did not grow, and exactly one main process plus one actual Feishu consumer
+  remained active.
+
+Final bounded acceptance:
+
+| Entry | Capability | Outcome | Reply | Logical artifacts |
+|---|---|---|---:|---:|
+| Feishu | `knowledge-ingest` | `committed` | yes | 1 |
+| WeChat | `knowledge-ingest` | `existing` | yes | 1 |
+
+Both outcomes reference the same deterministic knowledge item. A value-free
+filesystem verification confirmed that the item is inside the selected managed
+personal library, the directory and note are owned ordinary non-symlink
+objects with owner-only permissions, required knowledge and source hashes are
+present, no unexpected item entry exists, and no staging or lock residue
+remains. The receipt exposes only the logical note.
+
+This completes production acceptance for the Stage A direct-text knowledge
+root flow without enabling `assistant-work` or expanding permissions.
 
 ## Relevant files
 
