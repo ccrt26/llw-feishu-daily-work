@@ -3,15 +3,19 @@ import assert from "node:assert/strict";
 import {readFile} from "node:fs/promises";
 import {fileURLToPath} from "node:url";
 
-test("main validates PDF tools before state and injects the bounded PDF preparer",async () => {
+test("main validates one protected PDFium runtime before state and injects one shared bounded PDF preparer",async () => {
   const source=await readFile(fileURLToPath(new URL("../src/main.mjs",import.meta.url)),"utf8");
-  assert.match(source,/import \{loadConfig,validatePdfTools\} from "\.\/config\.mjs"/);
+  assert.match(source,/import \{loadConfig\} from "\.\/config\.mjs"/);
+  assert.match(source,/import \{validatePdfiumRuntime\} from "\.\/capabilities\/invoice\/pdfium-runtime\.mjs"/);
   assert.match(source,/import \{prepareInvoicePdf\} from "\.\/capabilities\/invoice\/pdf-preparer\.mjs"/);
-  assert.ok(source.indexOf("await validatePdfTools(invoiceConfig)") < source.indexOf("StateStore.open"));
-  assert.match(source,/preparePdf:\(\{file\}\) => prepareInvoicePdf\(\{/);
-  for (const field of ["pdfInfoPath","pdfToTextPath","pdfToPpmPath","maxPdfPages","maxPdfTextBytes","maxPdfRenderBytes","pdfPrepareTimeoutMs"]) {
+  assert.ok(source.indexOf("await validatePdfiumRuntime(invoiceConfig.pdfProcessorPath)") < source.indexOf("StateStore.open"));
+  assert.match(source,/const preparePdf=\(\{file\}\) => prepareInvoicePdf\(\{/);
+  assert.match(source,/pdfProcessorPath:invoiceConfig\.pdfProcessorPath/);
+  for (const field of ["maxPdfPages","maxPdfTextBytes","maxPdfRenderBytes","pdfPrepareTimeoutMs"]) {
     assert.match(source,new RegExp(`invoiceConfig\\.${field}`));
   }
+  for (const legacy of ["pdfInfoPath","pdfToTextPath","pdfToPpmPath","validatePdfTools"]) assert.equal(source.includes(legacy),false);
+  assert.match(source,/preparePdf,\n\s+decide:invoiceVisual/);
 });
 
 test("main validates business routing contracts and injects one read-only intent router",async () => {
@@ -19,7 +23,7 @@ test("main validates business routing contracts and injects one read-only intent
   assert.match(source,/import \{loadRoutingContract\} from "\.\/core\/routing-contract\.mjs"/);
   assert.match(source,/import \{validateIntentRouterSkill\} from "\.\/core\/intent-router-client\.mjs"/);
   assert.match(source,/import \{createRouterTextTask,createRouterVisualTask,createDailyWorkInterpretTask,createInvoiceVisualTask\} from "\.\/core\/semantic-tasks\.mjs"/);
-  assert.match(source,/import \{createPreparedImageRunner\} from "\.\/core\/prepared-image\.mjs"/);
+  assert.match(source,/import \{createPreparedVisualRunner\} from "\.\/core\/prepared-visual\.mjs"/);
   assert.match(source,/import \{parseInvoiceResource\} from "\.\/capabilities\/invoice\/resource-marker\.mjs"/);
   assert.match(source,/import \{ModelMode\} from "\.\/core\/model-mode\.mjs"/);
   assert.match(source,/deepseekModel:config\.deepseekModel/);
@@ -31,14 +35,15 @@ test("main validates business routing contracts and injects one read-only intent
   assert.match(source,/loadRoutingContract\(config\.capabilities\["daily-work"\]\.skillRoot,"daily-work"\)/);
   assert.match(source,/loadRoutingContract\(invoiceConfig\.skillRoot,"invoice"\)/);
   assert.match(source,/buildCapabilityRegistry\(\{dailyWork:dailyCapability,invoice:invoiceCapability,contracts,enabled:/);
-  assert.match(source,/new Dispatcher\(\{binding,bindings,state,capabilities,intentRouter,withPreparedImage,messenger,modelMode,deepseekEnabled:config\.deepseekEnabled\}\)/);
+  assert.match(source,/new Dispatcher\(\{binding,bindings,state,capabilities,intentRouter,withPreparedVisual,messenger,modelMode,deepseekEnabled:config\.deepseekEnabled\}\)/);
   assert.match(source,/const routerText=createRouterTextTask\(\{/);
   assert.match(source,/const routerVisual=createRouterVisualTask\(\{/);
   assert.match(source,/const dailyWorkInterpret=createDailyWorkInterpretTask\(\{/);
   assert.match(source,/const invoiceVisual=createInvoiceVisualTask\(\{/);
   assert.match(source,/decide:dailyWorkInterpret/);
   assert.match(source,/decide:invoiceVisual/);
-  assert.match(source,/const withPreparedImage=createPreparedImageRunner\(\{/);
+  assert.match(source,/const withPreparedVisual=createPreparedVisualRunner\(\{/);
+  assert.match(source,/preparePdf\n\}\)/);
   assert.match(source,/const intentRouter=\{decide:routerText,decideVisual:routerVisual\}/);
 });
 

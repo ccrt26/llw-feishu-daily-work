@@ -8,6 +8,7 @@ import {downloadWechatResource} from "../src/adapters/wechat-resource-downloader
 
 const key=Buffer.from("0123456789abcdef");
 const keyBase64=key.toString("base64");
+const fileKeyBase64=Buffer.from(key.toString("hex"),"ascii").toString("base64");
 const png=Buffer.concat([
   Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a]),
   Buffer.from("test-png")
@@ -39,10 +40,15 @@ async function run(plaintext,{type="image",displayName="微信图片",extension=
   }
 }
 
-test("decrypts one image or PDF into one private ordinary file",async () => {
+test("decrypts image and official PDF file-key encodings into private ordinary files",async () => {
   for (const [plaintext,options,suffix] of [
     [png,{},".png"],
-    [pdf,{type:"file",displayName:"发票.PDF",extension:"pdf"},".pdf"]
+    [pdf,{
+      type:"file",
+      displayName:"发票.PDF",
+      extension:"pdf",
+      entry:{aesKey:fileKeyBase64}
+    },".pdf"]
   ]) {
     const {root,result,resources}=await run(plaintext,options);
     try {

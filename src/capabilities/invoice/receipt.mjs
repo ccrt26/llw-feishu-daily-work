@@ -14,12 +14,12 @@ export function formatNonArchive(decision) {
     required_field_missing:["必填字段缺失。","请发送包含全部必要票面元素的完整发票原件。"],
     required_field_unclear:["必填字段无法清晰读取。","请重新发送所有必要票面元素均清晰可见的完整发票原件。"],
     category_uncertain:["无法可靠确认票面项目是否属于餐饮类别。","请发送项目名称清晰可见的完整发票原件。"],
-    multiple_invoices:["检测到一份 PDF 可能包含多张发票。","请拆分为一张发票一个 PDF 后重新发送。"],
+    multiple_invoices:["检测到一个附件包含多张发票。","请一次只发送一张清晰完整的发票。"],
     conflicting_fields:["不同页面关键字段冲突。","请核对并发送正确的原始 PDF。"],
     document_unclear:["无法确认整份文件只含一张完整发票。","请发送更清晰、完整的原始发票文件。"],
     invoice_number_invalid:["发票号码格式不符合当前归档规则。","请核对并发送号码清晰、完整的发票原件。"],
-    issue_date_invalid:["开票日期格式或日期值不符合当前归档规则。","请核对并发送开票日期清晰、完整的发票原件。"],
-    total_invalid:["价税合计格式或金额值不符合当前归档规则。","请核对并发送价税合计清晰、完整的发票原件。"]
+    issue_date_invalid:["开票日期无法可靠转换为归档所需的日期。","请发送开票日期清晰、完整的发票原件。"],
+    total_invalid:["价税合计无法可靠转换为归档所需的金额。","请发送价税合计清晰、完整的发票原件。"]
   };
   if (decision?.action==="reject"&&Object.hasOwn(rejected,decision.reasonCode)) {
     return outcome("rejected",`发票未归档：未通过入库核验。\n原因：${rejected[decision.reasonCode]}`);
@@ -32,7 +32,6 @@ export function formatNonArchive(decision) {
 }
 
 export function formatArchive(decision,archived) {
-  if (archived.status === "awaiting_clarification") return outcome("awaiting_clarification","发票未归档：需要确认。\n原因：已存在同金额、同发票号码但内容不同的文件。\n问题：请人工核对现有文件与本次附件；系统不会覆盖任何文件。");
   if (!["committed","existing"].includes(archived.status) || !archived.relativePath) return failure("archive_failed");
   const heading=archived.status === "existing" ? "发票已归档（文件已存在，未重复复制）" : "发票已归档";
   return outcome(archived.status,[heading,"类别：餐饮发票",`开票日期：${decision.invoice.issue_date}`,`含税金额：${decision.invoice.total_with_tax} 元`,`位置：${archived.relativePath}`].join("\n"),[archived.relativePath]);

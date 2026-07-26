@@ -4,70 +4,75 @@ import {lstat,mkdir,readFile,readdir,realpath} from "node:fs/promises";
 import {dirname,join,resolve,sep} from "node:path";
 
 const PNG_SIGNATURE=Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a]);
-const PDFINFO_STDOUT_LIMIT=64 * 1024;
+const MANIFEST_FIELDS=new Set(["version","pageCount","textFile","pageFiles"]);
+const EXIT_CODES=new Map([
+  [20,"pdf_encrypted"],
+  [21,"pdf_structure_invalid"],
+  [22,"pdf_page_limit"],
+  [23,"pdf_text_invalid"],
+  [24,"pdf_render_invalid"]
+]);
 
 export async function prepareInvoicePdf({
-  file,pdfInfoPath,pdfToTextPath,pdfToPpmPath,
-  maxPages=10,maxTextBytes=262_144,maxRenderBytes=100 * 1024 * 1024,
-  timeoutMs=60_000,environment=process.env
+  file,pdfProcessorPath,
+  maxPages=10,maxTextBytes=262_144,maxRenderBytes=100*1024*1024,
+  maxDimension=3508,timeoutMs=60_000,environment=process.env
 }) {
   const job=dirname(file);
   await requireRegularWithin(file,job,"pdf_structure_invalid");
-
-  let infoOutput;
-  try {
-    infoOutput=await runTool(pdfInfoPath,[file],{cwd:job,environment,timeoutMs,maxStdoutBytes:PDFINFO_STDOUT_LIMIT});
-  } catch (error) {
-    throw pdfError(error.code === "tool_timeout" ? "pdf_prepare_timeout" : "pdf_structure_invalid");
-  }
-  const {pageCount,encrypted}=parsePdfInfo(infoOutput);
-  if (encrypted) throw pdfError("pdf_encrypted");
-  if (!Number.isInteger(pageCount) || pageCount < 1 || pageCount > maxPages) throw pdfError("pdf_page_limit");
-
   const analysis=join(job,"analysis");
   try { await mkdir(analysis,{recursive:false,mode:0o700}); }
   catch { throw pdfError("pdf_structure_invalid"); }
   await requireDirectoryWithin(analysis,job,"pdf_structure_invalid");
 
-  const textFile=join(analysis,"extracted.txt");
+  const args=[
+    "--input",file,
+    "--output",analysis,
+    "--max-pages",String(maxPages),
+    "--max-text-bytes",String(maxTextBytes),
+    "--max-render-bytes",String(maxRenderBytes),
+    "--max-dimension",String(maxDimension)
+  ];
+  const result=await runProcessor(pdfProcessorPath,args,{cwd:job,environment,timeoutMs});
+  if (result.timedOut) throw pdfError("pdf_prepare_timeout");
+  if (result.code!==0) throw pdfError(EXIT_CODES.get(result.code)||"pdf_structure_invalid");
+  if (result.stdoutBytes!==0||result.stderrBytes!==0) throw pdfError("pdf_structure_invalid");
+
+  let manifest;
   try {
-    await runTool(pdfToTextPath,["-layout","-enc","UTF-8",file,textFile],{cwd:job,environment,timeoutMs,maxStdoutBytes:0});
+    const manifestFile=join(analysis,"manifest.json");
+    const info=await requireRegularWithin(manifestFile,analysis,"pdf_render_invalid");
+    if (info.size<2||info.size>64*1024) throw pdfError("pdf_render_invalid");
+    manifest=JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(await readFile(manifestFile)));
+    validateManifest(manifest,maxPages);
   } catch (error) {
-    throw pdfError(error.code === "tool_timeout" ? "pdf_prepare_timeout" : "pdf_text_invalid");
+    if (error?.code==="pdf_render_invalid") throw error;
+    throw pdfError("pdf_render_invalid");
   }
 
   let extractedText;
   try {
+    const textFile=join(analysis,manifest.textFile);
     const info=await requireRegularWithin(textFile,analysis,"pdf_text_invalid");
-    if (info.size > maxTextBytes) throw pdfError("pdf_text_invalid");
-    const bytes=await readFile(textFile);
-    extractedText=new TextDecoder("utf-8",{fatal:true}).decode(bytes);
+    if (info.size>maxTextBytes) throw pdfError("pdf_text_invalid");
+    extractedText=new TextDecoder("utf-8",{fatal:true}).decode(await readFile(textFile));
   } catch (error) {
-    if (error?.code === "pdf_text_invalid") throw error;
+    if (error?.code==="pdf_text_invalid") throw error;
     throw pdfError("pdf_text_invalid");
-  }
-
-  const prefix=join(analysis,"page");
-  try {
-    await runTool(pdfToPpmPath,["-f","1","-l",String(pageCount),"-png","-scale-to","3508",file,prefix],{cwd:job,environment,timeoutMs,maxStdoutBytes:0});
-  } catch (error) {
-    throw pdfError(error.code === "tool_timeout" ? "pdf_prepare_timeout" : "pdf_render_invalid");
   }
 
   const pageImages=[];
   try {
-    const expected=new Set(["extracted.txt",...Array.from({length:pageCount},(_,index) => `page-${index+1}.png`)]);
+    const expected=new Set(["manifest.json",manifest.textFile,...manifest.pageFiles]);
     const entries=await readdir(analysis,{withFileTypes:true});
-    if (entries.length !== expected.size || entries.some(entry => !expected.has(entry.name) || (!entry.isFile() && !entry.isSymbolicLink()))) {
-      throw pdfError("pdf_render_invalid");
-    }
+    if (entries.length!==expected.size||entries.some(entry=>!expected.has(entry.name))) throw pdfError("pdf_render_invalid");
     let totalBytes=0;
-    for (let page=1;page<=pageCount;page++) {
-      const image=join(analysis,`page-${page}.png`);
+    for (const name of manifest.pageFiles) {
+      const image=join(analysis,name);
       const info=await requireRegularWithin(image,analysis,"pdf_render_invalid");
-      if (info.size < PNG_SIGNATURE.length) throw pdfError("pdf_render_invalid");
-      totalBytes += info.size;
-      if (!Number.isSafeInteger(totalBytes) || totalBytes > maxRenderBytes) throw pdfError("pdf_render_invalid");
+      if (info.size<PNG_SIGNATURE.length) throw pdfError("pdf_render_invalid");
+      totalBytes+=info.size;
+      if (!Number.isSafeInteger(totalBytes)||totalBytes>maxRenderBytes) throw pdfError("pdf_render_invalid");
       const handle=await open(image,"r");
       const header=Buffer.alloc(PNG_SIGNATURE.length);
       try { await handle.read(header,0,header.length,0); }
@@ -76,7 +81,7 @@ export async function prepareInvoicePdf({
       pageImages.push(image);
     }
   } catch (error) {
-    if (error?.code === "pdf_render_invalid") throw error;
+    if (error?.code==="pdf_render_invalid") throw error;
     throw pdfError("pdf_render_invalid");
   }
 
@@ -86,29 +91,36 @@ export async function prepareInvoicePdf({
     archiveExtension:"pdf",
     pageImages,
     extractedText,
-    documentFacts:{pageCount,textAvailable:Buffer.byteLength(extractedText.trim(),"utf8") > 0}
+    documentFacts:{
+      pageCount:manifest.pageCount,
+      textAvailable:Buffer.byteLength(extractedText.trim(),"utf8")>0
+    }
   };
 }
 
-function parsePdfInfo(output) {
-  const pageMatches=[...output.matchAll(/^Pages:\s*(\d+)\s*$/gm)];
-  const encryptedMatches=[...output.matchAll(/^Encrypted:\s*(.+?)\s*$/gm)];
-  if (pageMatches.length !== 1 || encryptedMatches.length > 1) throw pdfError("pdf_structure_invalid");
-  const pageCount=Number(pageMatches[0][1]);
-  const encrypted=encryptedMatches.length === 1 && !/^no(?:\s|$)/i.test(encryptedMatches[0][1]);
-  return {pageCount,encrypted};
+function validateManifest(value,maxPages) {
+  if (!value||typeof value!=="object"||Array.isArray(value)||
+      Object.keys(value).length!==MANIFEST_FIELDS.size||
+      Object.keys(value).some(field=>!MANIFEST_FIELDS.has(field))||
+      value.version!==1||
+      !Number.isSafeInteger(value.pageCount)||value.pageCount<1||value.pageCount>maxPages||
+      value.textFile!=="extracted.txt"||
+      !Array.isArray(value.pageFiles)||value.pageFiles.length!==value.pageCount) {
+    throw pdfError("pdf_render_invalid");
+  }
+  const expected=value.pageFiles.map((_,index)=>`page-${index+1}.png`);
+  if (value.pageFiles.some((name,index)=>name!==expected[index])) throw pdfError("pdf_render_invalid");
 }
 
 async function requireRegularWithin(file,parent,code) {
   try {
     const info=await lstat(file);
-    if (!info.isFile() || info.isSymbolicLink()) throw new Error("unsafe");
-    const actualParent=await realpath(parent);
-    const actual=await realpath(file);
-    if (actual !== resolve(actualParent,actual.slice(actualParent.length+1)) || !actual.startsWith(`${actualParent}${sep}`)) throw new Error("unsafe");
+    if (!info.isFile()||info.isSymbolicLink()||info.uid!==process.getuid()) throw new Error("unsafe");
+    const actualParent=await realpath(parent),actual=await realpath(file);
+    if (!actual.startsWith(`${actualParent}${sep}`)||actual!==resolve(actualParent,actual.slice(actualParent.length+1))) throw new Error("unsafe");
     return info;
   } catch (error) {
-    if (error?.code === code) throw error;
+    if (error?.code===code) throw error;
     throw pdfError(code);
   }
 }
@@ -116,41 +128,22 @@ async function requireRegularWithin(file,parent,code) {
 async function requireDirectoryWithin(directory,parent,code) {
   try {
     const info=await lstat(directory);
-    const actualParent=await realpath(parent);
-    const actual=await realpath(directory);
-    if (!info.isDirectory() || info.isSymbolicLink() || !actual.startsWith(`${actualParent}${sep}`)) throw new Error("unsafe");
+    const actualParent=await realpath(parent),actual=await realpath(directory);
+    if (!info.isDirectory()||info.isSymbolicLink()||info.uid!==process.getuid()||!actual.startsWith(`${actualParent}${sep}`)) throw new Error("unsafe");
   } catch { throw pdfError(code); }
 }
 
-function runTool(command,args,{cwd,environment,timeoutMs,maxStdoutBytes}) {
-  return new Promise((resolveOutput,reject) => {
-    const child=spawn(command,args,{cwd,env:{...environment,LC_ALL:"C",LANG:"C"},shell:false,stdio:["ignore","pipe","pipe"]});
-    const stdout=[];
+function runProcessor(command,args,{cwd,environment,timeoutMs}) {
+  return new Promise(resolveResult=>{
     let stdoutBytes=0,stderrBytes=0,timedOut=false,settled=false;
-    const finish=(error,value) => {
-      if (settled) return;
-      settled=true;
-      error ? reject(error) : resolveOutput(value);
-    };
-    child.stdout.on("data",chunk => {
-      stdoutBytes += chunk.length;
-      if (stdoutBytes > maxStdoutBytes) {
-        child.kill("SIGTERM");
-        finish(toolError("tool_output_limit"));
-      } else stdout.push(chunk);
-    });
-    child.stderr.on("data",chunk => { stderrBytes += chunk.length; });
-    const timer=setTimeout(() => { timedOut=true; child.kill("SIGTERM"); },timeoutMs);
-    child.once("error",() => { clearTimeout(timer); finish(toolError("tool_failed")); });
-    child.once("close",code => {
-      clearTimeout(timer);
-      if (timedOut) finish(toolError("tool_timeout"));
-      else if (code !== 0) finish(toolError("tool_failed"));
-      else finish(null,Buffer.concat(stdout).toString("utf8"));
-      void stderrBytes;
-    });
+    const child=spawn(command,args,{cwd,env:environment,shell:false,stdio:["ignore","pipe","pipe"]});
+    const finish=value=>{ if (!settled) { settled=true; resolveResult(value); } };
+    child.stdout.on("data",chunk=>{ stdoutBytes+=chunk.length; if (stdoutBytes>64*1024) child.kill("SIGTERM"); });
+    child.stderr.on("data",chunk=>{ stderrBytes+=chunk.length; if (stderrBytes>64*1024) child.kill("SIGTERM"); });
+    const timer=setTimeout(()=>{ timedOut=true; child.kill("SIGTERM"); },timeoutMs);
+    child.once("error",()=>{ clearTimeout(timer); finish({code:null,timedOut:false,stdoutBytes,stderrBytes}); });
+    child.once("close",code=>{ clearTimeout(timer); finish({code,timedOut,stdoutBytes,stderrBytes}); });
   });
 }
 
-function toolError(code) { return Object.assign(new Error(code),{code}); }
 function pdfError(code) { return Object.assign(new Error(code),{code}); }

@@ -233,10 +233,13 @@ function decodeAesKey(value) {
   if (Buffer.isBuffer(value)&&value.length===16) return value;
   if (typeof value!=="string") throw new Error("invalid");
   if (/^[a-fA-F0-9]{32}$/.test(value)) return Buffer.from(value,"hex");
-  if (!/^[A-Za-z0-9+/]{22}==$/.test(value)) throw new Error("invalid");
+  if (!/^(?:[A-Za-z0-9+/]{22}==|[A-Za-z0-9+/]{43}=)$/.test(value)) throw new Error("invalid");
   const decoded=Buffer.from(value,"base64");
-  if (decoded.length!==16) throw new Error("invalid");
-  return decoded;
+  if (decoded.length===16) return decoded;
+  if (decoded.length===32&&/^[a-fA-F0-9]{32}$/.test(decoded.toString("ascii"))) {
+    return Buffer.from(decoded.toString("ascii"),"hex");
+  }
+  throw new Error("invalid");
 }
 
 function validUin(value) { return typeof value==="string"&&/^[A-Za-z0-9+/=]{4,128}$/.test(value)&&!value.includes("\n"); }

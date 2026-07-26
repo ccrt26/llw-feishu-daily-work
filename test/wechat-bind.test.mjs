@@ -34,7 +34,7 @@ function config(stateFile) {
         tempRoot:"/Users/test/tmp/invoices",
         archiveRoot:"/Volumes/test/LLW/亚信工作/日常发票/餐饮发票",
         maxFileBytes:20971520,aiTimeoutMs:120000,
-        pdfInfoPath:"/Users/test/bin/pdfinfo",pdfToTextPath:"/Users/test/bin/pdftotext",pdfToPpmPath:"/Users/test/bin/pdftoppm",
+        pdfProcessorPath:"/Users/test/runtime/pdfium-processor.py",
         maxPdfPages:10,maxPdfTextBytes:262144,maxPdfRenderBytes:104857600,pdfPrepareTimeoutMs:60000
       }
     }

@@ -8,7 +8,7 @@ import {fileURLToPath} from "node:url";
 
 const script=fileURLToPath(new URL("../src/migrate-config-v4.mjs",import.meta.url));
 const pdfFields={
-  pdfInfoPath:"/runtime/pdfinfo",pdfToTextPath:"/runtime/pdftotext",pdfToPpmPath:"/runtime/pdftoppm",
+  pdfProcessorPath:"/runtime/pdfium-processor.py",
   maxPdfPages:10,maxPdfTextBytes:262144,maxPdfRenderBytes:104857600,pdfPrepareTimeoutMs:60000
 };
 
@@ -26,7 +26,7 @@ function v3() {
 
 function run(file) {
   return new Promise((resolve,reject) => {
-    const child=spawn(process.execPath,[script,file],{env:{...process.env,LLW_PDFINFO_PATH:pdfFields.pdfInfoPath,LLW_PDFTOTEXT_PATH:pdfFields.pdfToTextPath,LLW_PDFTOPPM_PATH:pdfFields.pdfToPpmPath},stdio:["ignore","pipe","pipe"]});
+    const child=spawn(process.execPath,[script,file],{env:{...process.env,LLW_PDF_PROCESSOR_PATH:pdfFields.pdfProcessorPath},stdio:["ignore","pipe","pipe"]});
     let stdout="",stderr="";
     child.stdout.on("data",chunk => stdout+=chunk);
     child.stderr.on("data",chunk => stderr+=chunk);

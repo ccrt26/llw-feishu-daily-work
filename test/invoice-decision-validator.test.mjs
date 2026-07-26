@@ -9,6 +9,8 @@ const FIELDS=[
   "invoice_number","issue_date","buyer_name","buyer_tax_id",
   "seller_name","item_name","total_with_tax"
 ];
+const REQUIRED_FIELDS=["issue_date","buyer_name","buyer_tax_id","total_with_tax"];
+const NON_GATING_FIELDS=["invoice_number","seller_name","item_name"];
 
 function clearExtraction(overrides={}) {
   return {
@@ -104,8 +106,8 @@ test("derives exact buyer mismatch outcomes without archive authorization", () =
   })),"buyer_identity_mismatch");
 });
 
-test("maps every missing or unclear required field to clarification", () => {
-  for (const field of FIELDS) {
+test("maps every missing or unclear eligibility and storage field to clarification", () => {
+  for (const field of REQUIRED_FIELDS) {
     assertNoArchive(deriveInvoiceRuleDecision(clearExtraction({
       invoice:{[field]:""},
       field_quality:{[field]:"missing"}
@@ -114,6 +116,19 @@ test("maps every missing or unclear required field to clarification", () => {
       invoice:{[field]:""},
       field_quality:{[field]:"unclear"}
     })),"required_field_unclear");
+  }
+});
+
+test("invoice number, seller and item extraction quality do not add archive gates", () => {
+  for (const field of NON_GATING_FIELDS) {
+    for (const quality of ["missing","unclear"]) {
+      const decision=deriveInvoiceRuleDecision(clearExtraction({
+        invoice:{[field]:""},
+        field_quality:{[field]:quality}
+      }));
+      assert.equal(decision.action,"archive_dining");
+      assert.equal(decision.reasonCode,"eligible");
+    }
   }
 });
 
@@ -135,20 +150,47 @@ test("maps document and category states to fixed non-writing decisions", () => {
   })),"category_uncertain");
 });
 
-test("preserves raw extracted values and applies existing archive format gates in Node", () => {
-  assertNoArchive(deriveInvoiceRuleDecision(clearExtraction({
-    invoice:{invoice_number:"TEST-20260724-001"}
-  })),"invoice_number_invalid");
-  assertNoArchive(deriveInvoiceRuleDecision(clearExtraction({
-    invoice:{issue_date:"2026年07月24日"}
-  })),"issue_date_invalid");
-  assertNoArchive(deriveInvoiceRuleDecision(clearExtraction({
-    invoice:{issue_date:"2026-02-30"}
-  })),"issue_date_invalid");
-  assertNoArchive(deriveInvoiceRuleDecision(clearExtraction({
-    invoice:{total_with_tax:"¥290.00"}
-  })),"total_invalid");
-  assertNoArchive(deriveInvoiceRuleDecision(clearExtraction({
-    invoice:{total_with_tax:"0.00"}
-  })),"total_invalid");
+test("normalizes the two approved date forms without mutating raw extraction", () => {
+  const chinese=clearExtraction({invoice:{issue_date:"2026年07月21日"}});
+  const chineseDecision=deriveInvoiceRuleDecision(chinese);
+  assert.equal(chineseDecision.action,"archive_dining");
+  assert.equal(chineseDecision.reasonCode,"eligible");
+  assert.equal(chineseDecision.invoice.issue_date,"2026-07-21");
+  assert.equal(chinese.invoice.issue_date,"2026年07月21日");
+
+  const iso=clearExtraction({invoice:{issue_date:"2026-07-21"}});
+  const isoDecision=deriveInvoiceRuleDecision(iso);
+  assert.equal(isoDecision.action,"archive_dining");
+  assert.equal(isoDecision.invoice.issue_date,"2026-07-21");
+  assert.equal(iso.invoice.issue_date,"2026-07-21");
+});
+
+test("normalizes safe storage displays and rejects ambiguous date or amount values", () => {
+  for (const [issue_date,total_with_tax,expectedDate,expectedAmount] of [
+    ["2026/07/21","¥290.00","2026-07-21","290.00"],
+    ["2026年7月21日","￥290元","2026-07-21","290.00"],
+    [" 2026-07-21 ","1,290.5","2026-07-21","1290.50"]
+  ]) {
+    const decision=deriveInvoiceRuleDecision(clearExtraction({
+      invoice:{issue_date,total_with_tax}
+    }));
+    assert.equal(decision.action,"archive_dining");
+    assert.equal(decision.invoice.issue_date,expectedDate);
+    assert.equal(decision.invoice.total_with_tax,expectedAmount);
+  }
+  for (const issue_date of [
+    "26-07-21",
+    "2026年7月",
+    "2026-02-30",
+    "2026年02月30日"
+  ]) {
+    assertNoArchive(deriveInvoiceRuleDecision(clearExtraction({
+      invoice:{issue_date}
+    })),"issue_date_invalid");
+  }
+  for (const total_with_tax of ["0.00","-290.00","1,29.00","2.9e2"]) {
+    assertNoArchive(deriveInvoiceRuleDecision(clearExtraction({
+      invoice:{total_with_tax}
+    })),"total_invalid");
+  }
 });

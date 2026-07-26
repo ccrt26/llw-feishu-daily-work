@@ -104,30 +104,81 @@ test("committed and existing image archives get independent exact outcomes",asyn
   assert.equal(secondHarness.calls.cleanup,1);
 });
 
-test("reuses a dispatcher-prepared image without downloading, inspecting or cleaning it again",async () => {
+test("passes a normalized Chinese invoice date to the existing writer",async () => {
+  const h=harness({raw:extraction({invoice:{issue_date:"2026年07月21日"}})});
+  const result=await h.capability.handle(event);
+  assert.equal(result.status,"committed");
+  assert.equal(h.calls.write,1);
+  assert.equal(h.calls.writeInput.invoice.issue_date,"2026-07-21");
+  assert.match(result.reply,/开票日期：2026-07-21/);
+});
+
+test("normalizes clear date and amount display forms without mutating AI extraction",() => {
+  for (const [inputDate,inputAmount,expectedDate,expectedAmount] of [
+    ["2026年07月21日","￥498.00","2026-07-21","498.00"],
+    ["2026-7-21","¥498.0","2026-07-21","498.00"],
+    ["2026/07/21","1,498元","2026-07-21","1498.00"],
+    ["2026.7.21","1498","2026-07-21","1498.00"]
+  ]) {
+    const raw=extraction({invoice:{issue_date:inputDate,total_with_tax:inputAmount}});
+    const before=structuredClone(raw);
+    const decision=deriveInvoiceRuleDecision(raw);
+    assert.equal(decision.action,"archive_dining");
+    assert.equal(decision.reasonCode,"eligible");
+    assert.equal(decision.invoice.issue_date,expectedDate);
+    assert.equal(decision.invoice.total_with_tax,expectedAmount);
+    assert.deepEqual(raw,before);
+  }
+});
+
+test("invoice number, seller and item quality do not add business eligibility gates",() => {
+  for (const field of ["invoice_number","seller_name","item_name"]) {
+    const raw=extraction({invoice:{[field]:""},field_quality:{[field]:"missing"}});
+    const decision=deriveInvoiceRuleDecision(raw);
+    assert.equal(decision.action,"archive_dining");
+    assert.equal(decision.reasonCode,"eligible");
+  }
+});
+
+test("ambiguous or unsafe storage values never reach the writer",async () => {
+  for (const [issueDate,totalWithTax,reasonCode] of [
+    ["2026-02-30","498.00","issue_date_invalid"],
+    ["2026年7月","498.00","issue_date_invalid"],
+    ["2026-07-21","-498.00","total_invalid"],
+    ["2026-07-21","1,49.00","total_invalid"],
+    ["2026-07-21","4.98e2","total_invalid"]
+  ]) {
+    const raw=extraction({invoice:{issue_date:issueDate,total_with_tax:totalWithTax}});
+    const decision=deriveInvoiceRuleDecision(raw);
+    assert.equal(decision.action,"needs_clarification");
+    assert.equal(decision.reasonCode,reasonCode);
+    const h=harness({raw});
+    const result=await h.capability.handle(event);
+    assert.equal(result.status,"awaiting_clarification");
+    assert.match(result.reply,/无法可靠转换为归档所需的日期|无法可靠转换为归档所需的金额/);
+    assert.match(result.reply,/清晰、完整的发票原件/);
+    assert.equal(result.reply.includes("AI 暂时不可用"),false);
+    assert.equal(result.reply.includes("购买方不匹配"),false);
+    assert.equal(h.calls.write,0);
+  }
+});
+
+test("reuses a dispatcher-prepared visual without downloading, inspecting or cleaning it again",async () => {
   const h=harness();
-  const preparedImage={
-    tempDir:"/tmp/job-shared",
-    file:"/tmp/job-shared/shared.webp",
-    detectedFormat:"webp",
-    archiveExtension:"webp",
-    sizeBytes:789
+  const analysisInput={
+    originalFile:"/tmp/job-shared/shared.webp",detectedFormat:"webp",archiveExtension:"webp",
+    pageImages:["/tmp/job-shared/shared.webp"],extractedText:"",
+    documentFacts:{pageCount:1,textAvailable:false}
   };
-  const result=await h.capability.handle(event,{model:"codex",preparedImage});
+  const preparedVisual={tempDir:"/tmp/job-shared",resourceType:"image",analysisInput};
+  const result=await h.capability.handle(event,{model:"codex",preparedVisual});
   assert.equal(result.status,"committed");
   assert.equal(h.calls.download,0);
   assert.equal(h.calls.inspect,0);
   assert.equal(h.calls.cleanup,0);
   assert.equal(h.calls.decide,1);
-  assert.deepEqual(h.calls.decideInput.analysisInput,{
-    originalFile:preparedImage.file,
-    detectedFormat:"webp",
-    archiveExtension:"webp",
-    pageImages:[preparedImage.file],
-    extractedText:"",
-    documentFacts:{pageCount:1,textAvailable:false}
-  });
-  assert.equal(h.calls.writeInput.source,preparedImage.file);
+  assert.deepEqual(h.calls.decideInput.analysisInput,analysisInput);
+  assert.equal(h.calls.writeInput.source,analysisInput.originalFile);
   assert.equal(h.calls.writeInput.extension,"webp");
 });
 
@@ -184,12 +235,11 @@ for (const [label,raw,pattern] of [
   assert.equal(h.calls.cleanup,1);
 });
 
-test("missing, unclear, non-dining and invalid archive values never call writer",async () => {
+test("required missing, unclear and non-dining values never call writer",async () => {
   const cases=[
     [extraction({invoice:{buyer_name:""},field_quality:{buyer_name:"missing"}}),"awaiting_clarification",/必填字段缺失/],
     [extraction({invoice:{buyer_name:""},field_quality:{buyer_name:"unclear"}}),"awaiting_clarification",/必填字段无法清晰读取/],
-    [extraction({category:"non_dining"}),"rejected",/不属于当前已启用的餐饮发票类别/],
-    [extraction({invoice:{invoice_number:"TEST-20260724-001"}}),"awaiting_clarification",/发票号码格式/]
+    [extraction({category:"non_dining"}),"rejected",/不属于当前已启用的餐饮发票类别/]
   ];
   for (const [raw,status,pattern] of cases) {
     const h=harness({raw});
@@ -211,7 +261,7 @@ test("unknown extraction fields remain a technical failure instead of a business
 });
 
 for (const [state,pattern] of [
-  ["multiple_invoices",/拆分为一张发票一个 PDF/],
+  ["multiple_invoices",/检测到一个附件包含多张发票。[\s\S]*请一次只发送一张清晰完整的发票。/],
   ["conflicting_fields",/不同页面关键字段冲突/],
   ["unclear",/无法确认整份文件只含一张完整发票/]
 ]) test(`PDF document state ${state} gets a fixed clarification and never writes`,async () => {
