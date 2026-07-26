@@ -1,7 +1,7 @@
 # V3.7.0 Minimal Knowledge Ingest Design
 
-日期：2026-07-26  
-状态：已确认，进入实施  
+日期：2026-07-26
+状态：已确认，进入实施
 范围：V3.7.0 第二批；直接文字、TXT、Markdown、受管空目录、Knowledge Writer
 
 ## 1. 目标
