@@ -381,6 +381,84 @@ test("shares one queue while keeping Feishu and WeChat outcome keys independent"
   ]);
 });
 
+test("shares one knowledge handler and recovery path across Feishu and WeChat without rerunning work",async()=>{
+  let aiCalls=0,writerCalls=0,failFirst=true;
+  const sent=[];
+  const h=await harness({
+    capabilityNames:["daily-work","invoice","knowledge-ingest"],
+    decision:()=>{
+      aiCalls+=1;
+      return {
+        action:"route",capability:"knowledge-ingest",
+        confidence:"high",reasonCode:"direct_match"
+      };
+    },
+    handle:async name=>{
+      assert.equal(name,"knowledge-ingest");
+      writerCalls+=1;
+      return {
+        status:"committed",reply:"知识资料已入库。",
+        artifacts:["工作资料/客户方案/knowledge.md"]
+      };
+    },
+    send:async message=>{
+      if (failFirst) {
+        failFirst=false;
+        throw new Error("network");
+      }
+      sent.push(message);
+    }
+  });
+  await assert.rejects(
+    h.dispatcher.handleRawEvent({
+      ...raw,message_type:"text",content:"保存飞书资料"
+    }),
+    /message_send_failed/
+  );
+  assert.equal(aiCalls,1);
+  assert.equal(writerCalls,1);
+  await h.dispatcher.resumeReplies();
+  assert.equal(aiCalls,1);
+  assert.equal(writerCalls,1);
+  assert.equal(sent.length,1);
+
+  const wx=wechatMessage({
+    messageId:"m2",text:"保存微信资料"
+  });
+  assert.equal((await h.dispatcher.handleIncomingMessage(wx)).status,"committed");
+  assert.deepEqual(
+    await h.dispatcher.handleIncomingMessage(wx),
+    {handled:false,reason:"duplicate"}
+  );
+  assert.equal(aiCalls,2);
+  assert.equal(writerCalls,2);
+  assert.deepEqual(h.runs,["knowledge-ingest","knowledge-ingest"]);
+  assert.equal(h.state.hasOutcome("m1"),true);
+  assert.equal(h.state.hasOutcome("wechat:m2"),true);
+});
+
+test("explicit cancellation clears a knowledge pending-file request",async()=>{
+  const h=await harness({
+    capabilityNames:["daily-work","invoice","knowledge-ingest"],
+    decision:{action:"unsupported",reason:"cancelled"}
+  });
+  await h.state.setKnowledgePending({
+    request:"保存下一份文件",
+    startedAt:"2026-07-19T01:00:00.000Z",
+    model:"codex"
+  });
+  await h.state.setRouterConversation({
+    capability:"knowledge-ingest",
+    question:"请发送一份 TXT 或 Markdown 文件。",
+    startedAt:"2026-07-19T01:00:00.000Z",
+    attempts:1,status:"open",model:"codex"
+  });
+  assert.equal((await h.dispatcher.handleRawEvent({
+    ...raw,message_type:"text",content:"取消"
+  })).status,"ignored");
+  assert.equal(await h.state.getKnowledgePending(Date.parse("2026-07-19T02:00:00.000Z")),null);
+});
+
 test("rejects an unbound WeChat sender before model commands, router or capability work",async () => {
   const h=await harness();
   assert.deepEqual(

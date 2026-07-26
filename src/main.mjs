@@ -13,6 +13,10 @@ import {startLarkListener} from "./lark-runtime.mjs";
 import {createDailyWorkCapability} from "./capabilities/daily-work/capability.mjs";
 import {buildCapabilityRegistry} from "./capabilities/index.mjs";
 import {createInvoiceCapability} from "./capabilities/invoice/capability.mjs";
+import {createKnowledgeIngestCapability} from "./capabilities/knowledge-ingest/capability.mjs";
+import {createKnowledgeLibraryCatalog} from "./capabilities/knowledge-ingest/library-catalog.mjs";
+import {KnowledgeWriter} from "./capabilities/knowledge-ingest/knowledge-writer.mjs";
+import {prepareKnowledgeFile,prepareKnowledgeText} from "./capabilities/knowledge-ingest/source-preparer.mjs";
 import {inspectInvoiceFile} from "./capabilities/invoice/file-inspector.mjs";
 import {parseInvoiceResource} from "./capabilities/invoice/resource-marker.mjs";
 import {validateInvoiceExtraction,deriveInvoiceRuleDecision} from "./capabilities/invoice/decision-validator.mjs";
@@ -33,7 +37,7 @@ import {createPreparedVisualRunner} from "./core/prepared-visual.mjs";
 import {loadPrivateSkillManifest} from "./core/private-skill-manifest.mjs";
 import {loadRoutingContract} from "./core/routing-contract.mjs";
 import {validateIntentRouterSkill} from "./core/intent-router-client.mjs";
-import {createRouterTextTask,createRouterVisualTask,createDailyWorkInterpretTask,createInvoiceVisualTask} from "./core/semantic-tasks.mjs";
+import {createRouterTextTask,createRouterVisualTask,createDailyWorkInterpretTask,createInvoiceVisualTask,createKnowledgeIngestTask} from "./core/semantic-tasks.mjs";
 
 const run=promisify(execFile);
 export const PRIVATE_SKILL_ALLOWLIST=[
@@ -50,7 +54,7 @@ export const PRIVATE_SKILL_ALLOWLIST=[
     semanticTasks:["invoice.visual"],modelSupport:["codex"],enabled:true
   },
   {
-    name:"llw-knowledge-ingest",capability:"knowledge-ingest",versions:["1.1.0"],
+    name:"llw-knowledge-ingest",capability:"knowledge-ingest",versions:["1.2.0"],
     semanticTasks:["knowledge.ingest"],modelSupport:["codex"],enabled:false
   },
   {
@@ -65,6 +69,14 @@ process.umask(0o077);
 const configFile=process.argv[2] || "/Users/ccrt/Library/Application Support/LLW Assistant/state/feishu-daily-work/config.json";
 const config=await loadConfig(configFile);
 const invoiceConfig=config.capabilities.invoice;
+const knowledgeConfig=config.version===5?config.capabilities["knowledge-ingest"]:null;
+const knowledgePolicy=PRIVATE_SKILL_ALLOWLIST.find(
+  item=>item.name==="llw-knowledge-ingest"
+);
+const knowledgeEnabled=knowledgeCandidateEnabled({
+  allowlistEnabled:knowledgePolicy.enabled,
+  configurationEnabled:knowledgeConfig?.enabled
+});
 const privateSkillCatalog=await loadPrivateSkillManifest({
   root:config.privateSkills?.root,
   manifestPath:config.privateSkills?.manifestPath,
@@ -78,10 +90,21 @@ const dailySkillRoot=await selectPrivateSkillRoot(
 const invoiceSkillRoot=await selectPrivateSkillRoot(
   privateSkillCatalog,"filing-invoices",invoiceConfig.skillRoot
 );
+let knowledgeSkillRoot=null;
+if (knowledgeEnabled) {
+  knowledgeSkillRoot=await selectPrivateSkillRoot(
+    privateSkillCatalog,"llw-knowledge-ingest"
+  );
+}
 await validatePdfiumRuntime(invoiceConfig.pdfProcessorPath);
 const contracts={};
 if (config.capabilities["daily-work"].enabled) contracts["daily-work"]=await loadRoutingContract(dailySkillRoot,"daily-work");
 if (invoiceConfig.enabled) contracts.invoice=await loadRoutingContract(invoiceSkillRoot,"invoice");
+if (knowledgeEnabled) {
+  contracts["knowledge-ingest"]=await loadRoutingContract(
+    knowledgeSkillRoot,"knowledge-ingest"
+  );
+}
 await validateIntentRouterSkill(routerSkillRoot);
 const state=await StateStore.open(config.stateFile);
 const modelMode=new ModelMode(config.modelStateFile);
@@ -106,10 +129,10 @@ const deepseekTextConfiguration={
 };
 
 const dailyWriter=new VaultWriter(config.vaultRoot);
-const catalog=new RecordCatalog(config.vaultRoot);
+const dailyCatalog=new RecordCatalog(config.vaultRoot);
 const dailyWorkInterpret=createDailyWorkInterpretTask({codexPath:config.codexPath,workspaceRoot:config.vaultRoot,skillRoot:dailySkillRoot,...deepseekTextConfiguration});
 const dailyService=new DailyWorkService({
-  state,catalog,writer:dailyWriter,decide:dailyWorkInterpret
+  state,catalog:dailyCatalog,writer:dailyWriter,decide:dailyWorkInterpret
 });
 const dailyCapability=createDailyWorkCapability({service:dailyService});
 
@@ -155,7 +178,73 @@ const invoiceCapability=createInvoiceCapability({
   writer:invoiceArchiveWriter
 });
 
-const capabilities=buildCapabilityRegistry({dailyWork:dailyCapability,invoice:invoiceCapability,contracts,enabled:{"daily-work":config.capabilities["daily-work"].enabled,invoice:invoiceConfig.enabled}});
+let knowledgeCapability=null;
+if (knowledgeEnabled) {
+  const knowledgeDecision=createKnowledgeIngestTask({
+    codexPath:config.codexPath,
+    skillRoot:knowledgeSkillRoot,
+    tempRoot:knowledgeConfig.tempRoot,
+    timeoutMs:knowledgeConfig.aiTimeoutMs
+  });
+  const knowledgeWriter=new KnowledgeWriter({
+    vaultRoot:config.vaultRoot,
+    libraries:knowledgeConfig.libraries
+  });
+  const downloadKnowledgeResource=({
+    source,sourceMessageId,attachment
+  })=>{
+    if (source==="feishu") {
+      return downloadLarkResource({
+        cliPath:config.cliPath,
+        profile:config.profile,
+        messageId:sourceMessageId,
+        fileKey:attachment.sourceAttachmentId,
+        type:"file",
+        tempRoot:knowledgeConfig.tempRoot,
+        timeoutMs:knowledgeConfig.aiTimeoutMs
+      });
+    }
+    if (source==="wechat"&&wechatApi) {
+      return downloadWechatResource({
+        api:wechatApi,
+        resourceId:attachment.sourceAttachmentId,
+        resources:wechatResources,
+        tempRoot:knowledgeConfig.tempRoot,
+        maxFileBytes:knowledgeConfig.maxSourceBytes,
+        timeoutMs:knowledgeConfig.aiTimeoutMs,
+        allowedFileExtensions:["txt","md"]
+      });
+    }
+    throw Object.assign(new Error("download_failed"),{code:"download_failed"});
+  };
+  knowledgeCapability=createKnowledgeIngestCapability({
+    decide:knowledgeDecision,
+    writer:knowledgeWriter,
+    catalog:()=>createKnowledgeLibraryCatalog(knowledgeConfig.libraries),
+    sourcePreparer:({text})=>prepareKnowledgeText({
+      text,maxSourceBytes:knowledgeConfig.maxSourceBytes
+    }),
+    filePreparer:input=>prepareKnowledgeFile({
+      ...input,maxSourceBytes:knowledgeConfig.maxSourceBytes
+    }),
+    download:downloadKnowledgeResource,
+    skillVersion:privateSkillCatalog.skills.find(
+      item=>item.name==="llw-knowledge-ingest"
+    ).version
+  });
+}
+
+const capabilities=buildCapabilityRegistry({
+  dailyWork:dailyCapability,
+  invoice:invoiceCapability,
+  knowledgeIngest:knowledgeCapability,
+  contracts,
+  enabled:{
+    "daily-work":config.capabilities["daily-work"].enabled,
+    invoice:invoiceConfig.enabled,
+    "knowledge-ingest":knowledgeEnabled
+  }
+});
 const routerText=createRouterTextTask({codexPath:config.codexPath,workspaceRoot:config.vaultRoot,skillRoot:routerSkillRoot,timeoutMs:invoiceConfig.aiTimeoutMs,...deepseekTextConfiguration});
 const routerVisual=createRouterVisualTask({codexPath:config.codexPath,workspaceRoot:config.vaultRoot,skillRoot:routerSkillRoot,timeoutMs:invoiceConfig.aiTimeoutMs});
 const intentRouter={decide:routerText,decideVisual:routerVisual};
@@ -233,6 +322,12 @@ export async function startChatEntries({
     wechatListener?.done?.catch(()=>reportWechatEntry(onWechatLog,"wechat_listener_stopped"));
   }
   return {larkListener,wechatListener};
+}
+
+export function knowledgeCandidateEnabled({
+  allowlistEnabled,configurationEnabled
+}) {
+  return allowlistEnabled===true&&configurationEnabled===true;
 }
 
 export async function selectPrivateSkillRoot(catalog,name,configuredRoot) {

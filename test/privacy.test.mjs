@@ -5,6 +5,7 @@ import {createRouterMessage} from "../src/core/router-message.mjs";
 import {createFeishuIncomingMessage} from "../src/core/incoming-message.mjs";
 import {guardAiInput} from "../src/ai/ai-input-guard.mjs";
 import {classifyAiFailure} from "../src/core/ai-failure.mjs";
+import {formatKnowledgeCommit} from "../src/capabilities/knowledge-ingest/receipt.mjs";
 
 test("safe logs contain only allowlisted scalars and a one-way correlation",() => {
   const secrets=["om_secret","ou_secret","oc_secret","img_secret","123456789012","亚信科技（成都）有限公司","成都餐厅","290.00","token-secret","票面全文"];
@@ -32,4 +33,19 @@ test("router attachment summaries never include resource keys or Feishu identifi
   const event={eventId:"event_secret",messageId:"message_secret",senderId:"sender_secret",chatId:"chat_secret",chatType:"p2p",messageType:"file",content:'<file name="发票.pdf" key="file_secret"/>',createTimeMs:1784426400000};
   const summary=JSON.stringify(createRouterMessage(createFeishuIncomingMessage(event)));
   for (const value of ["event_secret","message_secret","sender_secret","chat_secret","file_secret"]) assert.equal(summary.includes(value),false);
+});
+
+test("knowledge receipts fail closed instead of returning absolute managed roots",()=>{
+  assert.throws(
+    ()=>formatKnowledgeCommit(
+      {title:"交流方案"},
+      {
+        status:"created",
+        relativePath:"/Volumes/private-vault/work/交流方案",
+        files:["/Volumes/private-vault/work/交流方案/knowledge.md"]
+      },
+      {libraryKey:"work-knowledge",displayName:"工作资料"}
+    ),
+    /invalid_knowledge_receipt/
+  );
 });

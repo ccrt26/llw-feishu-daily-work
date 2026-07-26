@@ -25,7 +25,7 @@ test("main validates business routing contracts and injects one read-only intent
   assert.match(source,/import \{loadPrivateSkillManifest\} from "\.\/core\/private-skill-manifest\.mjs"/);
   assert.match(source,/import \{loadRoutingContract\} from "\.\/core\/routing-contract\.mjs"/);
   assert.match(source,/import \{validateIntentRouterSkill\} from "\.\/core\/intent-router-client\.mjs"/);
-  assert.match(source,/import \{createRouterTextTask,createRouterVisualTask,createDailyWorkInterpretTask,createInvoiceVisualTask\} from "\.\/core\/semantic-tasks\.mjs"/);
+  assert.match(source,/import \{createRouterTextTask,createRouterVisualTask,createDailyWorkInterpretTask,createInvoiceVisualTask,createKnowledgeIngestTask\} from "\.\/core\/semantic-tasks\.mjs"/);
   assert.match(source,/import \{createPreparedVisualRunner\} from "\.\/core\/prepared-visual\.mjs"/);
   assert.match(source,/import \{parseInvoiceResource\} from "\.\/capabilities\/invoice\/resource-marker\.mjs"/);
   assert.match(source,/import \{ModelMode\} from "\.\/core\/model-mode\.mjs"/);
@@ -38,7 +38,7 @@ test("main validates business routing contracts and injects one read-only intent
     "llw-knowledge-ingest","llw-assistant-work"
   ]) assert.match(source,new RegExp(name));
   assert.match(source,/name:"feishu-intent-router",capability:"router",versions:\["1\.2\.0"\]/);
-  assert.match(source,/name:"llw-knowledge-ingest",capability:"knowledge-ingest",versions:\["1\.1\.0"\][\s\S]*?enabled:false/);
+  assert.match(source,/name:"llw-knowledge-ingest",capability:"knowledge-ingest",versions:\["1\.2\.0"\][\s\S]*?enabled:false/);
   assert.match(source,/name:"llw-assistant-work",capability:"assistant-work",versions:\["1\.1\.0"\][\s\S]*?enabled:false/);
   assert.ok(source.indexOf("await loadPrivateSkillManifest")<source.indexOf("StateStore.open"));
   assert.ok(source.indexOf("await validateIntentRouterSkill(routerSkillRoot)")<source.indexOf("StateStore.open"));
@@ -47,7 +47,7 @@ test("main validates business routing contracts and injects one read-only intent
   assert.equal(source.includes('join(config.vaultRoot,".agents","skills","feishu-intent-router")'),false);
   assert.match(source,/createDailyWorkInterpretTask\(\{[\s\S]*?skillRoot:dailySkillRoot/);
   assert.match(source,/createInvoiceVisualTask\(\{[\s\S]*?skillRoot:invoiceSkillRoot/);
-  assert.match(source,/buildCapabilityRegistry\(\{dailyWork:dailyCapability,invoice:invoiceCapability,contracts,enabled:/);
+  assert.match(source,/knowledgeIngest:knowledgeCapability/);
   assert.match(source,/new Dispatcher\(\{binding,bindings,state,capabilities,intentRouter,withPreparedVisual,messenger,modelMode,deepseekEnabled:config\.deepseekEnabled\}\)/);
   assert.match(source,/const routerText=createRouterTextTask\(\{/);
   assert.match(source,/const routerVisual=createRouterVisualTask\(\{/);
@@ -58,6 +58,40 @@ test("main validates business routing contracts and injects one read-only intent
   assert.match(source,/const withPreparedVisual=createPreparedVisualRunner\(\{/);
   assert.match(source,/preparePdf\n\}\)/);
   assert.match(source,/const intentRouter=\{decide:routerText,decideVisual:routerVisual\}/);
+});
+
+test("keeps knowledge ingest doubly disabled while retaining one bounded candidate composition",async()=>{
+  const source=await readFile(fileURLToPath(new URL("../src/main.mjs",import.meta.url)),"utf8");
+  for (const expected of [
+    'createKnowledgeIngestCapability',
+    'createKnowledgeIngestTask',
+    'createKnowledgeLibraryCatalog',
+    'prepareKnowledgeText',
+    'prepareKnowledgeFile',
+    'KnowledgeWriter'
+  ]) assert.equal(source.includes(expected),true);
+  assert.match(source,/const knowledgeEnabled=knowledgeCandidateEnabled\(\{/);
+  assert.match(source,/allowlistEnabled:knowledgePolicy\.enabled/);
+  assert.match(source,/configurationEnabled:knowledgeConfig\?\.enabled/);
+  assert.match(source,/if \(knowledgeEnabled\) \{/);
+  assert.match(source,/knowledgeIngest:knowledgeCapability/);
+  assert.match(source,/"knowledge-ingest":knowledgeEnabled/);
+  assert.equal(source.includes("console.log(knowledge"),false);
+  const {PRIVATE_SKILL_ALLOWLIST,knowledgeCandidateEnabled}=await import("../src/main.mjs");
+  const policy=PRIVATE_SKILL_ALLOWLIST.find(item=>item.name==="llw-knowledge-ingest");
+  assert.equal(policy.enabled,false);
+  assert.equal(knowledgeCandidateEnabled({
+    allowlistEnabled:policy.enabled,configurationEnabled:false
+  }),false);
+  assert.equal(knowledgeCandidateEnabled({
+    allowlistEnabled:true,configurationEnabled:false
+  }),false);
+  assert.equal(knowledgeCandidateEnabled({
+    allowlistEnabled:false,configurationEnabled:true
+  }),false);
+  assert.equal(knowledgeCandidateEnabled({
+    allowlistEnabled:true,configurationEnabled:true
+  }),true);
 });
 
 test("requires configured legacy Skill roots to match the validated private catalog",async()=>{

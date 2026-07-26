@@ -120,6 +120,9 @@ export class Dispatcher {
         if (conversation) {
           await this.state.closeRouterConversation("cancelled");
           if (conversation.capability==="daily-work") await this.state.clearConversation();
+          if (conversation.capability==="knowledge-ingest") {
+            await this.state.clearKnowledgePending();
+          }
           return {capabilityName:"router",draft:{status:"ignored",reply:null,artifacts:[]}};
         }
         return {capabilityName:"router",draft:{status:"rejected",reply:"当前没有待取消任务。",artifacts:[]}};
@@ -136,6 +139,9 @@ export class Dispatcher {
     if (conversation&&newTask) {
       await this.state.closeRouterConversation("superseded");
       if (conversation.capability==="daily-work") await this.state.clearConversation();
+      if (conversation.capability==="knowledge-ingest") {
+        await this.state.clearKnowledgePending();
+      }
     }
     else if (newTask&&dailyActive) await this.state.clearConversation();
     const context={state:this.state,model:taskModel};
@@ -152,6 +158,9 @@ export class Dispatcher {
     if (conversation) {
       await this.state.clearRouterConversation();
       if (conversation.capability==="daily-work") await this.state.clearConversation();
+      if (conversation.capability==="knowledge-ingest") {
+        await this.state.clearKnowledgePending();
+      }
       const lines=["当前可用能力：",...this.capabilities.map(item=>`- ${item.name}：${item.routingContract.purpose}`)];
       return {status:"awaiting_clarification",reply:lines.join("\n"),artifacts:[]};
     }

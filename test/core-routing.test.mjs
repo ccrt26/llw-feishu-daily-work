@@ -83,8 +83,17 @@ test("builds minimal router messages without Feishu identifiers or resource keys
   assert.deepEqual(image.attachment,{displayName:"飞书图片",extension:"",resourceType:"image"});
   const file=createRouterMessage(createFeishuIncomingMessage({...event,messageType:"file",content:'<file name="folder/发票.PDF" key="file_secret"/>'}));
   assert.deepEqual(file.attachment,{displayName:"发票.PDF",extension:"pdf",resourceType:"file"});
+  const markdown=createRouterMessage(createFeishuIncomingMessage({
+    ...event,messageType:"file",
+    content:'<file name="folder/交流方案.md" key="file_markdown_secret"/>'
+  }));
+  assert.deepEqual(markdown.attachment,{
+    displayName:"交流方案.md",extension:"md",resourceType:"file"
+  });
   const text=createRouterMessage(createFeishuIncomingMessage({...event,messageType:"text",content:"今天完成评审"}));
   assert.equal(text.text,"今天完成评审");
-  const serialized=JSON.stringify([image,file,text]);
-  for (const secret of ["img_abc","file_secret","m1","u1","c1","folder/"]) assert.equal(serialized.includes(secret),false);
+  const serialized=JSON.stringify([image,file,markdown,text]);
+  for (const secret of [
+    "img_abc","file_secret","file_markdown_secret","m1","u1","c1","folder/"
+  ]) assert.equal(serialized.includes(secret),false);
 });
