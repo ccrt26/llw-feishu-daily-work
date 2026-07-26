@@ -108,6 +108,8 @@ test("allows knowledge ingest statically but requires the protected configuratio
   assert.match(source,/"knowledge-ingest":knowledgeEnabled/);
   assert.match(source,/allowedFileExtensions:\["txt","md","docx","pptx","xlsx"\]/);
   assert.match(source,/documentExporter:feishuDocumentExporter\.exportSnapshot/);
+  assert.match(source,/onFailureStage:\(\{code,stderrBytes,retryCount\}\)=>/);
+  assert.match(source,/safeLog\(\{stage:"analyze",code,stderrBytes,retryCount\}\)/);
   assert.equal(source.includes("console.log(knowledge"),false);
   const {PRIVATE_SKILL_ALLOWLIST,knowledgeCandidateEnabled}=await import("../src/main.mjs");
   const policy=PRIVATE_SKILL_ALLOWLIST.find(item=>item.name==="llw-knowledge-ingest");

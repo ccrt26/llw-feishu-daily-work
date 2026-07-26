@@ -178,3 +178,118 @@ test("retries one transient Codex exit within the bounded policy",async()=>{
     assert.deepEqual(await readdir(h.tempRoot),[]);
   } finally { await rm(h.root,{recursive:true,force:true}); }
 });
+
+test("returns bounded stage codes for every private decision-client failure boundary",async()=>{
+  const request="Save one synthetic note.";
+  const source={
+    version:1,sourceKind:"text",detectedFormat:"text",displayName:"message.txt",
+    sizeBytes:Buffer.byteLength(request),sha256:"e".repeat(64),
+    jobSourceName:"source.txt",safeSourceReference:""
+  };
+  const input={
+    request,source,sourceContent:request,allowedLibraries:libraries,taskSummary:null
+  };
+  const cases=[
+    {
+      name:"copy",
+      prepare:async h=>writeFile(
+        join(h.skillRoot,"references",".DS_Store"),
+        "synthetic metadata",
+        {mode:0o600}
+      ),
+      invoke:h=>({
+        codexPath:fakeCodex,skillRoot:h.skillRoot,tempRoot:h.tempRoot,input,
+        environment:{...process.env,FAKE_RESPONSE:JSON.stringify(decision)}
+      }),
+      expected:"knowledge_decision_copy_failed"
+    },
+    {
+      name:"spawn",
+      invoke:h=>({
+        codexPath:join(h.root,"missing-codex"),
+        skillRoot:h.skillRoot,tempRoot:h.tempRoot,input,
+        environment:{...process.env}
+      }),
+      expected:"knowledge_decision_spawn_failed"
+    },
+    {
+      name:"timeout",
+      invoke:h=>({
+        codexPath:fakeCodex,skillRoot:h.skillRoot,tempRoot:h.tempRoot,input,
+        timeoutMs:20,maxAttempts:1,retryDelayMs:0,
+        environment:{
+          ...process.env,FAKE_CODEX_MODE:"timeout",
+          FAKE_RESPONSE:JSON.stringify(decision)
+        }
+      }),
+      expected:"knowledge_decision_timeout"
+    },
+    {
+      name:"process",
+      invoke:h=>({
+        codexPath:fakeCodex,skillRoot:h.skillRoot,tempRoot:h.tempRoot,input,
+        maxAttempts:2,retryDelayMs:0,
+        environment:{
+          ...process.env,FAKE_CODEX_MODE:"process-failure",
+          FAKE_RESPONSE:JSON.stringify(decision)
+        }
+      }),
+      expected:"knowledge_decision_process_failed",
+      metrics:{stderrBytes:44,retryCount:1}
+    },
+    {
+      name:"missing output",
+      invoke:h=>({
+        codexPath:fakeCodex,skillRoot:h.skillRoot,tempRoot:h.tempRoot,input,
+        environment:{
+          ...process.env,FAKE_CODEX_MODE:"no-output",
+          FAKE_RESPONSE:JSON.stringify(decision)
+        }
+      }),
+      expected:"knowledge_decision_output_failed"
+    },
+    {
+      name:"invalid JSON",
+      invoke:h=>({
+        codexPath:fakeCodex,skillRoot:h.skillRoot,tempRoot:h.tempRoot,input,
+        environment:{
+          ...process.env,FAKE_CODEX_MODE:"raw",FAKE_RESPONSE:"not-json"
+        }
+      }),
+      expected:"knowledge_decision_output_failed"
+    },
+    {
+      name:"validation",
+      invoke:h=>({
+        codexPath:fakeCodex,skillRoot:h.skillRoot,tempRoot:h.tempRoot,input,
+        environment:{
+          ...process.env,
+          FAKE_RESPONSE:JSON.stringify({...decision,library_key:"unknown"})
+        }
+      }),
+      expected:"knowledge_decision_validation_failed"
+    }
+  ];
+  for (const entry of cases) {
+    const h=await harness();
+    try {
+      await entry.prepare?.(h);
+      let caught;
+      try { await invokeKnowledgeDecision(entry.invoke(h)); }
+      catch (error) { caught=error; }
+      assert.equal(caught?.message,"knowledge_decision_failed",entry.name);
+      assert.equal(caught?.code,entry.expected,entry.name);
+      if (entry.metrics) {
+        assert.equal(caught.stderrBytes,entry.metrics.stderrBytes,entry.name);
+        assert.equal(caught.retryCount,entry.metrics.retryCount,entry.name);
+      }
+      const serialized=JSON.stringify(caught);
+      for (const forbidden of [
+        "synthetic private stderr","/Users/owner/secret",h.root,request
+      ]) assert.equal(serialized.includes(forbidden),false,entry.name);
+      assert.deepEqual(await readdir(h.tempRoot),[],entry.name);
+    } finally {
+      await rm(h.root,{recursive:true,force:true});
+    }
+  }
+});

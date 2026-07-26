@@ -7,6 +7,14 @@ import {validateKnowledgeDecision} from "./decision-validator.mjs";
 
 const REQUIRED_SKILL_NAME="llw-knowledge-ingest";
 const MAX_OUTPUT_BYTES=256 * 1024;
+const DECISION_FAILURE_CODES=new Set([
+  "knowledge_decision_copy_failed",
+  "knowledge_decision_spawn_failed",
+  "knowledge_decision_timeout",
+  "knowledge_decision_process_failed",
+  "knowledge_decision_output_failed",
+  "knowledge_decision_validation_failed"
+]);
 
 export async function invokeKnowledgeDecision({
   codexPath,skillRoot,tempRoot,input,timeoutMs=120_000,environment=process.env,
@@ -15,11 +23,16 @@ export async function invokeKnowledgeDecision({
   let jobRoot;
   try {
     validateCall(codexPath,skillRoot,tempRoot,input,timeoutMs);
-    await ensurePrivateDirectory(tempRoot);
-    jobRoot=await mkdtemp(join(tempRoot,"knowledge-"));
-    await chmod(jobRoot,0o700);
-    const copiedSkill=join(jobRoot,".agents","skills",REQUIRED_SKILL_NAME);
-    await copySelectedSkill(skillRoot,copiedSkill);
+    let copiedSkill;
+    try {
+      await ensurePrivateDirectory(tempRoot);
+      jobRoot=await mkdtemp(join(tempRoot,"knowledge-"));
+      await chmod(jobRoot,0o700);
+      copiedSkill=join(jobRoot,".agents","skills",REQUIRED_SKILL_NAME);
+      await copySelectedSkill(skillRoot,copiedSkill);
+    } catch {
+      throw decisionFailure("knowledge_decision_copy_failed");
+    }
     const output=join(jobRoot,"decision.json");
     const schema=join(copiedSkill,"references","output-schema.json");
     const args=[
@@ -39,16 +52,30 @@ export async function invokeKnowledgeDecision({
       try {
         await rm(output,{force:true});
         await runCodex(codexPath,args,prompt,{cwd:jobRoot,timeoutMs,environment});
-        const raw=await readLimited(output,MAX_OUTPUT_BYTES);
-        const parsed=JSON.parse(raw);
-        return validateKnowledgeDecision(parsed,{libraries:input.allowedLibraries});
       } catch (error) {
-        if (error?.message!=="codex_failed"||attempt===attempts) throw error;
+        if (error?.code!=="knowledge_decision_process_failed"||
+            attempt===attempts) {
+          throw withRetryCount(error,attempt-1);
+        }
         if (delayMs) await delay(delayMs);
+        continue;
+      }
+      let parsed;
+      try {
+        const raw=await readLimited(output,MAX_OUTPUT_BYTES);
+        parsed=JSON.parse(raw);
+      } catch {
+        throw decisionFailure("knowledge_decision_output_failed");
+      }
+      try {
+        return validateKnowledgeDecision(parsed,{libraries:input.allowedLibraries});
+      } catch {
+        throw decisionFailure("knowledge_decision_validation_failed");
       }
     }
-  } catch {
-    throw new Error("knowledge_decision_failed");
+  } catch (error) {
+    if (DECISION_FAILURE_CODES.has(error?.code)) throw sanitizeFailure(error);
+    throw decisionFailure("knowledge_decision_validation_failed");
   } finally {
     if (jobRoot) await rm(jobRoot,{recursive:true,force:true}).catch(()=>{});
   }
@@ -56,6 +83,33 @@ export async function invokeKnowledgeDecision({
 
 function delay(milliseconds) {
   return new Promise(resolve=>setTimeout(resolve,milliseconds));
+}
+
+function decisionFailure(code,{stderrBytes,retryCount}={}) {
+  const error=new Error("knowledge_decision_failed");
+  error.code=code;
+  if (Number.isSafeInteger(stderrBytes)&&stderrBytes>=0) {
+    error.stderrBytes=stderrBytes;
+  }
+  if (Number.isSafeInteger(retryCount)&&retryCount>=0&&retryCount<=1) {
+    error.retryCount=retryCount;
+  }
+  return error;
+}
+
+function sanitizeFailure(error) {
+  return decisionFailure(error.code,{
+    stderrBytes:error.stderrBytes,
+    retryCount:error.retryCount
+  });
+}
+
+function withRetryCount(error,retryCount) {
+  if (!DECISION_FAILURE_CODES.has(error?.code)) return error;
+  return decisionFailure(error.code,{
+    stderrBytes:error.stderrBytes,
+    retryCount
+  });
 }
 
 async function copySelectedSkill(sourceRoot,destinationRoot) {
@@ -119,25 +173,32 @@ function validateCall(codexPath,skillRoot,tempRoot,input,timeoutMs) {
 
 function runCodex(command,args,input,{cwd,timeoutMs,environment}) {
   return new Promise((resolve,reject)=>{
-    const child=spawn(command,args,{cwd,env:environment,stdio:["pipe","ignore","ignore"]});
-    let settled=false;
+    const child=spawn(command,args,{cwd,env:environment,stdio:["pipe","ignore","pipe"]});
+    let settled=false,timedOut=false,stderrBytes=0;
+    child.stderr.on("data",chunk=>{stderrBytes+=chunk.length;});
+    const finish=error=>{
+      if (settled) return;
+      settled=true;
+      error?reject(error):resolve();
+    };
     const timer=setTimeout(()=>{
       if (settled) return;
-      settled=true;
+      timedOut=true;
       child.kill("SIGKILL");
-      reject(new Error("timeout"));
     },timeoutMs);
-    child.once("error",error=>{
-      if (settled) return;
-      settled=true;
+    child.once("error",()=>{
       clearTimeout(timer);
-      reject(error);
+      finish(decisionFailure("knowledge_decision_spawn_failed"));
     });
-    child.once("exit",code=>{
-      if (settled) return;
-      settled=true;
+    child.once("close",code=>{
       clearTimeout(timer);
-      code===0?resolve():reject(new Error("codex_failed"));
+      if (timedOut) {
+        finish(decisionFailure("knowledge_decision_timeout",{stderrBytes}));
+      } else if (code===0) {
+        finish();
+      } else {
+        finish(decisionFailure("knowledge_decision_process_failed",{stderrBytes}));
+      }
     });
     child.stdin.on("error",()=>{});
     child.stdin.end(input);

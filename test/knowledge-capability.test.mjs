@@ -59,16 +59,17 @@ function stateHarness() {
 
 function harness({
   decision=baseDecision,decideError,writerResult,download,filePreparer,cleanup,
-  documentExporter
+  documentExporter,catalogError,prepareError,writerError,onFailureStage
 }={}) {
   const calls={
     catalog:0,prepare:[],decide:[],commit:[],create:[],download:[],filePrepare:[],
-    documentExport:[],cleanup:[]
+    documentExport:[],cleanup:[],failure:[]
   };
   const state=stateHarness();
   const writer={
     async commit(input) {
       calls.commit.push(structuredClone(input));
+      if (writerError) throw writerError;
       return writerResult||{
         status:"created",knowledgeId:"k".repeat(64),libraryKey:"work-knowledge",
         relativePath:"工作资料/亚信工作/工作文档/交流方案/客户交流方案",
@@ -77,6 +78,7 @@ function harness({
     },
     async createFolder(input) {
       calls.create.push(structuredClone(input));
+      if (writerError) throw writerError;
       return writerResult||{
         status:"created",libraryKey:"work-knowledge",
         relativePath:"工作资料/亚信工作/工作文档/交流方案"
@@ -90,8 +92,16 @@ function harness({
       return structuredClone(decision);
     },
     writer,
-    async catalog() { calls.catalog+=1; return structuredClone(libraries); },
-    sourcePreparer(input) { calls.prepare.push(structuredClone(input)); return prepared(input.text); },
+    async catalog() {
+      calls.catalog+=1;
+      if (catalogError) throw catalogError;
+      return structuredClone(libraries);
+    },
+    sourcePreparer(input) {
+      calls.prepare.push(structuredClone(input));
+      if (prepareError) throw prepareError;
+      return prepared(input.text);
+    },
     async download(input) {
       calls.download.push(structuredClone(input));
       return download?download(input):{tempDir:"/tmp/synthetic-job",file:"/tmp/synthetic-job/attachment.txt"};
@@ -110,6 +120,10 @@ function harness({
     async cleanup(tempDir) {
       calls.cleanup.push(tempDir);
       if (cleanup) await cleanup(tempDir);
+    },
+    onFailureStage(details) {
+      calls.failure.push(structuredClone(details));
+      onFailureStage?.(details);
     },
     skillVersion:"1.2.0"
   });
@@ -422,6 +436,84 @@ test("uses fixed reject and technical-failure receipts and clears only terminal 
   });
   assert.equal(result.reply.includes("/secret/path"),false);
   assert.deepEqual(failed.state.calls,[]);
+});
+
+test("reports exactly one bounded stage while preserving the fixed failure receipt",async()=>{
+  const secret="private body /Users/owner/secret model output";
+  const scenarios=[
+    {
+      name:"source",
+      options:{prepareError:new Error(secret)},
+      expected:"knowledge_source_prepare_failed"
+    },
+    {
+      name:"catalog",
+      options:{catalogError:new Error(secret)},
+      expected:"knowledge_library_catalog_failed"
+    },
+    {
+      name:"decision",
+      options:{decideError:new Error(secret)},
+      expected:"knowledge_decision_failed"
+    },
+    {
+      name:"validation",
+      options:{decision:{
+        ...baseDecision,
+        folder_plan:{...baseDecision.folder_plan,segments:["fabricated"]}
+      }},
+      expected:"knowledge_decision_validation_failed"
+    },
+    {
+      name:"writer",
+      options:{writerError:new Error(secret)},
+      expected:"knowledge_writer_failed"
+    },
+    {
+      name:"receipt",
+      options:{writerResult:{
+        status:"created",knowledgeId:"k".repeat(64),libraryKey:"work-knowledge",
+        relativePath:"/private/secret",files:["/private/secret/knowledge.md"]
+      }},
+      expected:"knowledge_receipt_failed"
+    }
+  ];
+  const fixed={
+    status:"failed",
+    reply:"知识资料处理失败，本次未写入或创建目录；请稍后重试。",
+    artifacts:[]
+  };
+  for (const scenario of scenarios) {
+    const h=harness(scenario.options);
+    const result=await h.capability.handle(message(),{
+      state:h.state.state,model:"codex"
+    });
+    assert.deepEqual(result,fixed,scenario.name);
+    assert.deepEqual(h.calls.failure,[{code:scenario.expected}],scenario.name);
+    assert.equal(JSON.stringify(h.calls.failure).includes(secret),false,scenario.name);
+  }
+});
+
+test("preserves only allowlisted decision metrics in one failure diagnostic",async()=>{
+  const secret="private body /Users/owner/secret model output";
+  const error=Object.assign(new Error(secret),{
+    code:"knowledge_decision_process_failed",
+    stderrBytes:317,
+    retryCount:1,
+    path:"/Users/owner/secret",
+    output:secret
+  });
+  const h=harness({decideError:error});
+  const result=await h.capability.handle(message(),{
+    state:h.state.state,model:"codex"
+  });
+  assert.equal(result.status,"failed");
+  assert.deepEqual(h.calls.failure,[{
+    code:"knowledge_decision_process_failed",
+    stderrBytes:317,
+    retryCount:1
+  }]);
+  assert.equal(JSON.stringify(h.calls.failure).includes(secret),false);
 });
 
 test("enforces Codex-only and rejects unsafe model output with zero writer calls",async()=>{

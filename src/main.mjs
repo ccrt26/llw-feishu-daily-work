@@ -279,6 +279,11 @@ if (knowledgeEnabled) {
       }),
     download:downloadKnowledgeResource,
     documentExporter:feishuDocumentExporter.exportSnapshot,
+    onFailureStage:({code,stderrBytes,retryCount})=>{
+      process.stderr.write(
+        `${safeLog({stage:"analyze",code,stderrBytes,retryCount})}\n`
+      );
+    },
     skillVersion:privateSkillCatalog.skills.find(
       item=>item.name==="llw-knowledge-ingest"
     ).version
