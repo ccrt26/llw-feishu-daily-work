@@ -32,6 +32,7 @@ function taskSession(overrides={}) {
     capability:"assistant-work",
     status:"open",
     model:"codex",
+    grounding_mode:"hybrid",
     goal:"整理项目验收说明",
     task_summary:"",
     confirmed_requirements:["保留来源"],
@@ -143,6 +144,33 @@ test("fixes model and capability even when a later policy would allow both value
     );
     assert.deepEqual(await readFile(file),before);
   }
+});
+
+test("restores and explicitly changes grounding mode while keeping the model fixed",async()=>{
+  const {file}=await fresh();
+  const store=await StateStore.open(file,{taskSessionPolicy});
+  await store.saveTaskSession(taskSession(),{
+    verifiedSourcePaths:["projects/acceptance.md"]
+  });
+  const changed=taskSession({
+    grounding_mode:"source_strict",
+    updated_at:"2026-07-26T05:10:00.000Z"
+  });
+  await store.saveTaskSession(changed,{
+    verifiedSourcePaths:["projects/acceptance.md"]
+  });
+  assert.equal(store.getTaskSession().grounding_mode,"source_strict");
+  const reopened=await StateStore.open(file,{taskSessionPolicy});
+  assert.equal(reopened.getTaskSession().grounding_mode,"source_strict");
+  assert.equal(reopened.getTaskSession().model,"codex");
+  await assert.rejects(
+    ()=>reopened.saveTaskSession({
+      ...changed,
+      grounding_mode:"automatic",
+      updated_at:"2026-07-26T05:11:00.000Z"
+    },{verifiedSourcePaths:["projects/acceptance.md"]}),
+    /invalid_task_session/
+  );
 });
 
 test("closes an open Task Session once and permits only a new ID afterwards",async()=>{

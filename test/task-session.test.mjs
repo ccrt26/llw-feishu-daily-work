@@ -11,6 +11,7 @@ function session(overrides={}) {
     capability:"assistant-work",
     status:"open",
     model:"codex",
+    grounding_mode:"hybrid",
     goal:"根据项目资料整理验收说明",
     task_summary:"",
     confirmed_requirements:["保留来源"],
@@ -127,6 +128,17 @@ test("requires an exact unique continuation policy and allowed model",()=>{
     policy:[{capability:"assistant-work",models:["deepseek"]}],
     verifiedSourcePaths:["projects/acceptance.md"]
   });
+});
+
+test("accepts only explicit grounding modes",()=>{
+  for (const grounding_mode of ["source_strict","hybrid","creative"]) {
+    assert.equal(validateTaskSession(session({grounding_mode}),{
+      policy,verifiedSourcePaths:["projects/acceptance.md"]
+    }).grounding_mode,grounding_mode);
+  }
+  for (const grounding_mode of ["automatic","strict","",null]) {
+    rejects(session({grounding_mode}));
+  }
 });
 
 test("accepts terminal statuses but rejects a session larger than 32 KiB",()=>{

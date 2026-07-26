@@ -38,7 +38,7 @@ import {createRouterTextTask,createRouterVisualTask,createDailyWorkInterpretTask
 const run=promisify(execFile);
 export const PRIVATE_SKILL_ALLOWLIST=[
   {
-    name:"feishu-intent-router",capability:"router",versions:["1.1.0"],
+    name:"feishu-intent-router",capability:"router",versions:["1.2.0"],
     semanticTasks:["router.text","router.visual"],modelSupport:["codex","deepseek"],enabled:true
   },
   {
@@ -50,11 +50,11 @@ export const PRIVATE_SKILL_ALLOWLIST=[
     semanticTasks:["invoice.visual"],modelSupport:["codex"],enabled:true
   },
   {
-    name:"llw-knowledge-ingest",capability:"knowledge-ingest",versions:["1.0.0"],
+    name:"llw-knowledge-ingest",capability:"knowledge-ingest",versions:["1.1.0"],
     semanticTasks:["knowledge.ingest"],modelSupport:["codex"],enabled:false
   },
   {
-    name:"llw-assistant-work",capability:"assistant-work",versions:["1.0.0"],
+    name:"llw-assistant-work",capability:"assistant-work",versions:["1.1.0"],
     semanticTasks:["assistant.work"],modelSupport:["codex"],enabled:false
   }
 ];

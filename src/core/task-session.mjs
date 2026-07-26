@@ -1,5 +1,5 @@
 const SESSION_FIELDS=new Set([
-  "version","session_id","capability","status","model","goal","task_summary",
+  "version","session_id","capability","status","model","grounding_mode","goal","task_summary",
   "confirmed_requirements","rejected_directions","source_paths",
   "current_draft_version","recent_turns","started_at","updated_at"
 ]);
@@ -7,6 +7,7 @@ const POLICY_FIELDS=new Set(["capability","models"]);
 const TURN_FIELDS=new Set(["role","text"]);
 const STATUSES=new Set(["open","completed","cancelled","expired"]);
 const MODELS=new Set(["codex","deepseek"]);
+const GROUNDING_MODES=new Set(["source_strict","hybrid","creative"]);
 const ROLES=new Set(["user","assistant"]);
 const CAPABILITY=/^[a-z0-9][a-z0-9-]{0,63}$/;
 const UUID_V4=/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -26,7 +27,8 @@ function validate(value,options) {
   fail(value.version!==1);
   fail(typeof value.session_id!=="string"||!UUID_V4.test(value.session_id));
   fail(typeof value.capability!=="string"||!CAPABILITY.test(value.capability));
-  fail(!STATUSES.has(value.status)||!MODELS.has(value.model));
+  fail(!STATUSES.has(value.status)||!MODELS.has(value.model)||
+    !GROUNDING_MODES.has(value.grounding_mode));
   const capabilityPolicy=allowed.get(value.capability);
   fail(!capabilityPolicy||!capabilityPolicy.has(value.model));
 

@@ -37,8 +37,9 @@ test("main validates business routing contracts and injects one read-only intent
     "feishu-intent-router","feishu-daily-work","filing-invoices",
     "llw-knowledge-ingest","llw-assistant-work"
   ]) assert.match(source,new RegExp(name));
-  assert.match(source,/name:"llw-knowledge-ingest"[\s\S]*?enabled:false/);
-  assert.match(source,/name:"llw-assistant-work"[\s\S]*?enabled:false/);
+  assert.match(source,/name:"feishu-intent-router",capability:"router",versions:\["1\.2\.0"\]/);
+  assert.match(source,/name:"llw-knowledge-ingest",capability:"knowledge-ingest",versions:\["1\.1\.0"\][\s\S]*?enabled:false/);
+  assert.match(source,/name:"llw-assistant-work",capability:"assistant-work",versions:\["1\.1\.0"\][\s\S]*?enabled:false/);
   assert.ok(source.indexOf("await loadPrivateSkillManifest")<source.indexOf("StateStore.open"));
   assert.ok(source.indexOf("await validateIntentRouterSkill(routerSkillRoot)")<source.indexOf("StateStore.open"));
   assert.match(source,/loadRoutingContract\(dailySkillRoot,"daily-work"\)/);

@@ -9,6 +9,7 @@ import {loadPrivateSkillManifest} from "../src/core/private-skill-manifest.mjs";
 const PRIVATE_MARKER="Synthetic private fixture marker that must never be returned.";
 const ROUTING=Buffer.from('{"capability":"synthetic-alpha"}\n');
 const SCHEMA=Buffer.from('{"type":"object","additionalProperties":false}\n');
+const POLICY=Buffer.from("# Synthetic runtime policy\n");
 const SKILL=Buffer.from(`---\nname: synthetic-alpha\n---\n${PRIVATE_MARKER}\n`);
 const fields={
   name:"synthetic-alpha",
@@ -19,7 +20,13 @@ const fields={
   model_support:["codex"],
   skill_sha256:sha(SKILL),
   routing_contract_sha256:sha(ROUTING),
-  output_schema_sha256:sha(SCHEMA)
+  output_schema_sha256:sha(SCHEMA),
+  runtime_files:[
+    {path:"SKILL.md",sha256:sha(SKILL)},
+    {path:"references/output-schema.json",sha256:sha(SCHEMA)},
+    {path:"references/policy.md",sha256:sha(POLICY)},
+    {path:"references/routing-contract.json",sha256:sha(ROUTING)}
+  ]
 };
 const allowlist=[{
   name:"synthetic-alpha",
@@ -43,9 +50,11 @@ async function fixture({nullReferences=false}={}) {
   if (nullReferences) {
     entry.routing_contract_sha256=null;
     entry.output_schema_sha256=null;
+    entry.runtime_files=[{path:"SKILL.md",sha256:sha(SKILL)}];
   } else {
     await writeFile(join(references,"routing-contract.json"),ROUTING,{mode:0o600});
     await writeFile(join(references,"output-schema.json"),SCHEMA,{mode:0o600});
+    await writeFile(join(references,"policy.md"),POLICY,{mode:0o600});
   }
   const manifest={manifest_version:1,skills:[entry]};
   const manifestPath=join(root,"manifest.json");
@@ -96,6 +105,7 @@ test("loads one strict synthetic manifest and returns metadata without private c
     assert.equal(serialized.includes(fields.skill_sha256),false);
     assert.equal(serialized.includes(fields.routing_contract_sha256),false);
     assert.equal(serialized.includes(fields.output_schema_sha256),false);
+    assert.equal(serialized.includes(sha(POLICY)),false);
   } finally { await rm(value.outer,{recursive:true,force:true}); }
 });
 
@@ -157,7 +167,9 @@ test("rejects malformed manifest field values before any Skill can be selected",
     entry=>entry.semantic_tasks=["synthetic.run","synthetic.run"],
     entry=>entry.model_support=["unknown"],
     entry=>entry.skill_sha256="ABC",
-    entry=>entry.routing_contract_sha256=42
+    entry=>entry.routing_contract_sha256=42,
+    entry=>entry.runtime_files=[],
+    entry=>entry.runtime_files[0].extra=true
   ];
   for (const mutate of mutations) {
     const value=await fixture();
@@ -166,6 +178,29 @@ test("rejects malformed manifest field values before any Skill can be selected",
       await rejected(value.options);
     } finally { await rm(value.outer,{recursive:true,force:true}); }
   }
+});
+
+test("rejects incomplete, mismatched, duplicate or unsafe runtime file coverage",async()=>{
+  const mutations=[
+    entry=>{ entry.runtime_files[2].sha256="0".repeat(64); },
+    entry=>{ entry.runtime_files=entry.runtime_files.filter(item=>item.path!=="references/policy.md"); },
+    entry=>{ entry.runtime_files[2].path="../outside.md"; },
+    entry=>{ entry.runtime_files.push(structuredClone(entry.runtime_files[0])); },
+    entry=>{ entry.runtime_files[0].sha256=entry.output_schema_sha256; }
+  ];
+  for (const mutate of mutations) {
+    const value=await fixture();
+    try {
+      await rewriteManifest(value,manifest=>mutate(manifest.skills[0]));
+      await rejected(value.options);
+    } finally { await rm(value.outer,{recursive:true,force:true}); }
+  }
+
+  const value=await fixture();
+  try {
+    await writeFile(join(value.references,"unlisted.md"),"unlisted\n",{mode:0o600});
+    await rejected(value.options);
+  } finally { await rm(value.outer,{recursive:true,force:true}); }
 });
 
 test("rejects broad permissions, symlinks, path escape, missing files and hash mismatch",async()=>{
@@ -181,6 +216,13 @@ test("rejects broad permissions, symlinks, path escape, missing files and hash m
     },
     async value=>{
       await writeFile(join(value.skillRoot,"SKILL.md"),Buffer.from("changed\n"),{mode:0o600});
+    },
+    async value=>chmod(join(value.references,"policy.md"),0o640),
+    async value=>{
+      const target=join(value.outer,"policy-target.md");
+      await writeFile(target,POLICY,{mode:0o600});
+      await rm(join(value.references,"policy.md"));
+      await symlink(target,join(value.references,"policy.md"));
     },
     async value=>{
       const target=join(value.outer,"manifest-target.json");

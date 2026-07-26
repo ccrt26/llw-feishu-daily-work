@@ -1,12 +1,13 @@
 import {createHash} from "node:crypto";
-import {lstat,open,realpath} from "node:fs/promises";
-import {isAbsolute,join,resolve} from "node:path";
+import {lstat,open,readdir,realpath} from "node:fs/promises";
+import {isAbsolute,join,relative,resolve,sep} from "node:path";
 
 const TOP_FIELDS=new Set(["manifest_version","skills"]);
 const SKILL_FIELDS=new Set([
   "name","version","enabled","capability","semantic_tasks","model_support",
-  "skill_sha256","routing_contract_sha256","output_schema_sha256"
+  "skill_sha256","routing_contract_sha256","output_schema_sha256","runtime_files"
 ]);
+const RUNTIME_FILE_FIELDS=new Set(["path","sha256"]);
 const ALLOW_FIELDS=new Set([
   "name","capability","versions","semanticTasks","modelSupport","enabled"
 ]);
@@ -15,6 +16,7 @@ const NAME=/^[a-z][a-z0-9-]{0,63}$/;
 const TASK=/^[a-z][a-z0-9.-]{0,127}$/;
 const VERSION=/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const SHA=/^[0-9a-f]{64}$/;
+const RUNTIME_PATH=/^[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/;
 const MAX_MANIFEST_BYTES=256 * 1024;
 
 export async function loadPrivateSkillManifest(options) {
@@ -56,6 +58,24 @@ async function load(options) {
     const skillRoot=join(rootReal,entry.name);
     fail(resolve(skillRoot)!==skillRoot||!inside(rootReal,skillRoot));
     await validateDirectory(skillRoot,expectedUid);
+    const runtimeFiles=validateRuntimeFiles(entry.runtime_files);
+    const discovered=await discoverRuntimeFiles(skillRoot,expectedUid);
+    fail(!same([...runtimeFiles.keys()],discovered));
+    const legacyHashes=new Map([
+      ["SKILL.md",entry.skill_sha256],
+      ["references/routing-contract.json",entry.routing_contract_sha256],
+      ["references/output-schema.json",entry.output_schema_sha256]
+    ]);
+    for (const [path,expectedHash] of legacyHashes) {
+      fail(expectedHash===null
+        ? runtimeFiles.has(path)
+        : runtimeFiles.get(path)!==expectedHash);
+    }
+    for (const [path,expectedHash] of runtimeFiles) {
+      const runtimePath=join(skillRoot,...path.split("/"));
+      fail(!inside(skillRoot,runtimePath)||resolve(runtimePath)!==runtimePath);
+      await validateHashReference(runtimePath,expectedHash,expectedUid);
+    }
     await validateHashReference(join(skillRoot,"SKILL.md"),entry.skill_sha256,expectedUid);
     const references=join(skillRoot,"references");
     if (entry.routing_contract_sha256!==null||entry.output_schema_sha256!==null) {
@@ -100,6 +120,48 @@ function validateManifestShape(value) {
     fail(typeof entry.skill_sha256!=="string"||!SHA.test(entry.skill_sha256));
     validateOptionalHash(entry.routing_contract_sha256);
     validateOptionalHash(entry.output_schema_sha256);
+    validateRuntimeFiles(entry.runtime_files);
+  }
+}
+
+function validateRuntimeFiles(value) {
+  fail(!Array.isArray(value)||value.length<1||value.length>256);
+  const result=new Map();
+  let previous="";
+  for (const item of value) {
+    exact(item,RUNTIME_FILE_FIELDS);
+    fail(typeof item.path!=="string"||!RUNTIME_PATH.test(item.path)||
+      typeof item.sha256!=="string"||!SHA.test(item.sha256)||
+      result.has(item.path)||item.path<=previous);
+    result.set(item.path,item.sha256);
+    previous=item.path;
+  }
+  return result;
+}
+
+async function discoverRuntimeFiles(skillRoot,expectedUid) {
+  const result=["SKILL.md"];
+  const references=join(skillRoot,"references");
+  try { await validateDirectory(references,expectedUid); }
+  catch (error) {
+    if (error?.code==="ENOENT") return result;
+    throw error;
+  }
+  await discoverDirectory(references,skillRoot,expectedUid,result);
+  return result.sort();
+}
+
+async function discoverDirectory(directory,skillRoot,expectedUid,result) {
+  const entries=await readdir(directory,{withFileTypes:true});
+  for (const entry of entries.sort((left,right)=>left.name.localeCompare(right.name))) {
+    if (entry.name.startsWith("._")) continue;
+    const path=join(directory,entry.name);
+    if (entry.isDirectory()) {
+      await validateDirectory(path,expectedUid);
+      await discoverDirectory(path,skillRoot,expectedUid,result);
+    } else {
+      result.push(relative(skillRoot,path).split(sep).join("/"));
+    }
   }
 }
 
