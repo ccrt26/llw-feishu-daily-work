@@ -201,8 +201,23 @@ def process_document(args):
         document.close()
 
 
+def self_check():
+    try:
+        import pypdfium2  # noqa: F401
+        from pypdfium2.version import PYPDFIUM_INFO
+        if PYPDFIUM_INFO.api_tag != (5, 11, 0):
+            raise ProcessorError(EXIT_STRUCTURE)
+    except ProcessorError:
+        raise
+    except BaseException:
+        raise ProcessorError(EXIT_STRUCTURE)
+
+
 def main():
     try:
+        if sys.argv[1:] == ["--self-check"]:
+            self_check()
+            return 0
         process_document(parse_args())
         return 0
     except ProcessorError as error:

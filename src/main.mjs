@@ -4,7 +4,7 @@ import {lstat,mkdir,open,readFile,rename,rm,writeFile} from "node:fs/promises";
 import {dirname,join,resolve} from "node:path";
 import {fileURLToPath} from "node:url";
 import {promisify} from "node:util";
-import {loadConfig,validatePdfTools} from "./config.mjs";
+import {loadConfig} from "./config.mjs";
 import {StateStore} from "./state-store.mjs";
 import {VaultWriter} from "./vault-writer.mjs";
 import {RecordCatalog} from "./record-catalog.mjs";
@@ -18,6 +18,7 @@ import {parseInvoiceResource} from "./capabilities/invoice/resource-marker.mjs";
 import {validateInvoiceExtraction,deriveInvoiceRuleDecision} from "./capabilities/invoice/decision-validator.mjs";
 import {InvoiceArchiveWriter} from "./capabilities/invoice/archive-writer.mjs";
 import {prepareInvoicePdf} from "./capabilities/invoice/pdf-preparer.mjs";
+import {validatePdfiumRuntime} from "./capabilities/invoice/pdfium-runtime.mjs";
 import {downloadLarkResource,scavengeInvoiceTempRoot} from "./adapters/lark-resource-downloader.mjs";
 import {downloadWechatResource} from "./adapters/wechat-resource-downloader.mjs";
 import {createLarkMessenger} from "./adapters/lark-reply.mjs";
@@ -28,7 +29,7 @@ import {createChannelMessenger} from "./adapters/channel-messenger.mjs";
 import {Dispatcher} from "./core/dispatcher.mjs";
 import {ModelMode} from "./core/model-mode.mjs";
 import {safeLog} from "./core/redaction.mjs";
-import {createPreparedImageRunner} from "./core/prepared-image.mjs";
+import {createPreparedVisualRunner} from "./core/prepared-visual.mjs";
 import {loadRoutingContract} from "./core/routing-contract.mjs";
 import {validateIntentRouterSkill} from "./core/intent-router-client.mjs";
 import {createRouterTextTask,createRouterVisualTask,createDailyWorkInterpretTask,createInvoiceVisualTask} from "./core/semantic-tasks.mjs";
@@ -41,7 +42,7 @@ process.umask(0o077);
 const configFile=process.argv[2] || "/Users/ccrt/Library/Application Support/LLW Assistant/state/feishu-daily-work/config.json";
 const config=await loadConfig(configFile);
 const invoiceConfig=config.capabilities.invoice;
-await validatePdfTools(invoiceConfig);
+await validatePdfiumRuntime(invoiceConfig.pdfProcessorPath);
 const contracts={};
 if (config.capabilities["daily-work"].enabled) contracts["daily-work"]=await loadRoutingContract(config.capabilities["daily-work"].skillRoot,"daily-work");
 if (invoiceConfig.enabled) contracts.invoice=await loadRoutingContract(invoiceConfig.skillRoot,"invoice");
@@ -95,24 +96,24 @@ const downloadInvoiceResource=resource => {
   throw Object.assign(new Error("download_failed"),{code:"download_failed"});
 };
 const inspectInvoiceResource=file => inspectInvoiceFile(file,{maxBytes:invoiceConfig.maxFileBytes});
-const withPreparedImage=createPreparedImageRunner({
+const preparePdf=({file}) => prepareInvoicePdf({
+  file,
+  pdfProcessorPath:invoiceConfig.pdfProcessorPath,
+  maxPages:invoiceConfig.maxPdfPages,
+  maxTextBytes:invoiceConfig.maxPdfTextBytes,
+  maxRenderBytes:invoiceConfig.maxPdfRenderBytes,
+  timeoutMs:invoiceConfig.pdfPrepareTimeoutMs
+});
+const withPreparedVisual=createPreparedVisualRunner({
   parse:parseInvoiceResource,
   download:downloadInvoiceResource,
-  inspect:inspectInvoiceResource
+  inspect:inspectInvoiceResource,
+  preparePdf
 });
 const invoiceCapability=createInvoiceCapability({
   download:downloadInvoiceResource,
   inspect:inspectInvoiceResource,
-  preparePdf:({file}) => prepareInvoicePdf({
-    file,
-    pdfInfoPath:invoiceConfig.pdfInfoPath,
-    pdfToTextPath:invoiceConfig.pdfToTextPath,
-    pdfToPpmPath:invoiceConfig.pdfToPpmPath,
-    maxPages:invoiceConfig.maxPdfPages,
-    maxTextBytes:invoiceConfig.maxPdfTextBytes,
-    maxRenderBytes:invoiceConfig.maxPdfRenderBytes,
-    timeoutMs:invoiceConfig.pdfPrepareTimeoutMs
-  }),
+  preparePdf,
   decide:invoiceVisual,
   validate:validateInvoiceExtraction,
   derive:deriveInvoiceRuleDecision,
@@ -123,7 +124,7 @@ const capabilities=buildCapabilityRegistry({dailyWork:dailyCapability,invoice:in
 const routerText=createRouterTextTask({codexPath:config.codexPath,workspaceRoot:config.vaultRoot,skillRoot:routerSkillRoot,timeoutMs:invoiceConfig.aiTimeoutMs,...deepseekTextConfiguration});
 const routerVisual=createRouterVisualTask({codexPath:config.codexPath,workspaceRoot:config.vaultRoot,skillRoot:routerSkillRoot,timeoutMs:invoiceConfig.aiTimeoutMs});
 const intentRouter={decide:routerText,decideVisual:routerVisual};
-const dispatcher=new Dispatcher({binding,bindings,state,capabilities,intentRouter,withPreparedImage,messenger,modelMode,deepseekEnabled:config.deepseekEnabled});
+const dispatcher=new Dispatcher({binding,bindings,state,capabilities,intentRouter,withPreparedVisual,messenger,modelMode,deepseekEnabled:config.deepseekEnabled});
 
 await scavengeInvoiceTempRoot(invoiceConfig.tempRoot);
 await invoiceArchiveWriter.recoverTransactions();

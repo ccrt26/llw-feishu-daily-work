@@ -34,9 +34,7 @@ try {
       ...current.capabilities,
       invoice:{
         ...current.capabilities.invoice,
-        pdfInfoPath:process.env.LLW_PDFINFO_PATH,
-        pdfToTextPath:process.env.LLW_PDFTOTEXT_PATH,
-        pdfToPpmPath:process.env.LLW_PDFTOPPM_PATH,
+        pdfProcessorPath:process.env.LLW_PDF_PROCESSOR_PATH,
         maxPdfPages:10,
         maxPdfTextBytes:262_144,
         maxPdfRenderBytes:100 * 1024 * 1024,

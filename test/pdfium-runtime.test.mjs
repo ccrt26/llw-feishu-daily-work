@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import {createHash} from "node:crypto";
 import {chmod,mkdtemp,mkdir,readFile,rm,stat,symlink,writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
@@ -74,4 +75,21 @@ test("rejects source symlinks and wrong pypdfium2 version without creating the d
       /unsafe_pdfium_source/
     );
   } finally { await rm(second.root,{recursive:true,force:true}); }
+});
+
+test("rejects a hash-consistent runtime whose processor self-check cannot import the pinned engine",async()=>{
+  const f=await fixture();
+  try {
+    const {pdfProcessorPath}=await installPdfiumRuntime({
+      sourceRoot:f.source,licenseRoot:f.licenses,processorSource:f.processor,destinationRoot:f.destination
+    });
+    await writeFile(pdfProcessorPath,"#!/usr/bin/python3\nraise SystemExit(1)\n");
+    await chmod(pdfProcessorPath,0o700);
+    const manifestFile=join(f.destination,"runtime-manifest.json");
+    const manifest=JSON.parse(await readFile(manifestFile,"utf8"));
+    const entry=manifest.files.find(item=>item.path==="pdfium-processor.py");
+    entry.sha256=createHash("sha256").update(await readFile(pdfProcessorPath)).digest("hex");
+    await writeFile(manifestFile,`${JSON.stringify(manifest,null,2)}\n`,{mode:0o600});
+    await assert.rejects(()=>validatePdfiumRuntime(pdfProcessorPath),/unsafe_pdfium_runtime/);
+  } finally { await rm(f.root,{recursive:true,force:true}); }
 });

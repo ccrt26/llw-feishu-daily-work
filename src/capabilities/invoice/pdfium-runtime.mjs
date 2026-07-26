@@ -1,6 +1,10 @@
+import {execFile} from "node:child_process";
 import {createHash,randomUUID} from "node:crypto";
 import {copyFile,lstat,mkdir,readFile,readdir,rename,rm,writeFile} from "node:fs/promises";
 import {basename,dirname,join,relative,resolve,sep} from "node:path";
+import {promisify} from "node:util";
+
+const run=promisify(execFile);
 
 const SOURCE_DIRECTORIES=new Set(["pypdfium2","pypdfium2_raw","pypdfium2_cfg"]);
 const MANIFEST_FIELDS=new Set(["version","pypdfium2Version","pdfiumVersion","files"]);
@@ -84,6 +88,14 @@ export async function validatePdfiumRuntime(pdfProcessorPath) {
       await requirePrivateFile(file,mode,"unsafe_pdfium_runtime");
       if (await sha256(file)!==expected.get(relativePath)) throw unsafe("unsafe_pdfium_runtime");
     }
+    const {stdout,stderr}=await run(processor,["--self-check"],{
+      cwd:root,
+      env:{...process.env,PYTHONDONTWRITEBYTECODE:"1"},
+      encoding:"buffer",
+      timeout:10_000,
+      maxBuffer:1024
+    });
+    if (stdout.length!==0||stderr.length!==0) throw unsafe("unsafe_pdfium_runtime");
     return structuredClone(manifest);
   } catch (error) {
     if (error?.message==="unsafe_pdfium_runtime") throw error;
