@@ -336,6 +336,28 @@ test("persists an optional minimal reply target without changing version 4",asyn
   assert.equal(JSON.parse(await readFile(file,"utf8")).version,4);
 });
 
+test("persists one minimal verified reply file without document contents",async()=>{
+  const {file}=await fresh();
+  const store=await StateStore.open(file);
+  const replyFiles=[{
+    kind:"docx",path:"/private/output/session/output.docx",
+    displayName:"工作稿.docx",
+    mime:"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    sha256:"a".repeat(64),size:2048,
+    idempotencyKey:"assistant-file:feishu:m1:aaaaaaaaaaaaaaaa"
+  }];
+  await store.saveOutcome("m1",{
+    capability:"assistant-work",status:"committed",reply:"已生成",
+    artifacts:["task-session/s/draft-v1/output.docx"],replyFiles
+  });
+  assert.deepEqual(store.unreplied()[0].replyFiles,replyFiles);
+  assert.doesNotMatch(await readFile(file,"utf8"),/正文内容/u);
+  await assert.rejects(()=>store.saveOutcome("m2",{
+    capability:"assistant-work",status:"committed",reply:"已生成",
+    artifacts:["p"],replyFiles:[...replyFiles,replyFiles[0]]
+  }),/invalid_reply_files/);
+});
+
 test("rejects non-minimal outcome reply targets before persistence",async () => {
   const {file}=await fresh();
   const store=await StateStore.open(file);

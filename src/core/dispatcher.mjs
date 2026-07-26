@@ -182,7 +182,10 @@ export class Dispatcher {
         ?createReplyTarget(outcome.replyTarget)
         :createReplyTarget({source:"feishu",sourceMessageId:outcome.messageId,conversationId:this.binding.chatId});
       const message={source:replyTarget.source,sourceMessageId:replyTarget.sourceMessageId,replyTarget};
-      await this.send(message,outcome.capability||"daily-work",outcome.reply);
+      await this.send(
+        message,outcome.capability||"daily-work",outcome.reply,
+        outcome.replyFiles||[]
+      );
       await this.state.markReplied(outcome.messageId);
     }
   }
@@ -199,17 +202,26 @@ export class Dispatcher {
     const noReplyRequired=draft.reply===null;
     await this.state.saveOutcome(key,{
       capability,status:draft.status,reply:draft.reply,artifacts:[...draft.artifacts],
+      replyFiles:structuredClone(draft.replyFiles||[]),
       noReplyRequired,replyTarget:message.replyTarget,createdAt:new Date().toISOString()
     });
     if (noReplyRequired) return {handled:true,status:draft.status};
-    await this.send(message,capability,draft.reply); await this.state.markReplied(key);
+    await this.send(
+      message,capability,draft.reply,draft.replyFiles||[]
+    );
+    await this.state.markReplied(key);
     return {handled:true,status:draft.status};
   }
 
-  async send(message,capability,text) {
+  async send(message,capability,text,replyFiles=[]) {
     const key=outcomeKey(message);
     const idempotencyKey=capability==="invoice"?`invoice-reply:${key}`:`reply:${key}`;
-    try { await this.messenger.send({capability,replyTarget:message.replyTarget,text,idempotencyKey}); } catch { throw new Error("message_send_failed"); }
+    try {
+      await this.messenger.send({
+        capability,replyTarget:message.replyTarget,text,idempotencyKey,
+        replyFiles:structuredClone(replyFiles)
+      });
+    } catch { throw new Error("message_send_failed"); }
   }
 }
 
@@ -273,7 +285,39 @@ function isBoundMalformed(raw,binding) { return raw&&typeof raw==="object"&&raw.
 function validateDraft(draft) {
   const statuses=new Set(["committed","existing","awaiting_clarification","rejected","failed","ignored"]);
   if (!draft||!statuses.has(draft.status)||!Array.isArray(draft.artifacts)) throw new Error("invalid_outcome_draft");
-  if (draft.status==="ignored") { if (draft.reply!==null||draft.artifacts.length) throw new Error("invalid_outcome_draft"); return; }
+  if (draft.status==="ignored") {
+    if (draft.reply!==null||draft.artifacts.length||
+        (draft.replyFiles||[]).length) throw new Error("invalid_outcome_draft");
+    return;
+  }
   if (typeof draft.reply!=="string"||!draft.reply.trim()) throw new Error("invalid_outcome_draft");
   if (draft.status==="committed"&&!draft.artifacts.length) throw new Error("invalid_outcome_draft");
+  validateDraftReplyFiles(draft.replyFiles||[]);
+  if (draft.status!=="committed"&&(draft.replyFiles||[]).length) {
+    throw new Error("invalid_outcome_draft");
+  }
+}
+
+function validateDraftReplyFiles(value) {
+  if (!Array.isArray(value)||value.length>1) {
+    throw new Error("invalid_outcome_draft");
+  }
+  const fields=new Set([
+    "kind","path","displayName","mime","sha256","size","idempotencyKey"
+  ]);
+  for (const file of value) {
+    if (!file||typeof file!=="object"||Array.isArray(file)||
+        Object.keys(file).length!==fields.size||
+        Object.keys(file).some(key=>!fields.has(key))||
+        !new Set(["docx","pptx","xlsx"]).has(file.kind)||
+        typeof file.path!=="string"||!file.path.startsWith("/")||
+        typeof file.displayName!=="string"||!file.displayName||
+        typeof file.mime!=="string"||!file.mime||
+        typeof file.sha256!=="string"||!/^[0-9a-f]{64}$/u.test(file.sha256)||
+        !Number.isSafeInteger(file.size)||file.size<1||
+        typeof file.idempotencyKey!=="string"||
+        !/^[A-Za-z0-9:_-]{1,160}$/u.test(file.idempotencyKey)) {
+      throw new Error("invalid_outcome_draft");
+    }
+  }
 }

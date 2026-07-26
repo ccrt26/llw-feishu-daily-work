@@ -50,3 +50,19 @@ test("rejects missing context, another target and non-WeChat reply targets befor
   }
   assert.equal(calls,0);
 });
+
+test("rejects reply files before sending any WeChat text",async()=>{
+  let calls=0;
+  const messenger=createWechatMessenger({
+    api:{sendMessage:async()=>{calls++;}},boundUserId:"wx-owner"
+  });
+  await assert.rejects(()=>messenger.send({
+    replyTarget:{
+      source:"wechat",sourceMessageId:"1001",conversationId:"wx-owner",
+      contextToken:"test-context"
+    },
+    text:"已生成",idempotencyKey:"reply:wechat:1001",
+    replyFiles:[{path:"/private/output.docx"}]
+  }),/wechat_file_reply_unsupported/);
+  assert.equal(calls,0);
+});

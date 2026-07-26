@@ -53,12 +53,14 @@ function assistantConfig(overrides={}) {
     enabled:false,
     tempRoot:"/Users/test/tmp/assistant-work",
     workspaceRoot:"/Users/test/assistant-workspace",
+    outputRoot:"/Users/test/assistant-output",
     maxSearchFiles:512,
     maxSearchFileBytes:262144,
     maxSearchResults:20,
     maxSourceExcerptBytes:262144,
     aiTimeoutMs:120000,
-    allowedOutputFormats:[],
+    maxOutputBytes:20971520,
+    allowedOutputFormats:["docx","pptx","xlsx"],
     ...overrides
   };
 }
@@ -267,14 +269,19 @@ test("version 5 requires one disabled exact assistant-work candidate configurati
       assistantConfig({enabled:true}),
       assistantConfig({tempRoot:"relative"}),
       assistantConfig({workspaceRoot:"relative"}),
+      assistantConfig({outputRoot:"relative"}),
       assistantConfig({maxSearchFiles:511}),
       assistantConfig({maxSearchFileBytes:262143}),
       assistantConfig({maxSearchResults:19}),
       assistantConfig({maxSourceExcerptBytes:262143}),
       assistantConfig({aiTimeoutMs:119999}),
+      assistantConfig({maxOutputBytes:20971519}),
       assistantConfig({allowedOutputFormats:["docx"]}),
+      assistantConfig({allowedOutputFormats:["docx","xlsx","pptx"]}),
       assistantConfig({extra:true}),
       assistantConfig({tempRoot:knowledgeConfig().tempRoot}),
+      assistantConfig({outputRoot:knowledgeConfig().tempRoot}),
+      assistantConfig({outputRoot:"/Users/test/assistant-workspace/output"}),
       assistantConfig({workspaceRoot:"/Volumes/test/LLW/workspace"})
     ]) {
       await assert.rejects(()=>saveConfig(file,configV5({capabilities:{

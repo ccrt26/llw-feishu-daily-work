@@ -31,8 +31,10 @@ const knowledge={
 const assistant={
   tempRoot:"/Users/test/assistant-work-jobs",
   workspaceRoot:"/Users/test/assistant-workspace",
+  outputRoot:"/Users/test/assistant-output",
   maxSearchFiles:512,maxSearchFileBytes:262144,maxSearchResults:20,
-  maxSourceExcerptBytes:262144,aiTimeoutMs:120000,allowedOutputFormats:[]
+  maxSourceExcerptBytes:262144,aiTimeoutMs:120000,maxOutputBytes:20971520,
+  allowedOutputFormats:["docx","pptx","xlsx"]
 };
 
 function v4() {

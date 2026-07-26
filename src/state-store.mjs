@@ -234,6 +234,10 @@ export class StateStore {
       if (stored.replyTarget!==undefined) validateReplyTarget(stored.replyTarget);
       if (Array.isArray(stored.recordIds)) stored.recordIds = [...stored.recordIds];
       if (Array.isArray(stored.artifacts)) stored.artifacts = [...stored.artifacts];
+      if (stored.replyFiles!==undefined) {
+        validateReplyFiles(stored.replyFiles);
+        stored.replyFiles=structuredClone(stored.replyFiles);
+      }
       this.data.outcomes[messageId] = stored;
       while (Object.keys(this.data.outcomes).length > this.maxOutcomes) {
         const removable = Object.keys(this.data.outcomes).find(id => this.data.outcomes[id].replied === true);
@@ -263,6 +267,30 @@ export class StateStore {
       await handle.close();
     }
     await rename(temporary, this.file);
+  }
+}
+
+function validateReplyFiles(value) {
+  if (!Array.isArray(value)||value.length>1) {
+    throw new Error("invalid_reply_files");
+  }
+  const fields=new Set([
+    "kind","path","displayName","mime","sha256","size","idempotencyKey"
+  ]);
+  for (const file of value) {
+    if (!file||typeof file!=="object"||Array.isArray(file)||
+        Object.keys(file).length!==fields.size||
+        Object.keys(file).some(key=>!fields.has(key))||
+        !new Set(["docx","pptx","xlsx"]).has(file.kind)||
+        typeof file.path!=="string"||!file.path.startsWith("/")||
+        typeof file.displayName!=="string"||!file.displayName||
+        typeof file.mime!=="string"||!file.mime||
+        typeof file.sha256!=="string"||!/^[0-9a-f]{64}$/u.test(file.sha256)||
+        !Number.isSafeInteger(file.size)||file.size<1||
+        typeof file.idempotencyKey!=="string"||
+        !/^[A-Za-z0-9:_-]{1,160}$/u.test(file.idempotencyKey)) {
+      throw new Error("invalid_reply_files");
+    }
   }
 }
 

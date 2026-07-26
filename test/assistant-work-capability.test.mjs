@@ -14,10 +14,15 @@ const message=(text,receivedAt="2026-07-26T01:00:00.000Z")=>({
   replyTarget:{source:"feishu",sourceMessageId:"m1",conversationId:"c1"}
 });
 
-function harness({decisions,initialSession=null,initialDraft=""}={}){
+function harness({
+  decisions,initialSession=null,initialDraft="",allowedOutputFormats=[],
+  generateFile=null
+}={}){
   let session=initialSession?structuredClone(initialSession):null;
   let draft=initialDraft;
-  const calls={decide:[],search:[],saveDraft:[],create:[],update:[],close:[]};
+  const calls={
+    decide:[],search:[],saveDraft:[],create:[],update:[],close:[],generateFile:[]
+  };
   const manager={
     getOpen:()=>session?.status==="open"?structuredClone(session):null,
     create:async input=>{
@@ -63,7 +68,11 @@ function harness({decisions,initialSession=null,initialDraft=""}={}){
         ?input.sourcePaths.map(path=>({path,excerpt:"# 合成资料\n需要书面确认。",score:3}))
         :[{path:"工作资料/合成项目/验收.md",excerpt:"# 合成资料\n需要书面确认。",score:5}];
     },
-    workspace,sessionManager:manager,allowedOutputFormats:[]
+    workspace,sessionManager:manager,allowedOutputFormats,
+    generateFile:generateFile?async input=>{
+      calls.generateFile.push(structuredClone(input));
+      return generateFile(input);
+    }:null
   });
   return {capability,calls,get session(){return session;},get draft(){return draft;}};
 }
@@ -134,4 +143,70 @@ test("does not auto-switch a new DeepSeek task or call AI",async()=>{
   assert.match(result.reply,/仅支持 Codex/);
   assert.equal(h.calls.decide.length,0);
   assert.equal(h.calls.create.length,0);
+});
+
+test("generates one verified DOCX from the current draft without a second decision call",async()=>{
+  const existing={
+    version:1,session_id:sessionId,capability:"assistant-work",status:"open",
+    model:"codex",grounding_mode:"hybrid",goal:"写交流方案",task_summary:"",
+    confirmed_requirements:[],rejected_directions:[],source_paths:[],
+    current_draft_version:2,recent_turns:[],
+    started_at:"2026-07-26T01:00:00.000Z",updated_at:"2026-07-26T01:01:00.000Z"
+  };
+  const h=harness({
+    initialSession:existing,initialDraft:"# 交流方案\n\n已定稿正文。",
+    allowedOutputFormats:["docx","pptx","xlsx"],
+    generateFile:async()=>({
+      kind:"docx",path:"/private/output/session/output.docx",
+      displayName:"工作稿-v2.docx",
+      mime:"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      sha256:"a".repeat(64),size:2048
+    })
+  });
+  const result=await h.capability.handle(
+    message("把当前稿导出成 Word 文档"),{model:"codex"}
+  );
+  assert.equal(h.calls.generateFile.length,1);
+  assert.equal(h.calls.generateFile[0].draftText,"# 交流方案\n\n已定稿正文。");
+  assert.equal(h.calls.decide.length,0);
+  assert.equal(result.status,"committed");
+  assert.deepEqual(result.replyFiles,[{
+    kind:"docx",path:"/private/output/session/output.docx",
+    displayName:"工作稿-v2.docx",
+    mime:"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    sha256:"a".repeat(64),size:2048,
+    idempotencyKey:`assistant-file:feishu:m1:${"a".repeat(16)}`
+  }]);
+});
+
+test("does not generate before a draft exists or for the unsupported WeChat file entry",async()=>{
+  const noDraft=harness({
+    allowedOutputFormats:["docx"],generateFile:async()=>{throw new Error("no");}
+  });
+  const asked=await noDraft.capability.handle(
+    message("导出成Word文档"),{model:"codex"}
+  );
+  assert.equal(asked.status,"awaiting_clarification");
+  assert.equal(noDraft.calls.generateFile.length,0);
+  assert.equal(noDraft.calls.decide.length,0);
+
+  const existing={
+    version:1,session_id:sessionId,capability:"assistant-work",status:"open",
+    model:"codex",grounding_mode:"hybrid",goal:"写方案",task_summary:"",
+    confirmed_requirements:[],rejected_directions:[],source_paths:[],
+    current_draft_version:1,recent_turns:[],
+    started_at:"2026-07-26T01:00:00.000Z",updated_at:"2026-07-26T01:01:00.000Z"
+  };
+  const wechat=harness({
+    initialSession:existing,initialDraft:"正文",allowedOutputFormats:["docx"],
+    generateFile:async()=>{throw new Error("no");}
+  });
+  const wxMessage={
+    ...message("导出成Word文档"),source:"wechat",sourceMessageId:"1001",
+    replyTarget:{source:"wechat",sourceMessageId:"1001",conversationId:"wx-owner"}
+  };
+  const rejected=await wechat.capability.handle(wxMessage,{model:"codex"});
+  assert.equal(rejected.status,"rejected");
+  assert.match(rejected.reply,/微信.*暂不支持/u);
+  assert.equal(wechat.calls.generateFile.length,0);
 });

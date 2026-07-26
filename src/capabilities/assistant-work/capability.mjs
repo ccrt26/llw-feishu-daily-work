@@ -1,4 +1,5 @@
 import {validateAssistantWorkDecision} from "./decision-validator.mjs";
+import {selectRequestedOutput} from "../../workspace/file-output-workspace.mjs";
 
 const DEEPSEEK_REPLY=[
   "当前助手工作能力仅支持 Codex。",
@@ -8,10 +9,12 @@ const DEEPSEEK_REPLY=[
 const FAILURE_REPLY="助手工作本次处理失败，未写入长期知识库，也未生成或发送文件；请重试。";
 
 export function createAssistantWorkCapability({
-  decide,search,workspace,sessionManager,allowedOutputFormats=[]
+  decide,search,workspace,sessionManager,allowedOutputFormats=[],
+  generateFile=null
 }) {
   if (typeof decide!=="function"||typeof search!=="function"||!workspace||
-      !sessionManager||!Array.isArray(allowedOutputFormats)) {
+      !sessionManager||!Array.isArray(allowedOutputFormats)||
+      generateFile!==null&&typeof generateFile!=="function") {
     throw new Error("invalid_assistant_work_capability");
   }
   return {
@@ -26,6 +29,12 @@ export function createAssistantWorkCapability({
         const effectiveModel=session?.model||model;
         if (effectiveModel!=="codex") {
           return {status:"rejected",reply:DEEPSEEK_REPLY,artifacts:[]};
+        }
+        const outputKind=selectRequestedOutput(message.text);
+        if (outputKind&&allowedOutputFormats.includes(outputKind)) {
+          return handleFileOutput({
+            message,session,workspace,sessionManager,generateFile,outputKind
+          });
         }
         const groundingMode=session?.grounding_mode||selectGroundingMode(message.text);
         const sources=await search({
@@ -67,6 +76,77 @@ export function createAssistantWorkCapability({
       }
     }
   };
+}
+
+async function handleFileOutput({
+  message,session,workspace,sessionManager,generateFile,outputKind
+}) {
+  if (!session) {
+    return {
+      status:"awaiting_clarification",
+      reply:"请先形成并确认当前工作稿，再告诉我导出为 DOCX、PPTX 或 XLSX。",
+      artifacts:[]
+    };
+  }
+  if (message.source!=="feishu") {
+    return {
+      status:"rejected",
+      reply:"当前微信入口暂不支持文件回传，本次未生成文件。请从飞书原会话提出同一请求。",
+      artifacts:[]
+    };
+  }
+  if (typeof generateFile!=="function") {
+    return {
+      status:"rejected",
+      reply:"当前文件输出尚未启用，本次未生成文件。",
+      artifacts:[]
+    };
+  }
+  const working=await loadWorkingDraft(workspace,session);
+  if (working.currentDraftVersion===0||!working.currentDraft.trim()) {
+    return {
+      status:"awaiting_clarification",
+      reply:"请先形成并确认当前工作稿，再告诉我导出为 DOCX、PPTX 或 XLSX。",
+      artifacts:[]
+    };
+  }
+  const displayName=`工作稿-v${working.currentDraftVersion}.${outputKind}`;
+  const artifact=validateReplyFile(await generateFile({
+    sessionId:session.session_id,draftVersion:working.currentDraftVersion,
+    kind:outputKind,displayName,draftText:working.currentDraft
+  }),{kind:outputKind,displayName});
+  const idempotencyKey=[
+    "assistant-file",message.source,message.sourceMessageId,
+    artifact.sha256.slice(0,16)
+  ].join(":");
+  const reply=`已根据当前工作稿生成 ${displayName}。`;
+  await sessionManager.update({
+    session,userText:message.text,assistantText:reply,
+    sourcePaths:session.source_paths,
+    draftVersion:working.currentDraftVersion,updatedAt:message.receivedAt
+  });
+  return {
+    status:"committed",reply,
+    artifacts:[
+      `task-session/${session.session_id}/draft-v${working.currentDraftVersion}/output.${outputKind}`
+    ],
+    replyFiles:[{...artifact,idempotencyKey}]
+  };
+}
+
+function validateReplyFile(value,{kind,displayName}) {
+  const fields=new Set(["kind","path","displayName","mime","sha256","size"]);
+  if (!value||typeof value!=="object"||Array.isArray(value)||
+      Object.keys(value).length!==fields.size||
+      Object.keys(value).some(key=>!fields.has(key))||
+      value.kind!==kind||value.displayName!==displayName||
+      typeof value.path!=="string"||!value.path.startsWith("/")||
+      typeof value.mime!=="string"||!value.mime||
+      typeof value.sha256!=="string"||!/^[0-9a-f]{64}$/u.test(value.sha256)||
+      !Number.isSafeInteger(value.size)||value.size<1) {
+    throw new Error("invalid_reply_file");
+  }
+  return structuredClone(value);
 }
 
 async function applyDecision({

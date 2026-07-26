@@ -1,4 +1,7 @@
 import { spawn } from "node:child_process";
+import {createHash} from "node:crypto";
+import {lstat,readFile} from "node:fs/promises";
+import {basename,dirname} from "node:path";
 import { createInterface } from "node:readline";
 
 export async function startLarkListener({cliPath, profile, onEvent, onError = () => {}, environment = process.env, readyTimeoutMs = 30000}) {
@@ -79,6 +82,33 @@ export async function sendLarkReply({cliPath,profile,messageId,text,idempotencyK
   if (parsed?.ok !== true) throw new Error("lark_reply_failed");
 }
 
+export async function sendLarkFile({
+  cliPath,profile,messageId,replyFile,environment=process.env
+}) {
+  validateReplyFile(replyFile);
+  const metadata=await lstat(replyFile.path);
+  if (!metadata.isFile()||metadata.isSymbolicLink()||
+      metadata.uid!==process.getuid()||metadata.size!==replyFile.size) {
+    throw new Error("lark_file_invalid");
+  }
+  const bytes=await readFile(replyFile.path);
+  if (createHash("sha256").update(bytes).digest("hex")!==replyFile.sha256) {
+    throw new Error("lark_file_invalid");
+  }
+  const args=[
+    "--profile",profile,"im","+messages-reply","--as","bot",
+    "--message-id",messageId,"--file",`./${basename(replyFile.path)}`,
+    "--idempotency-key",replyFile.idempotencyKey
+  ];
+  const output=await run(
+    cliPath,args,larkEnvironment(environment),dirname(replyFile.path)
+  );
+  let parsed;
+  try { parsed=JSON.parse(output); }
+  catch { throw new Error("lark_file_invalid_response"); }
+  if (parsed?.ok!==true) throw new Error("lark_file_send_failed");
+}
+
 function larkEnvironment(environment) {
   const pathParts = ["/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin", ...(environment.PATH || "").split(":")];
   return {
@@ -90,9 +120,11 @@ function larkEnvironment(environment) {
   };
 }
 
-function run(command, args, environment) {
+function run(command, args, environment, cwd) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {env: environment, stdio: ["ignore", "pipe", "pipe"]});
+    const child = spawn(command, args, {
+      cwd,env: environment, stdio: ["ignore", "pipe", "pipe"]
+    });
     let stdout = "";
     let stderrBytes = 0;
     child.stdout.on("data", chunk => {
@@ -103,4 +135,16 @@ function run(command, args, environment) {
     child.once("error", error => reject(new Error(`lark_spawn_failed:${error.code || "unknown"}`)));
     child.once("close", code => code === 0 ? resolve(stdout.trim()) : reject(new Error(`lark_failed:${code}:${stderrBytes}`)));
   });
+}
+
+function validateReplyFile(value) {
+  if (!value||typeof value!=="object"||Array.isArray(value)||
+      typeof value.path!=="string"||!value.path.startsWith("/")||
+      basename(value.path)!==value.displayName||
+      typeof value.sha256!=="string"||!/^[0-9a-f]{64}$/u.test(value.sha256)||
+      !Number.isSafeInteger(value.size)||value.size<1||
+      typeof value.idempotencyKey!=="string"||
+      !/^[A-Za-z0-9:_-]{1,160}$/u.test(value.idempotencyKey)) {
+    throw new Error("lark_file_invalid");
+  }
 }

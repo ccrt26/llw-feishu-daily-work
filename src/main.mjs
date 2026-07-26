@@ -20,6 +20,7 @@ import {prepareKnowledgeFile,prepareKnowledgeText} from "./capabilities/knowledg
 import {prepareKnowledgeOfficeFile} from "./capabilities/knowledge-ingest/office-source-preparer.mjs";
 import {createFeishuDocumentExporter} from "./capabilities/knowledge-ingest/feishu-document-exporter.mjs";
 import {createAssistantWorkCapability} from "./capabilities/assistant-work/capability.mjs";
+import {invokeLocalArtifactGeneration} from "./capabilities/assistant-work/artifact-generation-client.mjs";
 import {
   loadKnowledgeSources,searchKnowledge
 } from "./capabilities/assistant-work/knowledge-search.mjs";
@@ -45,6 +46,7 @@ import {loadRoutingContract} from "./core/routing-contract.mjs";
 import {validateIntentRouterSkill} from "./core/intent-router-client.mjs";
 import {TaskSessionManager} from "./core/task-session-manager.mjs";
 import {TaskWorkspace} from "./workspace/task-workspace.mjs";
+import {FileOutputWorkspace} from "./workspace/file-output-workspace.mjs";
 import {
   createRouterTextTask,createRouterVisualTask,createDailyWorkInterpretTask,
   createInvoiceVisualTask,createKnowledgeIngestTask,createAssistantWorkTask
@@ -293,6 +295,11 @@ if (assistantEnabled) {
     timeoutMs:assistantConfig.aiTimeoutMs
   });
   const taskWorkspace=new TaskWorkspace(assistantConfig.workspaceRoot);
+  const fileOutputWorkspace=new FileOutputWorkspace({
+    tempRoot:assistantConfig.tempRoot,
+    outputRoot:assistantConfig.outputRoot,
+    maxOutputBytes:assistantConfig.maxOutputBytes
+  });
   taskSessionManager=new TaskSessionManager({
     state,workspace:taskWorkspace
   });
@@ -318,7 +325,15 @@ if (assistantEnabled) {
     search:assistantSearch,
     workspace:taskWorkspace,
     sessionManager:taskSessionManager,
-    allowedOutputFormats:assistantConfig.allowedOutputFormats
+    allowedOutputFormats:assistantConfig.allowedOutputFormats,
+    generateFile:input=>fileOutputWorkspace.generate({
+      ...input,
+      generate:job=>invokeLocalArtifactGeneration({
+        codexPath:config.codexPath,
+        timeoutMs:assistantConfig.aiTimeoutMs,
+        ...job
+      })
+    })
   });
 }
 

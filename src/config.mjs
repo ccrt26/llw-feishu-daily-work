@@ -20,9 +20,10 @@ const KNOWLEDGE_FIELDS=new Set([
   "enabled","tempRoot","libraries","maxSourceBytes","aiTimeoutMs","inputFormats"
 ]);
 const ASSISTANT_FIELDS=new Set([
-  "enabled","tempRoot","workspaceRoot","maxSearchFiles","maxSearchFileBytes",
+  "enabled","tempRoot","workspaceRoot","outputRoot",
+  "maxSearchFiles","maxSearchFileBytes",
   "maxSearchResults","maxSourceExcerptBytes","aiTimeoutMs",
-  "allowedOutputFormats"
+  "maxOutputBytes","allowedOutputFormats"
 ]);
 const LIBRARY_FIELDS=new Set(["libraryKey","displayName","aliases","root"]);
 
@@ -97,7 +98,9 @@ function validateConfig(config,requireBinding,configFile) {
       config.wechatStateFile,config.cliPath,config.codexPath,
       invoice.pdfProcessorPath
     ];
-    for (const root of [assistant.tempRoot,assistant.workspaceRoot]) {
+    for (const root of [
+      assistant.tempRoot,assistant.workspaceRoot,assistant.outputRoot
+    ]) {
       if (protectedFiles.some(file=>
         foldedPath(file)===foldedPath(root)||foldedInside(root,file)
       )) throw new Error("invalid_assistant_root");
@@ -110,7 +113,8 @@ function validateConfig(config,requireBinding,configFile) {
       knowledge.tempRoot,
       ...knowledge.libraries.map(library=>library.root),
       assistant.tempRoot,
-      assistant.workspaceRoot
+      assistant.workspaceRoot,
+      assistant.outputRoot
     ]
     :[];
   const protectedPaths=[configFile,config.vaultRoot,config.stateFile,config.heartbeatFile,config.wechatStateFile,config.cliPath,config.codexPath,daily.skillRoot,invoice.skillRoot,invoice.tempRoot,invoice.archiveRoot,invoice.pdfProcessorPath,...privatePaths];
@@ -132,19 +136,21 @@ function validateAssistantConfig(assistant,{vaultRoot,knowledge,invoice}) {
   if (assistant.enabled!==false) throw new Error("invalid_assistant_enabled");
   absolute(assistant.tempRoot,"assistant-work.tempRoot");
   absolute(assistant.workspaceRoot,"assistant-work.workspaceRoot");
-  for (const root of [assistant.tempRoot,assistant.workspaceRoot]) {
+  absolute(assistant.outputRoot,"assistant-work.outputRoot");
+  for (const root of [
+    assistant.tempRoot,assistant.workspaceRoot,assistant.outputRoot
+  ]) {
     if (foldedInside(vaultRoot,root)) throw new Error("invalid_assistant_root");
   }
-  if (foldedInside(assistant.tempRoot,assistant.workspaceRoot)||
-      foldedInside(assistant.workspaceRoot,assistant.tempRoot)||
-      foldedInside(knowledge.tempRoot,assistant.tempRoot)||
-      foldedInside(assistant.tempRoot,knowledge.tempRoot)||
-      foldedInside(knowledge.tempRoot,assistant.workspaceRoot)||
-      foldedInside(assistant.workspaceRoot,knowledge.tempRoot)||
-      foldedInside(invoice.tempRoot,assistant.tempRoot)||
-      foldedInside(assistant.tempRoot,invoice.tempRoot)||
-      foldedInside(invoice.tempRoot,assistant.workspaceRoot)||
-      foldedInside(assistant.workspaceRoot,invoice.tempRoot)) {
+  const assistantRoots=[
+    assistant.tempRoot,assistant.workspaceRoot,assistant.outputRoot
+  ];
+  const otherRoots=[knowledge.tempRoot,invoice.tempRoot];
+  if (assistantRoots.some((root,index)=>assistantRoots.some(
+    (other,otherIndex)=>index!==otherIndex&&foldedInside(root,other)
+  ))||assistantRoots.some(root=>otherRoots.some(other=>
+    foldedInside(root,other)||foldedInside(other,root)
+  ))) {
     throw new Error("invalid_assistant_root");
   }
   if (assistant.maxSearchFiles!==512) {
@@ -162,8 +168,14 @@ function validateAssistantConfig(assistant,{vaultRoot,knowledge,invoice}) {
   if (assistant.aiTimeoutMs!==120_000) {
     throw new Error("invalid_assistant_ai_timeout");
   }
+  if (assistant.maxOutputBytes!==20*1024*1024) {
+    throw new Error("invalid_assistant_output_bytes");
+  }
   if (!Array.isArray(assistant.allowedOutputFormats)||
-      assistant.allowedOutputFormats.length!==0) {
+      assistant.allowedOutputFormats.length!==3||
+      assistant.allowedOutputFormats.some((value,index)=>
+        value!==["docx","pptx","xlsx"][index]
+      )) {
     throw new Error("invalid_assistant_output_formats");
   }
 }

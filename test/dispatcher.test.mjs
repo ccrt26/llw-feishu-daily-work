@@ -231,6 +231,41 @@ test("image preparation failure returns a fixed safe attachment error without bu
   assert.equal(h.sends[0].text,"图片准备失败，本次未交给 AI 或业务Skill、未写入 Obsidian；请重新发送受支持的原始图片。");
 });
 
+test("persists one reply file before send and restart reuses the same stable artifact",async()=>{
+  const replyFile={
+    kind:"docx",path:"/private/output/session/output.docx",
+    displayName:"工作稿.docx",
+    mime:"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    sha256:"a".repeat(64),size:2048,
+    idempotencyKey:"assistant-file:feishu:m1:aaaaaaaaaaaaaaaa"
+  };
+  let attempts=0;
+  const h=await harness({
+    capabilityNames:["assistant-work"],
+    decision:{
+      action:"route",capability:"assistant-work",confidence:"high",
+      reasonCode:"new_task"
+    },
+    handle:async()=>({
+      status:"committed",reply:"已生成",
+      artifacts:["task-session/s/draft-v1/output.docx"],
+      replyFiles:[replyFile]
+    }),
+    send:async message=>{
+      attempts+=1;
+      assert.deepEqual(message.replyFiles,[replyFile]);
+      if (attempts===1) throw new Error("synthetic_file_send_failure");
+    }
+  });
+  await assert.rejects(()=>h.dispatcher.handleRawEvent({
+    ...raw,message_type:"text",content:"生成Word"
+  }),/message_send_failed/);
+  assert.equal(h.state.unreplied().length,1);
+  await h.dispatcher.resumeReplies();
+  assert.equal(attempts,2);
+  assert.equal(h.state.unreplied().length,0);
+});
+
 test("the same prepared image produces an entry-independent visual routing input for Feishu and WeChat",async () => {
   const prepared=imageVisual("/tmp/job-same/same.png","/tmp/job-same");
   const h=await harness({

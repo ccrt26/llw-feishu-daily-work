@@ -3,7 +3,10 @@ import {createHash} from "node:crypto";
 export function createWechatMessenger({api,boundUserId}) {
   if (!api||typeof api.sendMessage!=="function"||!nonempty(boundUserId)) throw new Error("invalid_wechat_messenger");
   return {
-    async send({replyTarget,text,idempotencyKey}) {
+    async send({replyTarget,text,idempotencyKey,replyFiles=[]}) {
+      if (!Array.isArray(replyFiles)||replyFiles.length) {
+        throw new Error("wechat_file_reply_unsupported");
+      }
       if (!replyTarget||replyTarget.source!=="wechat"||replyTarget.conversationId!==boundUserId||
           !nonempty(replyTarget.sourceMessageId)||!nonempty(replyTarget.contextToken)||
           !nonempty(text)||!nonempty(idempotencyKey)) {

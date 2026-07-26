@@ -21,6 +21,7 @@ if (process.env.FAKE_CWD_FILE) {
 let stdin = "";
 for await (const chunk of process.stdin) stdin += chunk;
 if (process.env.FAKE_STDIN_FILE) await writeFile(process.env.FAKE_STDIN_FILE, stdin);
+if (process.env.FAKE_CODEX_MODE === "artifact") process.exit(0);
 if (process.env.FAKE_CODEX_MODE === "raw") {
   await writeFile(args[outputIndex + 1],process.env.FAKE_RESPONSE);
 } else {

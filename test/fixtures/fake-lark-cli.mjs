@@ -3,6 +3,12 @@ import { readFile, writeFile, symlink } from "node:fs/promises";
 
 const args = process.argv.slice(2);
 if (process.env.FAKE_LARK_ARGS) await writeFile(process.env.FAKE_LARK_ARGS, JSON.stringify(args));
+if (process.env.FAKE_LARK_CALLS) {
+  let calls=[];
+  try { calls=JSON.parse(await readFile(process.env.FAKE_LARK_CALLS,"utf8")); } catch {}
+  calls.push(args);
+  await writeFile(process.env.FAKE_LARK_CALLS,JSON.stringify(calls));
+}
 if (args.includes("consume")) {
   process.stderr.write("[event] ready event_key=im.message.receive_v1\n");
   for (const event of JSON.parse(process.env.FAKE_EVENTS || "[]")) process.stdout.write(`${JSON.stringify(event)}\n`);
