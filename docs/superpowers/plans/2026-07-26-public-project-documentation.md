@@ -223,6 +223,7 @@ Expected: one documentation-only commit on `agent/public-project-docs`.
 - Reference: `filing-invoices/references/output-schema.json`
 - Reference: `filing-invoices/references/routing-contract.json`
 - Reference: `filing-invoices/evals/cases.jsonl`
+- Reference: `feishu-mail-assistant/SKILL.md`
 
 **Interfaces:**
 - Consumes: the three current Skill contracts, Schemas, evaluation fixtures, and model-support statements.
@@ -266,6 +267,8 @@ The Skill catalog must contain:
 | `filing-invoices` | Define invoice fact extraction, clarity, document-state, and strict output contracts | Decide storage eligibility, write files, or access raw platform fields |
 
 Link each Skill name to its `SKILL.md`, and link Schema/evaluation descriptions to files that actually exist. Link the runtime repository to `https://github.com/ccrt26/llw-feishu-daily-work`.
+
+Also name `feishu-mail-assistant` in a separate note as a tracked contract that is not enabled by the current V3.6.3 runtime. Do not include it in the three-item integrated Skill table.
 
 - [ ] **Step 3: Validate the Skills README**
 
