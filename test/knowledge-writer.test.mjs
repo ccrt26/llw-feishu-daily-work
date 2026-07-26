@@ -61,6 +61,21 @@ test("atomically creates one deterministic direct-text knowledge item",async()=>
   } finally { await rm(h.root,{recursive:true,force:true}); }
 });
 
+test("commits directly under a selected managed library root without creating a category",async()=>{
+  const h=await harness();
+  try {
+    const result=await h.writer.commit(commitInput({
+      libraryKey:"personal-knowledge",
+      folderSegments:[],
+      title:"根目录知识项"
+    }));
+    assert.equal(result.relativePath,"personal-library/根目录知识项");
+    assert.deepEqual(await readdir(h.personal),["根目录知识项"]);
+    assert.deepEqual(await readdir(join(h.personal,"根目录知识项")),["knowledge.md"]);
+    assert.deepEqual(await readdir(h.work),[]);
+  } finally { await rm(h.root,{recursive:true,force:true}); }
+});
+
 test("returns existing for a stable source and never overwrites a title collision",async()=>{
   const h=await harness();
   try {

@@ -2,11 +2,12 @@
 
 ## Status
 
-- Production capability `knowledge-ingest` is disabled after the second failed
-  real Feishu acceptance attempt.
+- Production capability `knowledge-ingest` remains enabled for the bounded
+  Stage A acceptance window, but production has not yet received the managed-root
+  writer fix described below.
 - `assistant-work` remains disabled.
-- The existing Feishu service remains healthy and has no unreplied outcomes.
-- No knowledge artifact was created by either failed attempt.
+- The existing service remains healthy and has no unreplied outcomes.
+- No knowledge artifact was created by any failed attempt.
 
 This report is intentionally sanitized. It contains no message body, platform
 identifier, credential, private library content, or machine-specific private
@@ -108,23 +109,57 @@ Additional checks:
 - the knowledge job root is a private owned directory;
 - no staging item, published item, or recent knowledge artifact was left behind.
 
-## Most useful next diagnostic
+## Final stage evidence and root cause
 
-Add a value-free diagnostic stage code at the existing capability boundary,
-without logging user content, paths, model output, or identifiers. For example:
+The value-free stage diagnostics were implemented and deployed. A direct
+Codex-only reproduction first identified an output-Schema compatibility issue
+in the private Skill. The Schema was flattened without weakening the Node.js
+cross-field or path validator, and the repaired private Skill decision then
+succeeded.
 
-- `source_prepare_failed`
-- `library_catalog_failed`
-- `decision_copy_failed`
-- `decision_spawn_failed`
-- `decision_output_failed`
-- `decision_validation_failed`
-- `writer_open_failed`
-- `writer_commit_failed`
+The next bounded acceptance produced two independent outcomes:
 
-The stage code should be emitted through the existing safe-log allowlist and
-covered by tests. A single synthetic real acceptance attempt should then reveal
-the failing boundary without weakening the user-facing fail-closed receipt.
+| Entry | Capability | Outcome | Reply | Artifacts | Safe stage |
+|---|---|---|---:|---:|---|
+| Feishu | `knowledge-ingest` | `failed` | yes | 0 | `knowledge_writer_failed` |
+| WeChat | `knowledge-ingest` | `failed` | yes | 0 | `knowledge_writer_failed` |
+
+This excludes entry-specific listening, binding and routing as the remaining
+cause. Read-only checks also confirmed valid Vault identity, managed-library
+identity, ownership, canonical paths and directory-sync support.
+
+The private Skill contract represents the selected managed root as
+`folder_plan.mode="use_existing"` with an empty `segments` array. The decision
+validator accepts this exact root plan. `KnowledgeWriter.commit`, however,
+reused the folder-creation validator, which required at least one segment and
+rejected the valid root plan before filesystem access.
+
+An isolated boundary reproduction confirmed:
+
+- decision validator accepts the root plan;
+- writer rejects the same plan as `knowledge_write_rejected`;
+- no filesystem operation is reached.
+
+## Scoped fix
+
+The writer now has one explicit `allowRoot` validation option:
+
+- `commit` allows an empty segment array, meaning the already-selected managed
+  library root;
+- `createFolder` retains the non-empty requirement;
+- the five-segment bound, segment-name rules, containment, ownership, symlink,
+  atomic publication, idempotency and write-after-verify rules are unchanged.
+
+TDD evidence:
+
+- the new real Writer test first failed with `knowledge_write_rejected`;
+- after the two-line scoped production change, Writer tests passed 10/10;
+- knowledge capability and writer target tests passed 26/26;
+- the complete integration regression passed 463/463.
+
+The code evidence above is not a production-acceptance claim. Production
+deployment and one real Feishu plus one real WeChat root-library acceptance
+remain required.
 
 ## Relevant files
 
@@ -138,4 +173,3 @@ the failing boundary without weakening the user-facing fail-closed receipt.
 - `src/main.mjs`
 - `test/knowledge-decision-client.test.mjs`
 - `test/knowledge-ingest-capability.test.mjs`
-

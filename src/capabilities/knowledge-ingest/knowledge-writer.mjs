@@ -150,7 +150,7 @@ function validateCommitInput(input) {
       typeof input.preserveSource!=="boolean") {
     throw new Error("invalid_commit");
   }
-  validateSegments(input.folderSegments);
+  validateSegments(input.folderSegments,{allowRoot:true});
 }
 
 function validateSource(source) {
@@ -208,8 +208,8 @@ function validSourceReference(kind,value) {
   return value==="";
 }
 
-function validateSegments(segments) {
-  if (!Array.isArray(segments)||segments.length<1||segments.length>5||
+function validateSegments(segments,{allowRoot=false}={}) {
+  if (!Array.isArray(segments)||(!allowRoot&&segments.length<1)||segments.length>5||
       segments.some(segment=>!validSegment(segment))) {
     throw new Error("invalid_segments");
   }
