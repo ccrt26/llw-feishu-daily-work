@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {createHash} from "node:crypto";
-import {chmod,lstat,mkdir,mkdtemp,readFile,rm,symlink,writeFile} from "node:fs/promises";
+import {chmod,lstat,mkdir,mkdtemp,readFile,realpath,rm,symlink,writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {loadPrivateSkillManifest} from "../src/core/private-skill-manifest.mjs";
@@ -88,7 +88,7 @@ test("loads one strict synthetic manifest and returns metadata without private c
         capability:"synthetic-alpha",
         semanticTasks:["synthetic.run"],
         modelSupport:["codex"],
-        root:value.skillRoot
+        root:await realpath(value.skillRoot)
       }]
     });
     const serialized=JSON.stringify(result);
