@@ -216,6 +216,24 @@ export class StateStore {
       .map(([messageId, outcome]) => ({messageId, ...structuredClone(outcome)}));
   }
 
+  retainedReplyFilePaths({nowMs=Date.now(),retentionDays}) {
+    if (!Number.isFinite(nowMs)||retentionDays!==7) {
+      throw new Error("invalid_reply_file_retention");
+    }
+    const retentionMs=retentionDays*24*60*60*1000;
+    const paths=new Set();
+    for (const outcome of Object.values(this.data.outcomes)) {
+      if (!Array.isArray(outcome.replyFiles)||!outcome.replyFiles.length) continue;
+      const sentAt=Date.parse(outcome.replyFilesSentAt);
+      const retained=!outcome.replied||!Number.isFinite(sentAt)||
+        nowMs-sentAt<retentionMs;
+      if (retained) {
+        for (const file of outcome.replyFiles) paths.add(file.path);
+      }
+    }
+    return [...paths];
+  }
+
   async setConversation(conversation) {
     const normalized=normalizeActivityConversation(conversation);
     validateConversation(normalized);
@@ -249,9 +267,15 @@ export class StateStore {
     return structuredClone(this.data.outcomes[messageId]);
   }
 
-  async markReplied(messageId) {
+  async markReplied(messageId,repliedAt=new Date().toISOString()) {
     const outcome = this.data.outcomes[messageId];
     if (!outcome) throw new Error("outcome_not_found");
+    if (Array.isArray(outcome.replyFiles)&&outcome.replyFiles.length) {
+      if (typeof repliedAt!=="string"||!Number.isFinite(Date.parse(repliedAt))) {
+        throw new Error("invalid_reply_file_sent_at");
+      }
+      outcome.replyFilesSentAt=repliedAt;
+    }
     outcome.replied = true;
     await this.persist();
   }

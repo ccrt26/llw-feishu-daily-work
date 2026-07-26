@@ -287,6 +287,7 @@ if (knowledgeEnabled) {
 
 let assistantCapability=null;
 let taskSessionManager=null;
+let fileOutputWorkspace=null;
 if (assistantEnabled) {
   const assistantDecision=createAssistantWorkTask({
     codexPath:config.codexPath,
@@ -295,10 +296,11 @@ if (assistantEnabled) {
     timeoutMs:assistantConfig.aiTimeoutMs
   });
   const taskWorkspace=new TaskWorkspace(assistantConfig.workspaceRoot);
-  const fileOutputWorkspace=new FileOutputWorkspace({
+  fileOutputWorkspace=new FileOutputWorkspace({
     tempRoot:assistantConfig.tempRoot,
     outputRoot:assistantConfig.outputRoot,
-    maxOutputBytes:assistantConfig.maxOutputBytes
+    maxOutputBytes:assistantConfig.maxOutputBytes,
+    outputRetentionDays:assistantConfig.outputRetentionDays
   });
   taskSessionManager=new TaskSessionManager({
     state,workspace:taskWorkspace
@@ -361,8 +363,24 @@ const dispatcher=new Dispatcher({
 await scavengeInvoiceTempRoot(invoiceConfig.tempRoot);
 await invoiceArchiveWriter.recoverTransactions();
 await dispatcher.resumeReplies();
+const cleanupFileOutputs=async()=>{
+  if (!fileOutputWorkspace) return;
+  const nowMs=Date.now();
+  await fileOutputWorkspace.cleanup({
+    protectedPaths:state.retainedReplyFilePaths({
+      nowMs,
+      retentionDays:assistantConfig.outputRetentionDays
+    }),
+    nowMs
+  });
+};
+await cleanupFileOutputs();
 await heartbeat(config.heartbeatFile);
 const heartbeatTimer=setInterval(() => heartbeat(config.heartbeatFile).catch(() => {}),30_000);
+const fileOutputCleanupTimer=fileOutputWorkspace
+  ?setInterval(()=>cleanupFileOutputs().catch(()=>{}),24*60*60*1000)
+  :null;
+fileOutputCleanupTimer?.unref();
 const {larkListener,wechatListener}=await startChatEntries({
   wechatEnabled:config.wechatEnabled,
   startFeishu:startLarkListener,
@@ -397,13 +415,17 @@ let stopping=false;
 const shutdown=async () => {
   if (stopping) return;
   stopping=true; clearInterval(heartbeatTimer);
+  if (fileOutputCleanupTimer) clearInterval(fileOutputCleanupTimer);
   try { await wechatListener?.stop?.(); } catch {}
   try { await larkListener.stop(); } finally { process.exit(0); }
 };
 process.on("SIGINT",shutdown); process.on("SIGTERM",shutdown);
 
 try { await larkListener.done; if (!stopping) throw new Error("listener_exited"); }
-finally { clearInterval(heartbeatTimer); }
+finally {
+  clearInterval(heartbeatTimer);
+  if (fileOutputCleanupTimer) clearInterval(fileOutputCleanupTimer);
+}
 }
 
 export async function startChatEntries({

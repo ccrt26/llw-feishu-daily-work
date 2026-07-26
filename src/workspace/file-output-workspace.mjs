@@ -1,9 +1,10 @@
 import {constants as fsConstants} from "node:fs";
 import {
-  chmod,copyFile,link,lstat,mkdir,mkdtemp,readFile,readdir,rm,unlink,writeFile
+  chmod,copyFile,link,lstat,mkdir,mkdtemp,readFile,readdir,rm,rmdir,unlink,
+  writeFile
 } from "node:fs/promises";
 import {createHash,randomUUID} from "node:crypto";
-import {basename,dirname,extname,join} from "node:path";
+import {basename,dirname,extname,isAbsolute,join,relative,resolve} from "node:path";
 
 const KINDS=new Map([
   ["docx",{
@@ -32,15 +33,17 @@ export function selectRequestedOutput(text) {
 }
 
 export class FileOutputWorkspace {
-  constructor({tempRoot,outputRoot,maxOutputBytes}) {
+  constructor({tempRoot,outputRoot,maxOutputBytes,outputRetentionDays}) {
     if (![tempRoot,outputRoot].every(value=>typeof value==="string"&&value)||
         !Number.isSafeInteger(maxOutputBytes)||maxOutputBytes<1024||
-        maxOutputBytes>100*1024*1024||tempRoot===outputRoot) {
+        maxOutputBytes>100*1024*1024||outputRetentionDays!==7||
+        tempRoot===outputRoot) {
       throw new Error("invalid_file_output_workspace");
     }
     this.tempRoot=tempRoot;
     this.outputRoot=outputRoot;
     this.maxOutputBytes=maxOutputBytes;
+    this.outputRetentionDays=outputRetentionDays;
   }
 
   async generate({
@@ -104,6 +107,65 @@ export class FileOutputWorkspace {
     } finally {
       await rm(jobRoot,{recursive:true,force:true}).catch(()=>{});
     }
+  }
+
+  async cleanup({protectedPaths=[],nowMs=Date.now()}={}) {
+    if (!Array.isArray(protectedPaths)||!Number.isFinite(nowMs)) {
+      throw new Error("file_output_cleanup_invalid");
+    }
+    await ensurePrivateDirectory(this.outputRoot);
+    const root=resolve(this.outputRoot);
+    const protectedSet=new Set(protectedPaths.map(path=>{
+      if (typeof path!=="string"||!isAbsolute(path)) {
+        throw new Error("file_output_cleanup_invalid");
+      }
+      const normalized=resolve(path);
+      const child=relative(root,normalized);
+      if (!child||child.startsWith("..")||isAbsolute(child)) {
+        throw new Error("file_output_cleanup_invalid");
+      }
+      return normalized;
+    }));
+    const cutoff=nowMs-this.outputRetentionDays*24*60*60*1000;
+    let removedFiles=0;
+    for (const session of await readdir(root,{withFileTypes:true})) {
+      if (!session.isDirectory()||session.isSymbolicLink()||
+          !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(session.name)) continue;
+      const sessionPath=join(root,session.name);
+      if (!await isPrivateOwnedDirectory(sessionPath)) continue;
+      for (const draft of await readdir(sessionPath,{withFileTypes:true})) {
+        if (!draft.isDirectory()||draft.isSymbolicLink()||
+            !/^draft-v[1-9][0-9]{0,6}$/u.test(draft.name)) continue;
+        const draftPath=join(sessionPath,draft.name);
+        if (!await isPrivateOwnedDirectory(draftPath)) continue;
+        for (const entry of await readdir(draftPath,{withFileTypes:true})) {
+          const kind=extname(entry.name).slice(1).toLowerCase();
+          if (!entry.isFile()||entry.isSymbolicLink()||
+              !KINDS.has(kind)) continue;
+          const path=join(draftPath,entry.name);
+          const metadata=await lstat(path);
+          if (!metadata.isFile()||metadata.isSymbolicLink()||
+              metadata.uid!==process.getuid()||protectedSet.has(resolve(path))||
+              metadata.mtimeMs>cutoff) continue;
+          try {
+            await inspectArtifact(path,{
+              kind,displayName:entry.name,maxBytes:this.maxOutputBytes
+            });
+          } catch {
+            continue;
+          }
+          await unlink(path);
+          removedFiles+=1;
+        }
+        await rmdir(draftPath).catch(error=>{
+          if (!["ENOTEMPTY","EEXIST"].includes(error?.code)) throw error;
+        });
+      }
+      await rmdir(sessionPath).catch(error=>{
+        if (!["ENOTEMPTY","EEXIST"].includes(error?.code)) throw error;
+      });
+    }
+    return {removedFiles};
   }
 }
 
@@ -184,6 +246,12 @@ async function ensurePrivateDirectory(path) {
       metadata.uid!==process.getuid()||(metadata.mode&0o077)!==0) {
     throw new Error("file_output_invalid");
   }
+}
+
+async function isPrivateOwnedDirectory(path) {
+  const metadata=await lstat(path);
+  return metadata.isDirectory()&&!metadata.isSymbolicLink()&&
+    metadata.uid===process.getuid()&&(metadata.mode&0o077)===0;
 }
 
 function validateRequest(value) {

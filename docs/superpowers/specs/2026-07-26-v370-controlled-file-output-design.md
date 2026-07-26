@@ -44,6 +44,11 @@ display name and the stable controlled path are recorded only after validation.
 
 Publishing is no-overwrite and idempotent for one session, draft version and
 format. A failed send always reuses the same stable file and never regenerates.
+The owner confirmed a seven-day retention period measured from successful file
+sending. Unreplied files are protected without a time limit until sending
+succeeds. Startup and one bounded daily scan remove only expired, unprotected
+regular OOXML files under the expected session/draft structure; foreign entries
+and symbolic links are not followed.
 
 ## Outcome and transport
 
@@ -69,9 +74,11 @@ file is generated for a WeChat request.
 
 ## Configuration and rollout
 
-The candidate configuration adds `outputRoot`, `maxOutputBytes` and the exact
-ordered output set `["docx","pptx","xlsx"]`. Both the public allowlist and
-configuration remain disabled. The real `outputRoot` and retention policy are
-deployment decisions and are not guessed in this batch.
+The candidate configuration adds `outputRoot`, `maxOutputBytes`,
+`outputRetentionDays: 7` and the exact ordered output set
+`["docx","pptx","xlsx"]`. Both the public allowlist and configuration remain
+disabled. The owner selected the standard per-user macOS Application Support
+location for the real `outputRoot`; its user-specific absolute path remains in
+the private local deployment record rather than this public repository.
 
 No generated file is automatically ingested into a knowledge library.

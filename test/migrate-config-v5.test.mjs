@@ -34,6 +34,7 @@ const assistant={
   outputRoot:"/Users/test/assistant-output",
   maxSearchFiles:512,maxSearchFileBytes:262144,maxSearchResults:20,
   maxSourceExcerptBytes:262144,aiTimeoutMs:120000,maxOutputBytes:20971520,
+  outputRetentionDays:7,
   allowedOutputFormats:["docx","pptx","xlsx"]
 };
 

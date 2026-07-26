@@ -358,6 +358,35 @@ test("persists one minimal verified reply file without document contents",async(
   }),/invalid_reply_files/);
 });
 
+test("retains unreplied files indefinitely and replied files for seven days",async()=>{
+  const {file}=await fresh();
+  const store=await StateStore.open(file);
+  const replyFile={
+    kind:"docx",path:"/private/output/session/output.docx",
+    displayName:"工作稿.docx",
+    mime:"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    sha256:"a".repeat(64),size:2048,
+    idempotencyKey:"assistant-file:feishu:m1:aaaaaaaaaaaaaaaa"
+  };
+  const sentAt="2026-07-10T00:00:00.000Z";
+  await store.saveOutcome("m1",{
+    capability:"assistant-work",status:"committed",reply:"已生成",
+    artifacts:["p"],replyFiles:[replyFile]
+  });
+  assert.deepEqual(store.retainedReplyFilePaths({
+    nowMs:Date.parse("2026-08-01T00:00:00.000Z"),retentionDays:7
+  }),[replyFile.path]);
+  await store.markReplied("m1",sentAt);
+  assert.deepEqual(store.retainedReplyFilePaths({
+    nowMs:Date.parse("2026-07-16T23:59:59.999Z"),retentionDays:7
+  }),[replyFile.path]);
+  assert.deepEqual(store.retainedReplyFilePaths({
+    nowMs:Date.parse("2026-07-17T00:00:00.000Z"),retentionDays:7
+  }),[]);
+  const persisted=JSON.parse(await readFile(file,"utf8"));
+  assert.equal(persisted.outcomes.m1.replyFilesSentAt,sentAt);
+});
+
 test("rejects non-minimal outcome reply targets before persistence",async () => {
   const {file}=await fresh();
   const store=await StateStore.open(file);

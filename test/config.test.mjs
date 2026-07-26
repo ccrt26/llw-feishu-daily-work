@@ -60,6 +60,7 @@ function assistantConfig(overrides={}) {
     maxSourceExcerptBytes:262144,
     aiTimeoutMs:120000,
     maxOutputBytes:20971520,
+    outputRetentionDays:7,
     allowedOutputFormats:["docx","pptx","xlsx"],
     ...overrides
   };
@@ -276,6 +277,8 @@ test("version 5 requires one disabled exact assistant-work candidate configurati
       assistantConfig({maxSourceExcerptBytes:262143}),
       assistantConfig({aiTimeoutMs:119999}),
       assistantConfig({maxOutputBytes:20971519}),
+      assistantConfig({outputRetentionDays:6}),
+      assistantConfig({outputRetentionDays:7.5}),
       assistantConfig({allowedOutputFormats:["docx"]}),
       assistantConfig({allowedOutputFormats:["docx","xlsx","pptx"]}),
       assistantConfig({extra:true}),

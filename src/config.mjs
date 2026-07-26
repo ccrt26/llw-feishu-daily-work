@@ -23,7 +23,7 @@ const ASSISTANT_FIELDS=new Set([
   "enabled","tempRoot","workspaceRoot","outputRoot",
   "maxSearchFiles","maxSearchFileBytes",
   "maxSearchResults","maxSourceExcerptBytes","aiTimeoutMs",
-  "maxOutputBytes","allowedOutputFormats"
+  "maxOutputBytes","outputRetentionDays","allowedOutputFormats"
 ]);
 const LIBRARY_FIELDS=new Set(["libraryKey","displayName","aliases","root"]);
 
@@ -170,6 +170,9 @@ function validateAssistantConfig(assistant,{vaultRoot,knowledge,invoice}) {
   }
   if (assistant.maxOutputBytes!==20*1024*1024) {
     throw new Error("invalid_assistant_output_bytes");
+  }
+  if (assistant.outputRetentionDays!==7) {
+    throw new Error("invalid_assistant_output_retention");
   }
   if (!Array.isArray(assistant.allowedOutputFormats)||
       assistant.allowedOutputFormats.length!==3||

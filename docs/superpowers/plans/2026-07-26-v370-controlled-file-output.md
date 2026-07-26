@@ -15,3 +15,15 @@
 8. Update project documentation, commit and push the validated integration
    branch. Do not merge, deploy, enable, migrate formal configuration or send a
    real platform message.
+
+## Confirmed deployment parameter follow-up
+
+The owner subsequently confirmed the standard per-user macOS Application
+Support output location and this retention policy:
+
+- successfully sent files: retain for seven days;
+- unreplied files: retain until a successful send.
+
+The follow-up adds strict candidate configuration, protected-path retention,
+startup/daily cleanup and regression coverage. It still does not merge, deploy,
+enable, migrate formal configuration or send a real platform message.

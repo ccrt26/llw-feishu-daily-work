@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {execFile} from "node:child_process";
-import {appendFile,mkdtemp,mkdir,readdir,readFile,writeFile} from "node:fs/promises";
+import {
+  appendFile,lstat,mkdtemp,mkdir,readdir,readFile,symlink,utimes,writeFile
+} from "node:fs/promises";
 import {randomBytes} from "node:crypto";
 import {tmpdir} from "node:os";
 import {dirname,join} from "node:path";
@@ -21,7 +23,7 @@ async function harness() {
     root,
     workspace:new FileOutputWorkspace({
       tempRoot:join(root,"tmp"),outputRoot:join(root,"stable"),
-      maxOutputBytes:20*1024*1024
+      maxOutputBytes:20*1024*1024,outputRetentionDays:7
     })
   };
 }
@@ -90,7 +92,7 @@ test("rejects mismatched OOXML contents and over-limit output",async()=>{
   );
   const tiny=new FileOutputWorkspace({
     tempRoot:join(h.root,"tiny-tmp"),outputRoot:join(h.root,"tiny-out"),
-    maxOutputBytes:1024
+    maxOutputBytes:1024,outputRetentionDays:7
   });
   await assert.rejects(
     tiny.generate({
@@ -119,4 +121,40 @@ test("an existing stable artifact is reused byte-for-byte without regeneration",
   });
   assert.deepEqual(second,first);
   assert.deepEqual(await readFile(second.path),await readFile(first.path));
+});
+
+test("removes only expired unprotected outputs and preserves failed-send files",async()=>{
+  const h=await harness();
+  const nowMs=Date.parse("2026-07-26T12:00:00.000Z");
+  async function artifact(sessionId,draftVersion,displayName) {
+    return h.workspace.generate({
+      sessionId,draftVersion,kind:"docx",displayName,draftText:"正文",
+      generate:({outputFile})=>writePackage(outputFile,"docx")
+    });
+  }
+  const expired=await artifact("expired",1,"过期.docx");
+  const protectedFile=await artifact("failed-send",1,"待发送.docx");
+  const recent=await artifact("recent",1,"近期.docx");
+  const oldTime=new Date(nowMs-8*24*60*60*1000);
+  const recentTime=new Date(nowMs-6*24*60*60*1000);
+  await utimes(expired.path,oldTime,oldTime);
+  await utimes(protectedFile.path,oldTime,oldTime);
+  await utimes(recent.path,recentTime,recentTime);
+  const foreign=join(h.root,"stable","foreign-link");
+  await symlink(expired.path,foreign);
+  const invalidPackage=join(
+    h.root,"stable","foreign","draft-v1","not-an-office-file.docx"
+  );
+  await mkdir(dirname(invalidPackage),{recursive:true,mode:0o700});
+  await writeFile(invalidPackage,"private data",{mode:0o600});
+  await utimes(invalidPackage,oldTime,oldTime);
+
+  assert.deepEqual(await h.workspace.cleanup({
+    protectedPaths:[protectedFile.path],nowMs
+  }),{removedFiles:1});
+  await assert.rejects(lstat(expired.path),/ENOENT/);
+  assert.equal((await lstat(protectedFile.path)).isFile(),true);
+  assert.equal((await lstat(recent.path)).isFile(),true);
+  assert.equal((await lstat(foreign)).isSymbolicLink(),true);
+  assert.equal((await lstat(invalidPackage)).isFile(),true);
 });
