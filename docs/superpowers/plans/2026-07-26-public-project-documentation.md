@@ -210,6 +210,7 @@ Expected: one documentation-only commit on `agent/public-project-docs`.
 
 **Files:**
 - Create in `ccrt26/llw-personal-ai-skills`: `README.md`
+- Modify in `ccrt26/llw-personal-ai-skills`: `.gitignore`
 - Reference: `feishu-intent-router/SKILL.md`
 - Reference: `feishu-intent-router/references/output-schema.json`
 - Reference: `feishu-intent-router/evals/cases.jsonl`
@@ -240,7 +241,7 @@ Expected: a clean worktree on `agent/public-project-readme` based on current `ma
 
 - [ ] **Step 2: Create the Skills README**
 
-Create `README.md` with these headings:
+Add `!README.md` to the repository's root `.gitignore` allowlist without widening any other ignored path. Then create `README.md` with these headings:
 
 ```markdown
 # LLW Personal AI Skills
@@ -272,6 +273,7 @@ Run in the Skills worktree:
 
 ```bash
 git diff --check
+if git check-ignore README.md; then exit 1; fi
 test -f README.md
 test -f feishu-intent-router/SKILL.md
 test -f feishu-daily-work/SKILL.md
@@ -279,12 +281,12 @@ test -f filing-invoices/SKILL.md
 find feishu-intent-router feishu-daily-work filing-invoices -maxdepth 3 -type f | sort
 ```
 
-Expected: no diff errors, the README and all three Skill contracts exist, and every README link can be checked against the printed file list.
+Expected: no diff errors, `git check-ignore README.md` returns nonzero because the root README is explicitly allowed, the README and all three Skill contracts exist, and every README link can be checked against the printed file list.
 
 - [ ] **Step 4: Commit the Skills README**
 
 ```bash
-git add README.md
+git add .gitignore README.md
 git commit -m "docs: add public Skills catalog"
 ```
 
@@ -300,6 +302,7 @@ Expected: one documentation-only commit on `agent/public-project-readme`.
 - Verify in component repository: `docs/superpowers/specs/2026-07-26-pdfium-only-invoice-pdf-design.md`
 - Verify in component repository: `docs/superpowers/specs/2026-07-26-public-project-documentation-design.md`
 - Verify in component repository: `docs/superpowers/plans/2026-07-26-public-project-documentation.md`
+- Verify in Skills repository: `.gitignore`
 - Verify in Skills repository: `README.md`
 
 **Interfaces:**
@@ -336,7 +339,7 @@ git diff main...HEAD --name-only
 git diff main...HEAD --stat
 ```
 
-Expected: component output contains only the approved Markdown files; Skills output contains only `README.md`.
+Expected: component output contains only the approved Markdown files; Skills output contains only `.gitignore` and `README.md`.
 
 - [ ] **Step 4: Run the complete component regression**
 
