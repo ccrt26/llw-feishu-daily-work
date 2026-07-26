@@ -34,6 +34,7 @@ test("downloads through exact bot argv into a private relative cwd", async () =>
     assert.equal(args.includes(result.file),false);
     assert.equal((await stat(result.tempDir)).mode & 0o777,0o700);
     assert.equal((await stat(result.file)).isFile(),true);
+    assert.equal((await stat(result.file)).mode&0o777,0o600);
     assert.deepEqual(JSON.parse(await readFile(envFile,"utf8")),{
       noProxy:"1", noUpdateNotifier:"1", noSkillsNotifier:"1",
       path:`/usr/local/bin:${launchAgentPath}`
@@ -81,4 +82,25 @@ test("startup scavenger removes only old safe job directories",async () => {
   assert.deepEqual((await readdir(root)).sort(),["job-fresh","job-link","other-old","outside"]);
   assert.equal(await readFile(join(outside,"keep"),"utf8"),"x");
   await rm(root,{recursive:true,force:true});
+});
+
+test("rejects a symbolic-link download root before invoking lark-cli",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"llw-download-link-"));
+  const outside=await mkdtemp(join(tmpdir(),"llw-download-outside-"));
+  const tempRoot=join(root,"jobs");
+  await symlink(outside,tempRoot);
+  try {
+    await assert.rejects(
+      downloadLarkResource({
+        cliPath,profile:"llw",messageId:"om_abc",fileKey:"file_xyz",type:"file",
+        tempRoot,timeoutMs:2_000,
+        environment:{...process.env,FAKE_LARK_DOWNLOAD_MODE:"one"}
+      }),
+      error=>error.code==="unsafe_temp_root"
+    );
+    assert.deepEqual(await import("node:fs/promises").then(fs=>fs.readdir(outside)),[]);
+  } finally {
+    await rm(root,{recursive:true,force:true});
+    await rm(outside,{recursive:true,force:true});
+  }
 });

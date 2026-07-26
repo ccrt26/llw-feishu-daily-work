@@ -20,7 +20,7 @@ function encrypt(value,selectedKey=key) {
   return Buffer.concat([cipher.update(value),cipher.final()]);
 }
 
-async function run(plaintext,{type="image",displayName="微信图片",extension="",api,entry={}}={}) {
+async function run(plaintext,{type="image",displayName="微信图片",extension="",api,entry={},allowedFileExtensions}={}) {
   const root=await mkdtemp(join(tmpdir(),"llw-wechat-download-"));
   const resourceId="wxr_0123456789abcdef0123456789abcdef";
   const resources=new Map([[resourceId,{
@@ -31,7 +31,8 @@ async function run(plaintext,{type="image",displayName="微信图片",extension=
     const result=await downloadWechatResource({
       api:api||{downloadEncryptedMedia:async()=>encrypt(plaintext)},
       resourceId,resources,tempRoot:join(root,"jobs"),
-      maxFileBytes:20*1024*1024,timeoutMs:2000
+      maxFileBytes:20*1024*1024,timeoutMs:2000,
+      ...(allowedFileExtensions?{allowedFileExtensions}:{})
     });
     return {root,result,resources};
   } catch (error) {
@@ -63,6 +64,57 @@ test("decrypts image and official PDF file-key encodings into private ordinary f
       assert.deepEqual(await readdir(result.tempDir),[result.file.split("/").at(-1)]);
     } finally { await rm(root,{recursive:true,force:true}); }
   }
+});
+
+test("downloads allowlisted TXT and Markdown once while the default remains PDF-only",async()=>{
+  for (const [plaintext,displayName,extension] of [
+    [Buffer.from("plain UTF-8 text\n"),"交流方案.TXT","txt"],
+    [Buffer.from("# Markdown\n"),"notes.md","md"]
+  ]) {
+    let calls=0;
+    const {root,result}=await run(plaintext,{
+      type:"file",displayName,extension,allowedFileExtensions:["txt","md"],
+      api:{downloadEncryptedMedia:async()=>{calls+=1;return encrypt(plaintext);}}
+    });
+    try {
+      assert.equal(calls,1);
+      assert.equal(result.file.endsWith(`.${extension}`),true);
+      assert.deepEqual(await readFile(result.file),plaintext);
+    } finally { await rm(root,{recursive:true,force:true}); }
+  }
+  let calls=0;
+  await assert.rejects(
+    run(Buffer.from("text"),{
+      type:"file",displayName:"note.txt",extension:"txt",
+      api:{downloadEncryptedMedia:async()=>{calls+=1;return encrypt(Buffer.from("text"));}}
+    }),
+    error=>error.code==="download_output_unsafe"
+  );
+  assert.equal(calls,0);
+});
+
+test("rejects file display-extension mismatch and malformed extension allowlists",async()=>{
+  let calls=0;
+  for (const allowedFileExtensions of [
+    [],["txt","txt"],["docx"],["txt","/md"]
+  ]) {
+    await assert.rejects(
+      run(Buffer.from("text"),{
+        type:"file",displayName:"note.txt",extension:"txt",allowedFileExtensions,
+        api:{downloadEncryptedMedia:async()=>{calls+=1;return encrypt(Buffer.from("text"));}}
+      }),
+      error=>error.code==="download_failed"
+    );
+  }
+  await assert.rejects(
+    run(Buffer.from("text"),{
+      type:"file",displayName:"note.md",extension:"txt",
+      allowedFileExtensions:["txt","md"],
+      api:{downloadEncryptedMedia:async()=>{calls+=1;return encrypt(Buffer.from("text"));}}
+    }),
+    error=>error.code==="download_output_unsafe"
+  );
+  assert.equal(calls,0);
 });
 
 test("cleans failed jobs and consumes unsafe in-memory references",async () => {

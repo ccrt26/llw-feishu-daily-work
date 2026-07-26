@@ -4,10 +4,20 @@ import {join} from "node:path";
 
 export async function downloadLarkResource({cliPath,profile,messageId,fileKey,type,tempRoot,environment=process.env,timeoutMs=120_000,maxAttempts=3,retryDelayMs=500}) {
   await mkdir(tempRoot,{recursive:true,mode:0o700});
+  const rootInfo=await lstat(tempRoot);
+  if (!rootInfo.isDirectory()||rootInfo.isSymbolicLink()||
+      rootInfo.uid!==process.getuid()) {
+    throw coded("unsafe_temp_root");
+  }
   await chmod(tempRoot,0o700);
   const tempDir = await mkdtemp(join(tempRoot,"job-"));
-  await chmod(tempDir,0o700);
   try {
+    await chmod(tempDir,0o700);
+    const jobInfo=await lstat(tempDir);
+    if (!jobInfo.isDirectory()||jobInfo.isSymbolicLink()||
+        jobInfo.uid!==process.getuid()) {
+      throw coded("download_output_unsafe");
+    }
     const args = ["--profile",profile,"im","+messages-resources-download","--as","bot","--message-id",messageId,"--file-key",fileKey,"--type",type,"--output","attachment"];
     const pathParts = ["/usr/local/bin","/usr/bin","/bin","/usr/sbin","/sbin",...(environment.PATH || "").split(":")];
     const commandEnvironment = {
@@ -32,8 +42,11 @@ export async function downloadLarkResource({cliPath,profile,messageId,fileKey,ty
     const entries = await readdir(tempDir,{withFileTypes:true});
     if (entries.length !== 1) throw coded("download_output_count");
     const file = join(tempDir,entries[0].name);
-    const info = await lstat(file);
+    let info = await lstat(file);
     if (!entries[0].isFile() || !info.isFile() || info.isSymbolicLink()) throw coded("download_output_unsafe");
+    await chmod(file,0o600);
+    info=await lstat(file);
+    if (info.uid!==process.getuid()||(info.mode&0o077)!==0) throw coded("download_output_unsafe");
     return {tempDir,file};
   } catch (error) {
     await rm(tempDir,{recursive:true,force:true});

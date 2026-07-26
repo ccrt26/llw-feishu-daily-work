@@ -57,8 +57,12 @@ function stateHarness() {
   };
 }
 
-function harness({decision=baseDecision,decideError,writerResult}={}) {
-  const calls={catalog:0,prepare:[],decide:[],commit:[],create:[]};
+function harness({
+  decision=baseDecision,decideError,writerResult,download,filePreparer,cleanup
+}={}) {
+  const calls={
+    catalog:0,prepare:[],decide:[],commit:[],create:[],download:[],filePrepare:[],cleanup:[]
+  };
   const state=stateHarness();
   const writer={
     async commit(input) {
@@ -86,6 +90,20 @@ function harness({decision=baseDecision,decideError,writerResult}={}) {
     writer,
     async catalog() { calls.catalog+=1; return structuredClone(libraries); },
     sourcePreparer(input) { calls.prepare.push(structuredClone(input)); return prepared(input.text); },
+    async download(input) {
+      calls.download.push(structuredClone(input));
+      return download?download(input):{tempDir:"/tmp/synthetic-job",file:"/tmp/synthetic-job/attachment.txt"};
+    },
+    async filePreparer(input) {
+      calls.filePrepare.push(structuredClone(input));
+      if (filePreparer) return filePreparer(input);
+      return {...prepared("synthetic file"),sourceKind:"file",detectedFormat:"txt",
+        displayName:input.displayName,content:"synthetic file"};
+    },
+    async cleanup(tempDir) {
+      calls.cleanup.push(tempDir);
+      if (cleanup) await cleanup(tempDir);
+    },
     skillVersion:"1.2.0"
   });
   return {capability,calls,state};
@@ -117,6 +135,91 @@ test("commits one direct text source with AI-safe catalog context and fixed rece
     skillVersion:"1.2.0",preserveSource:true
   });
   assert.deepEqual(h.state.calls,[["clear"]]);
+});
+
+test("reuses one bounded pending request for one TXT or Markdown download and cleans once",async()=>{
+  for (const extension of ["txt","md"]) {
+    const content=extension==="txt"?"TXT 内容。":"# Markdown 内容\n";
+    const displayName=`source.${extension}`;
+    const fileSource={
+      ...prepared(content),sourceKind:"file",detectedFormat:extension,
+      displayName,jobSourceName:`source.${extension}`,content
+    };
+    const h=harness({
+      download:async()=>({
+        tempDir:`/tmp/synthetic-${extension}`,file:`/tmp/synthetic-${extension}/attachment.${extension}`
+      }),
+      filePreparer:async()=>fileSource
+    });
+    const request=`把下一份 ${extension.toUpperCase()} 保存到工作资料`;
+    await h.state.state.setKnowledgePending({
+      request,startedAt:"2026-07-26T05:00:00.000Z",model:"codex"
+    });
+    h.state.calls.length=0;
+    const attachmentMessage={
+      ...message(),text:undefined,
+      attachments:[{
+        type:"file",sourceAttachmentId:`file_${extension}`,
+        displayName,extension
+      }]
+    };
+    const result=await h.capability.handle(attachmentMessage,{
+      state:h.state.state,model:"codex"
+    });
+    assert.equal(result.status,"committed");
+    assert.equal(h.calls.download.length,1);
+    const downloadContext=JSON.stringify(h.calls.download[0]);
+    for (const forbidden of ["bound-user","bound-chat","replyTarget","contextToken"]) {
+      assert.equal(downloadContext.includes(forbidden),false);
+    }
+    assert.deepEqual(h.calls.filePrepare,[{
+      file:`/tmp/synthetic-${extension}/attachment.${extension}`,
+      displayName,extension
+    }]);
+    assert.deepEqual(h.calls.decide[0],{
+      model:"codex",request,
+      source:Object.fromEntries(Object.entries(fileSource).filter(([key])=>key!=="content")),
+      sourceContent:content,allowedLibraries:libraries,taskSummary:null
+    });
+    assert.equal(h.calls.commit.length,1);
+    assert.equal(h.calls.commit[0].source.content,content);
+    assert.deepEqual(h.calls.cleanup,[`/tmp/synthetic-${extension}`]);
+    assert.deepEqual(h.state.calls,[["clear"]]);
+    assert.equal(h.state.pending,null);
+  }
+});
+
+test("does not download unsupported or unrequested attachments and always cleans failed prepared jobs",async()=>{
+  const noPending=harness();
+  const txt={...message(),text:undefined,attachments:[{
+    type:"file",sourceAttachmentId:"file_txt",displayName:"note.txt",extension:"txt"
+  }]};
+  assert.equal((await noPending.capability.handle(txt,{
+    state:noPending.state.state,model:"codex"
+  })).status,"rejected");
+  assert.equal(noPending.calls.download.length,0);
+
+  const unsupported=harness();
+  await unsupported.state.state.setKnowledgePending({
+    request:"保存下一份",startedAt:"2026-07-26T05:00:00.000Z",model:"codex"
+  });
+  const pdf={...txt,attachments:[{...txt.attachments[0],displayName:"note.pdf",extension:"pdf"}]};
+  assert.equal((await unsupported.capability.handle(pdf,{
+    state:unsupported.state.state,model:"codex"
+  })).status,"rejected");
+  assert.equal(unsupported.calls.download.length,0);
+
+  const failed=harness({filePreparer:async()=>{throw new Error("private file failure");}});
+  await failed.state.state.setKnowledgePending({
+    request:"保存下一份",startedAt:"2026-07-26T05:00:00.000Z",model:"codex"
+  });
+  failed.state.calls.length=0;
+  assert.equal((await failed.capability.handle(txt,{
+    state:failed.state.state,model:"codex"
+  })).status,"failed");
+  assert.deepEqual(failed.calls.cleanup,["/tmp/synthetic-job"]);
+  assert.notEqual(failed.state.pending,null);
+  assert.deepEqual(failed.state.calls,[]);
 });
 
 test("creates one explicit empty folder or reports its existing idempotent result",async()=>{

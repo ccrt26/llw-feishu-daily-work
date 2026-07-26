@@ -79,6 +79,13 @@ export function formatKnowledgePending() {
   );
 }
 
+export function formatKnowledgeAttachmentNeedsRequest() {
+  return outcome(
+    "rejected",
+    "请先用文字说明这份资料要保存到哪个资料库或现有目录，再发送一份 TXT 或 Markdown 文件；本次附件未下载、未写入。"
+  );
+}
+
 export function formatKnowledgeReject(reasonCode) {
   return outcome("rejected",REJECTED[reasonCode]||
     "本次未写入：请求不符合当前知识入库规则。");
