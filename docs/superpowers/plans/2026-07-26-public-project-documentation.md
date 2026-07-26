@@ -28,8 +28,10 @@
 - Create: `docs/PROJECT_OVERVIEW.md`
 - Reference: `docs/superpowers/specs/2026-07-26-public-project-documentation-design.md`
 - Reference: `docs/superpowers/specs/2026-07-26-pdfium-only-invoice-pdf-design.md`
-- Reference: `src/semantic-task-registry.mjs`
-- Reference: `src/capability-registry.mjs`
+- Reference: `src/core/semantic-tasks.mjs`
+- Reference: `src/capabilities/index.mjs`
+- Reference: `src/core/dispatcher.mjs`
+- Reference: `src/core/incoming-message.mjs`
 - Reference: `package.json`
 
 **Interfaces:**
