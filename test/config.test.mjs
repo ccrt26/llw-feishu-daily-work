@@ -86,7 +86,9 @@ function knowledgeConfig(overrides={}) {
     ],
     maxSourceBytes:262144,
     aiTimeoutMs:120000,
-    inputFormats:["text","txt","md"],
+    inputFormats:[
+      "text","txt","md","docx","pptx","xlsx","feishu-snapshot"
+    ],
     ...overrides
   };
 }
@@ -211,13 +213,17 @@ test("version 5 requires one exact private Skill root, manifest and expected has
   } finally { await rm(dir,{recursive:true,force:true}); }
 });
 
-test("version 5 requires one disabled exact knowledge-ingest configuration with disjoint managed roots",async()=>{
+test("version 5 requires one exact configurable knowledge-ingest definition with disjoint managed roots",async()=>{
   const dir=await mkdtemp(join(tmpdir(),"llw-config-v5-knowledge-"));
   const file=join(dir,"config.json");
   try {
     await assert.doesNotReject(()=>saveConfig(file,configV5()));
+    await assert.doesNotReject(()=>saveConfig(file,configV5({capabilities:{
+      ...configV5().capabilities,
+      "knowledge-ingest":knowledgeConfig({enabled:true})
+    }})));
     const cases=[
-      knowledgeConfig({enabled:true}),
+      knowledgeConfig({enabled:"true"}),
       knowledgeConfig({tempRoot:"relative"}),
       knowledgeConfig({maxSourceBytes:262143}),
       knowledgeConfig({aiTimeoutMs:119999}),
@@ -261,13 +267,17 @@ test("version 5 requires one disabled exact knowledge-ingest configuration with 
   } finally { await rm(dir,{recursive:true,force:true}); }
 });
 
-test("version 5 requires one disabled exact assistant-work candidate configuration",async()=>{
+test("version 5 requires one exact configurable assistant-work definition",async()=>{
   const dir=await mkdtemp(join(tmpdir(),"llw-config-v5-assistant-"));
   const file=join(dir,"config.json");
   try {
     await assert.doesNotReject(()=>saveConfig(file,configV5()));
+    await assert.doesNotReject(()=>saveConfig(file,configV5({capabilities:{
+      ...configV5().capabilities,
+      "assistant-work":assistantConfig({enabled:true})
+    }})));
     for (const assistant of [
-      assistantConfig({enabled:true}),
+      assistantConfig({enabled:"true"}),
       assistantConfig({tempRoot:"relative"}),
       assistantConfig({workspaceRoot:"relative"}),
       assistantConfig({outputRoot:"relative"}),

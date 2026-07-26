@@ -68,11 +68,11 @@ export const PRIVATE_SKILL_ALLOWLIST=[
   },
   {
     name:"llw-knowledge-ingest",capability:"knowledge-ingest",versions:["1.2.0"],
-    semanticTasks:["knowledge.ingest"],modelSupport:["codex"],enabled:false
+    semanticTasks:["knowledge.ingest"],modelSupport:["codex"],enabled:true
   },
   {
     name:"llw-assistant-work",capability:"assistant-work",versions:["1.1.0"],
-    semanticTasks:["assistant.work"],modelSupport:["codex"],enabled:false
+    semanticTasks:["assistant.work"],modelSupport:["codex"],enabled:true
   }
 ];
 

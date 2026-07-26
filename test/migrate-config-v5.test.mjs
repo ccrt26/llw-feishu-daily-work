@@ -26,7 +26,7 @@ const knowledge={
   ],
   maxSourceBytes:262144,
   aiTimeoutMs:120000,
-  inputFormats:["text","txt","md"]
+  inputFormats:["text","txt","md","docx","pptx","xlsx","feishu-snapshot"]
 };
 const assistant={
   tempRoot:"/Users/test/assistant-work-jobs",

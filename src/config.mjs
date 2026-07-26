@@ -133,7 +133,9 @@ function validateConfig(config,requireBinding,configFile) {
 
 function validateAssistantConfig(assistant,{vaultRoot,knowledge,invoice}) {
   exact(assistant,ASSISTANT_FIELDS,"capability");
-  if (assistant.enabled!==false) throw new Error("invalid_assistant_enabled");
+  if (typeof assistant.enabled!=="boolean") {
+    throw new Error("invalid_assistant_enabled");
+  }
   absolute(assistant.tempRoot,"assistant-work.tempRoot");
   absolute(assistant.workspaceRoot,"assistant-work.workspaceRoot");
   absolute(assistant.outputRoot,"assistant-work.outputRoot");
@@ -185,7 +187,9 @@ function validateAssistantConfig(assistant,{vaultRoot,knowledge,invoice}) {
 
 function validateKnowledgeConfig(knowledge,vaultRoot) {
   exact(knowledge,KNOWLEDGE_FIELDS,"capability");
-  if (knowledge.enabled!==false) throw new Error("invalid_knowledge_enabled");
+  if (typeof knowledge.enabled!=="boolean") {
+    throw new Error("invalid_knowledge_enabled");
+  }
   absolute(knowledge.tempRoot,"knowledge-ingest.tempRoot");
   if (foldedInside(vaultRoot,knowledge.tempRoot)) throw new Error("invalid_knowledge_temp_root");
   if (!Array.isArray(knowledge.libraries)||knowledge.libraries.length<2||knowledge.libraries.length>16) {
@@ -224,8 +228,12 @@ function validateKnowledgeConfig(knowledge,vaultRoot) {
   if (knowledge.maxSourceBytes!==262_144) throw new Error("invalid_knowledge_source_bytes");
   if (knowledge.aiTimeoutMs!==120_000) throw new Error("invalid_knowledge_ai_timeout");
   if (!Array.isArray(knowledge.inputFormats)||
-      knowledge.inputFormats.length!==3||
-      knowledge.inputFormats.some((value,index)=>value!==["text","txt","md"][index])) {
+      knowledge.inputFormats.length!==7||
+      knowledge.inputFormats.some((value,index)=>
+        value!==[
+          "text","txt","md","docx","pptx","xlsx","feishu-snapshot"
+        ][index]
+      )) {
     throw new Error("invalid_knowledge_input_formats");
   }
 }

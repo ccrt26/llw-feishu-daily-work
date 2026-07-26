@@ -190,10 +190,10 @@ PDF 固定边界包括最多 10 页、文本最多 262,144 字节、渲染输出
 
 正式验收还证明：附件只下载和准备一次；`router.visual` 只调用一次并选择唯一 invoice；`invoice.visual` 随后复用同一准备结果；成功后只归档用户发送的原始 PDF。
 
-### 10.1 V3.7.0 默认禁用候选
+### 10.1 V3.7.0 受控发布候选
 
-`integration/v370` 已形成尚未部署、尚未启用的 `knowledge-ingest` 与
-`assistant-work` 候选闭环。`knowledge-ingest` 处理明确要求保存的直接文字，单个 TXT、Markdown、
+`integration/v370` 已形成可按配置门逐项启用的 `knowledge-ingest` 与
+`assistant-work` 闭环。`knowledge-ingest` 处理明确要求保存的直接文字，单个 TXT、Markdown、
 DOCX、PPTX 或 XLSX 来源，一个受支持的飞书云文档一次性快照，以及在受管资料根下
 创建明确指定的空分类目录。
 
@@ -246,22 +246,24 @@ Office 中打开验收：中文、页面结构、可编辑对象、表格与公�
 预览器对 macOS 中文字体存在替代显示差异，因此最终兼容性结论以用户指定的 WPS
 真实打开结果为准。
 
-两个候选当前都保持双重禁用：
+发布元数据允许这两个经过批准的能力被选择，但运行时仍由受保护配置门最终控制：
 
-- `llw-knowledge-ingest` 私有 Skill allowlist 为 `enabled: false`；
-- `llw-assistant-work` 私有 Skill allowlist 为 `enabled: false`；
-- version 5 候选配置强制两项能力的 `enabled: false`。
+- `llw-knowledge-ingest` 与 `llw-assistant-work` 的私有 manifest 均为 `enabled: true`；
+- 公共静态 allowlist 仅允许上述固定名称和固定版本；
+- version 5 迁移仍把两项能力写为 `enabled: false`，部署代码本身不会启用业务；
+- 专用原子开关只接受这两个固定能力和布尔值，便于按 R4 验收顺序逐项启用或回退。
 
-因此本节只记录集成分支的可审查候选事实，不改变第 10 节的 V3.6.3 正式运行基线。
-本阶段没有迁移正式配置、注册生产 Capability、重启服务或修改用户资料。
-受控文件输出仍未启用。用户已经确认采用 macOS 每用户 Application Support 下的
+因此只有私有 manifest、公共静态 allowlist 和正式 version 5 配置三者同时匹配时，
+相应 Capability 才会注册；任一门不满足都安全关闭。正式部署、逐项验收和回退证据
+只记录在本机私有系统基线，不在公开仓库保存用户路径或平台标识。
+
+用户已经确认采用 macOS 每用户 Application Support 下的
 私有受控输出目录；具体用户名路径只记录在本机私有系统基线，不提交公开仓库。成功
 发送的文件从发送成功时起保留7天，未成功发送的文件不设到期时间并持续保留到发送
 成功。候选在启动时及之后每日执行一次有界清理，只删除预期会话/稿件结构中已到期且
-未受待回复状态保护的普通 OOXML 文件，不跟随符号链接。该集成候选仍未迁移正式配置、
-重启服务、发送真实文件或修改用户资料。
-本阶段完整回归共 `453/453` 通过，零跳过、零取消；其中需要本地回环端口的
-`deepseek-client` 27 项在允许回环的隔离环境中单独复核通过。
+未受待回复状态保护的普通 OOXML 文件，不跟随符号链接。
+本阶段完整回归共 `457/457` 通过，零跳过、零取消；其中需要本地回环端口的
+`deepseek-client` 项也已在仅允许本机回环的隔离环境中复核通过。
 
 ## 11. Deliberately Unsupported or Deferred Scope
 

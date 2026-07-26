@@ -38,8 +38,8 @@ test("main validates business routing contracts and injects one read-only intent
     "llw-knowledge-ingest","llw-assistant-work"
   ]) assert.match(source,new RegExp(name));
   assert.match(source,/name:"feishu-intent-router",capability:"router",versions:\["1\.2\.0"\]/);
-  assert.match(source,/name:"llw-knowledge-ingest",capability:"knowledge-ingest",versions:\["1\.2\.0"\][\s\S]*?enabled:false/);
-  assert.match(source,/name:"llw-assistant-work",capability:"assistant-work",versions:\["1\.1\.0"\][\s\S]*?enabled:false/);
+  assert.match(source,/name:"llw-knowledge-ingest",capability:"knowledge-ingest",versions:\["1\.2\.0"\][\s\S]*?enabled:true/);
+  assert.match(source,/name:"llw-assistant-work",capability:"assistant-work",versions:\["1\.1\.0"\][\s\S]*?enabled:true/);
   assert.ok(source.indexOf("await loadPrivateSkillManifest")<source.indexOf("StateStore.open"));
   assert.ok(source.indexOf("await validateIntentRouterSkill(routerSkillRoot)")<source.indexOf("StateStore.open"));
   assert.match(source,/loadRoutingContract\(dailySkillRoot,"daily-work"\)/);
@@ -61,7 +61,7 @@ test("main validates business routing contracts and injects one read-only intent
   assert.match(source,/const intentRouter=\{decide:routerText,decideVisual:routerVisual\}/);
 });
 
-test("keeps assistant work doubly disabled while retaining one bounded candidate composition",async()=>{
+test("allows assistant work statically but requires the protected configuration gate",async()=>{
   const source=await readFile(fileURLToPath(new URL("../src/main.mjs",import.meta.url)),"utf8");
   for (const expected of [
     "createAssistantWorkCapability","createAssistantWorkTask","TaskSessionManager",
@@ -73,7 +73,7 @@ test("keeps assistant work doubly disabled while retaining one bounded candidate
   assert.match(source,/"assistant-work":assistantEnabled/);
   const {PRIVATE_SKILL_ALLOWLIST,assistantCandidateEnabled}=await import("../src/main.mjs");
   const policy=PRIVATE_SKILL_ALLOWLIST.find(item=>item.name==="llw-assistant-work");
-  assert.equal(policy.enabled,false);
+  assert.equal(policy.enabled,true);
   assert.equal(assistantCandidateEnabled({
     allowlistEnabled:policy.enabled,configurationEnabled:false
   }),false);
@@ -88,7 +88,7 @@ test("keeps assistant work doubly disabled while retaining one bounded candidate
   }),true);
 });
 
-test("keeps knowledge ingest doubly disabled while retaining one bounded candidate composition",async()=>{
+test("allows knowledge ingest statically but requires the protected configuration gate",async()=>{
   const source=await readFile(fileURLToPath(new URL("../src/main.mjs",import.meta.url)),"utf8");
   for (const expected of [
     'createKnowledgeIngestCapability',
@@ -111,7 +111,7 @@ test("keeps knowledge ingest doubly disabled while retaining one bounded candida
   assert.equal(source.includes("console.log(knowledge"),false);
   const {PRIVATE_SKILL_ALLOWLIST,knowledgeCandidateEnabled}=await import("../src/main.mjs");
   const policy=PRIVATE_SKILL_ALLOWLIST.find(item=>item.name==="llw-knowledge-ingest");
-  assert.equal(policy.enabled,false);
+  assert.equal(policy.enabled,true);
   assert.equal(knowledgeCandidateEnabled({
     allowlistEnabled:policy.enabled,configurationEnabled:false
   }),false);
