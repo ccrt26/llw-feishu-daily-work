@@ -23,6 +23,187 @@ function conversation() {
   };
 }
 
+const taskSessionPolicy=[{capability:"assistant-work",models:["codex"]}];
+
+function taskSession(overrides={}) {
+  return {
+    version:1,
+    session_id:"123e4567-e89b-42d3-a456-426614174000",
+    capability:"assistant-work",
+    status:"open",
+    model:"codex",
+    goal:"整理项目验收说明",
+    task_summary:"",
+    confirmed_requirements:["保留来源"],
+    rejected_directions:[],
+    source_paths:["projects/acceptance.md"],
+    current_draft_version:0,
+    recent_turns:[{role:"user",text:"先整理一个提纲"}],
+    started_at:"2026-07-26T05:00:00.000Z",
+    updated_at:"2026-07-26T05:00:00.000Z",
+    ...overrides
+  };
+}
+
+test("persists one shared Task Session in state version 4 and restores it after restart",async()=>{
+  const {file}=await fresh();
+  const store=await StateStore.open(file,{taskSessionPolicy});
+  assert.deepEqual(store.getCapabilityState("task-session"),{session:null});
+  await store.saveTaskSession(taskSession(),{
+    verifiedSourcePaths:["projects/acceptance.md"]
+  });
+  const reopened=await StateStore.open(file,{taskSessionPolicy});
+  assert.equal(reopened.version(),4);
+  assert.deepEqual(reopened.getTaskSession(),taskSession());
+  assert.deepEqual(
+    reopened.getCapabilityState("task-session"),
+    {session:taskSession()}
+  );
+  const persisted=JSON.parse(await readFile(file,"utf8"));
+  assert.equal(persisted.version,4);
+  assert.deepEqual(Object.keys(persisted.capabilityState["task-session"]),["session"]);
+  assert.equal((await stat(file)).mode&0o777,0o600);
+});
+
+test("updates only the same open Task Session without identity, model, time or draft rollback",async()=>{
+  const {file}=await fresh();
+  const store=await StateStore.open(file,{taskSessionPolicy});
+  await store.saveTaskSession(taskSession(),{
+    verifiedSourcePaths:["projects/acceptance.md"]
+  });
+  const before=await readFile(file);
+  const invalidUpdates=[
+    taskSession({session_id:"223e4567-e89b-42d3-a456-426614174000"}),
+    taskSession({capability:"other-work"}),
+    taskSession({model:"deepseek"}),
+    taskSession({started_at:"2026-07-26T05:00:01.000Z"}),
+    taskSession({current_draft_version:-1}),
+    taskSession({updated_at:"2026-07-26T04:59:59.999Z"}),
+    taskSession({status:"completed"})
+  ];
+  for (const value of invalidUpdates) {
+    await assert.rejects(
+      ()=>store.saveTaskSession(value,{
+        verifiedSourcePaths:["projects/acceptance.md"]
+      }),
+      /invalid_task_session|invalid_task_session_transition/
+    );
+    assert.deepEqual(await readFile(file),before);
+  }
+  await assert.rejects(
+    ()=>store.saveTaskSession(taskSession(),{verifiedSourcePaths:[]}),
+    /invalid_task_session/
+  );
+  assert.deepEqual(await readFile(file),before);
+
+  const updated=taskSession({
+    task_summary:"已确定提纲结构",
+    current_draft_version:1,
+    recent_turns:[
+      {role:"user",text:"先整理一个提纲"},
+      {role:"assistant",text:"已形成三段提纲"}
+    ],
+    updated_at:"2026-07-26T05:10:00.000Z"
+  });
+  await store.saveTaskSession(updated,{
+    verifiedSourcePaths:["projects/acceptance.md"]
+  });
+  assert.deepEqual(store.getTaskSession(),updated);
+  const afterUpdate=await readFile(file);
+  await assert.rejects(
+    ()=>store.saveTaskSession(taskSession({
+      current_draft_version:0,
+      updated_at:"2026-07-26T05:11:00.000Z"
+    }),{verifiedSourcePaths:["projects/acceptance.md"]}),
+    /invalid_task_session_transition/
+  );
+  assert.deepEqual(await readFile(file),afterUpdate);
+});
+
+test("fixes model and capability even when a later policy would allow both values",async()=>{
+  const {file}=await fresh();
+  const broadPolicy=[
+    {capability:"assistant-work",models:["codex","deepseek"]},
+    {capability:"other-work",models:["codex"]}
+  ];
+  const store=await StateStore.open(file,{taskSessionPolicy:broadPolicy});
+  await store.saveTaskSession(taskSession(),{
+    verifiedSourcePaths:["projects/acceptance.md"]
+  });
+  const before=await readFile(file);
+  for (const value of [
+    taskSession({model:"deepseek"}),
+    taskSession({capability:"other-work"})
+  ]) {
+    await assert.rejects(
+      ()=>store.saveTaskSession(value,{
+        verifiedSourcePaths:["projects/acceptance.md"]
+      }),
+      /invalid_task_session_transition/
+    );
+    assert.deepEqual(await readFile(file),before);
+  }
+});
+
+test("closes an open Task Session once and permits only a new ID afterwards",async()=>{
+  for (const status of ["completed","cancelled","expired"]) {
+    const {file}=await fresh();
+    const store=await StateStore.open(file,{taskSessionPolicy});
+    await store.saveTaskSession(taskSession(),{
+      verifiedSourcePaths:["projects/acceptance.md"]
+    });
+    const closed=await store.closeTaskSession(status,"2026-07-26T06:00:00.000Z");
+    assert.equal(closed.status,status);
+    assert.equal(closed.updated_at,"2026-07-26T06:00:00.000Z");
+    assert.equal(store.getTaskSession(),null);
+    assert.equal(
+      (await StateStore.open(file,{taskSessionPolicy}))
+        .getCapabilityState("task-session").session.status,
+      status
+    );
+    const before=await readFile(file);
+    await assert.rejects(
+      ()=>store.closeTaskSession(status,"2026-07-26T06:01:00.000Z"),
+      /invalid_task_session_transition/
+    );
+    await assert.rejects(
+      ()=>store.saveTaskSession(taskSession(),{
+        verifiedSourcePaths:["projects/acceptance.md"]
+      }),
+      /invalid_task_session_transition/
+    );
+    assert.deepEqual(await readFile(file),before);
+
+    const replacement=taskSession({
+      session_id:"223e4567-e89b-42d3-a456-426614174000",
+      goal:"整理另一份项目材料",
+      source_paths:[],
+      confirmed_requirements:[],
+      recent_turns:[{role:"user",text:"开始另一项整理任务"}],
+      started_at:"2026-07-26T07:00:00.000Z",
+      updated_at:"2026-07-26T07:00:00.000Z"
+    });
+    await store.saveTaskSession(replacement,{verifiedSourcePaths:[]});
+    assert.deepEqual(store.getTaskSession(),replacement);
+  }
+});
+
+test("fails closed when restored Task Session policy does not match",async()=>{
+  const {file}=await fresh();
+  const store=await StateStore.open(file,{taskSessionPolicy});
+  await store.saveTaskSession(taskSession(),{
+    verifiedSourcePaths:["projects/acceptance.md"]
+  });
+  const before=await readFile(file);
+  await assert.rejects(
+    ()=>StateStore.open(file,{
+      taskSessionPolicy:[{capability:"other-work",models:["codex"]}]
+    }),
+    /invalid_task_session/
+  );
+  assert.deepEqual(await readFile(file),before);
+});
+
 test("persists a version-4 activity conversation with mode 0600", async () => {
   const {file} = await fresh();
   const store = await StateStore.open(file);

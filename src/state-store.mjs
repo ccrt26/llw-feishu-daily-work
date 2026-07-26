@@ -1,15 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename } from "node:fs/promises";
 import { dirname } from "node:path";
+import {validateTaskSession} from "./core/task-session.mjs";
 
 export class StateStore {
-  constructor(file, data, maxOutcomes) {
+  constructor(file, data, maxOutcomes, taskSessionPolicy) {
     this.file = file;
     this.data = data;
     this.maxOutcomes = maxOutcomes;
+    this.taskSessionPolicy=structuredClone(taskSessionPolicy);
   }
 
-  static async open(file, {maxOutcomes = 1000} = {}) {
+  static async open(file, {maxOutcomes = 1000,taskSessionPolicy=[]} = {}) {
     let data = emptyState();
     let migrated = false;
     try {
@@ -23,11 +25,13 @@ export class StateStore {
         if (!data.capabilityState["daily-work"]) data.capabilityState["daily-work"] = {conversation: null};
         if (!data.capabilityState.invoice) data.capabilityState.invoice = {};
         if (!data.capabilityState.router) data.capabilityState.router = {conversation: null};
+        ensureTaskSessionSlot(data);
       } else if (parsed?.version === 3 && parsed.capabilityState && typeof parsed.capabilityState === "object" && parsed.outcomes && typeof parsed.outcomes === "object") {
         data={version:4,capabilityState:structuredClone(parsed.capabilityState),outcomes:structuredClone(parsed.outcomes)};
         if (!data.capabilityState["daily-work"]) data.capabilityState["daily-work"]={conversation:null};
         if (!data.capabilityState.invoice) data.capabilityState.invoice={};
         data.capabilityState.router={conversation:null};
+        ensureTaskSessionSlot(data);
         migrated=true;
       } else if (parsed?.version === 2 && parsed.outcomes && typeof parsed.outcomes === "object") {
         data = migratedState(parsed.conversation || null, parsed.outcomes);
@@ -39,13 +43,68 @@ export class StateStore {
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
     }
-    const store = new StateStore(file, data, maxOutcomes);
+    ensureTaskSessionSlot(data);
+    const storedTaskSession=data.capabilityState["task-session"].session;
+    if (storedTaskSession!==null) {
+      data.capabilityState["task-session"].session=validateTaskSession(storedTaskSession,{
+        policy:taskSessionPolicy,
+        verifiedSourcePaths:storedTaskSession.source_paths
+      });
+    }
+    const store = new StateStore(file, data, maxOutcomes,taskSessionPolicy);
     if (migrated) await store.persist();
     return store;
   }
 
   version() { return this.data.version; }
   getCapabilityState(name) { return structuredClone(this.data.capabilityState[name] || {}); }
+  getTaskSession() {
+    const session=this.data.capabilityState["task-session"].session;
+    return session?.status==="open"?structuredClone(session):null;
+  }
+
+  async saveTaskSession(session,{verifiedSourcePaths=[]}={}) {
+    const next=validateTaskSession(session,{
+      policy:this.taskSessionPolicy,
+      verifiedSourcePaths
+    });
+    if (next.status!=="open") throw new Error("invalid_task_session_transition");
+    const current=this.data.capabilityState["task-session"].session;
+    if (current?.status==="open") {
+      if (next.session_id!==current.session_id||
+          next.capability!==current.capability||
+          next.model!==current.model||
+          next.started_at!==current.started_at||
+          next.current_draft_version<current.current_draft_version||
+          Date.parse(next.updated_at)<Date.parse(current.updated_at)) {
+        throw new Error("invalid_task_session_transition");
+      }
+    } else if (current&&next.session_id===current.session_id) {
+      throw new Error("invalid_task_session_transition");
+    }
+    this.data.capabilityState["task-session"]={session:next};
+    await this.persist();
+    return structuredClone(next);
+  }
+
+  async closeTaskSession(status,updatedAt) {
+    if (!["completed","cancelled","expired"].includes(status)) {
+      throw new Error("invalid_task_session_transition");
+    }
+    const current=this.data.capabilityState["task-session"].session;
+    if (!current||current.status!=="open"||
+        typeof updatedAt!=="string"||
+        Date.parse(updatedAt)<Date.parse(current.updated_at)) {
+      throw new Error("invalid_task_session_transition");
+    }
+    const closed=validateTaskSession({...current,status,updated_at:updatedAt},{
+      policy:this.taskSessionPolicy,
+      verifiedSourcePaths:current.source_paths
+    });
+    this.data.capabilityState["task-session"]={session:closed};
+    await this.persist();
+    return structuredClone(closed);
+  }
 
   async getRouterConversation(nowMs=Date.now()) {
     const conversation=normalizeRouterConversation(this.data.capabilityState.router?.conversation);
@@ -179,7 +238,12 @@ export class StateStore {
 function emptyState() {
   return {
     version: 4,
-    capabilityState: {"daily-work": {conversation: null}, invoice: {}, router:{conversation:null}},
+    capabilityState: {
+      "daily-work":{conversation:null},
+      invoice:{},
+      router:{conversation:null},
+      "task-session":{session:null}
+    },
     outcomes: {}
   };
 }
@@ -187,9 +251,28 @@ function emptyState() {
 function migratedState(conversation, outcomes) {
   return {
     version: 4,
-    capabilityState: {"daily-work": {conversation}, invoice: {}, router:{conversation:null}},
+    capabilityState: {
+      "daily-work":{conversation},
+      invoice:{},
+      router:{conversation:null},
+      "task-session":{session:null}
+    },
     outcomes: structuredClone(outcomes)
   };
+}
+
+function ensureTaskSessionSlot(data) {
+  if (!Object.hasOwn(data.capabilityState,"task-session")) {
+    data.capabilityState["task-session"]={session:null};
+    return;
+  }
+  const slot=data.capabilityState["task-session"];
+  if (!slot||typeof slot!=="object"||Array.isArray(slot)||
+      Object.getPrototypeOf(slot)!==Object.prototype||
+      Object.keys(slot).length!==1||!Object.hasOwn(slot,"session")||
+      (slot.session!==null&&(typeof slot.session!=="object"||Array.isArray(slot.session)))) {
+    throw new Error("invalid_task_session");
+  }
 }
 
 function validateRouterConversation(conversation) {
