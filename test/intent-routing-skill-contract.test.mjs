@@ -6,11 +6,16 @@ import {guardAiInput} from "../src/ai/ai-input-guard.mjs";
 const workspace="/Volumes/ZHUTONG/LLW的私人助手/LLW";
 
 test("router Skill and business routing contracts expose one strict text and visual routing boundary",async () => {
-  const [skill,schema,daily,invoice,ui,evalText,visualEvalText]=await Promise.all([
+  const [
+    skill,schema,daily,invoice,knowledgeContract,assistantContract,
+    ui,evalText,visualEvalText
+  ]=await Promise.all([
     readFile(`${workspace}/.agents/skills/feishu-intent-router/SKILL.md`,"utf8"),
     readFile(`${workspace}/.agents/skills/feishu-intent-router/references/output-schema.json`,"utf8").then(JSON.parse),
     readFile(`${workspace}/.agents/skills/feishu-daily-work/references/routing-contract.json`,"utf8").then(JSON.parse),
     readFile(`${workspace}/.agents/skills/filing-invoices/references/routing-contract.json`,"utf8").then(JSON.parse),
+    readFile(`${workspace}/.agents/skills/llw-knowledge-ingest/references/routing-contract.json`,"utf8").then(JSON.parse),
+    readFile(`${workspace}/.agents/skills/llw-assistant-work/references/routing-contract.json`,"utf8").then(JSON.parse),
     readFile(`${workspace}/.agents/skills/feishu-intent-router/agents/openai.yaml`,"utf8"),
     readFile(`${workspace}/.agents/skills/feishu-intent-router/evals/cases.jsonl`,"utf8"),
     readFile(`${workspace}/.agents/skills/feishu-intent-router/evals/visual-cases.jsonl`,"utf8")
@@ -36,17 +41,26 @@ test("router Skill and business routing contracts expose one strict text and vis
   assert.match(skill,/Codex.*`low`/);
   assert.match(skill,/DeepSeek V4 Pro.*非思考模式.*`temperature=0`/);
   assert.match(skill,/推理设置由本 Skill 声明.*程序固定执行.*用户输入和模型输出不得覆盖/);
-  assert.match(skill,/活动对话.*附件.*完整的新任务.*`new_task`.*`attachment_match`/);
+  assert.match(
+    skill,
+    /完整的新任务.*开放会话.*安全附件.*`new_task`.*`attachment_match`/s
+  );
   assert.equal(schema.additionalProperties,false);
   assert.deepEqual(schema.required,["action","capability","confidence","reason_code","question","reason"]);
   assert.deepEqual(schema.properties.action.enum,["route","clarify","unsupported"]);
   assert.equal(Object.hasOwn(schema,"oneOf"),false);
   assert.deepEqual(daily.capability,"daily-work");
   assert.deepEqual(invoice.capability,"invoice");
+  assert.deepEqual(knowledgeContract.capability,"knowledge-ingest");
+  assert.deepEqual(assistantContract.capability,"assistant-work");
   assert.equal(daily.accepts.includes("text"),true);
   assert.equal(invoice.accepts.includes("file"),true);
   assert.equal(invoice.accepts.includes("image"),true);
-  for (const contract of [daily,invoice]) {
+  assert.equal(knowledgeContract.accepts.includes("file"),true);
+  assert.equal(assistantContract.accepts.includes("text"),true);
+  for (const contract of [
+    daily,invoice,knowledgeContract,assistantContract
+  ]) {
     assert.equal(contract.purpose.length>0,true);
     assert.equal(contract.positive_examples.length>0,true);
     assert.equal(contract.negative_examples.length>0,true);
@@ -55,7 +69,11 @@ test("router Skill and business routing contracts expose one strict text and vis
   assert.match(ui,/short_description: "为私人飞书或微信消息/);
   assert.match(ui,/default_prompt: "Use \$feishu-intent-router to choose exactly one enabled capability for a private Feishu or WeChat message or image\."/);
   const cases=evalText.trim().split("\n").map(line=>JSON.parse(line));
-  const canonicalContracts=new Map([[daily.capability,daily],[invoice.capability,invoice]]);
+  const canonicalContracts=new Map([
+    [daily.capability,daily],[invoice.capability,invoice],
+    [knowledgeContract.capability,knowledgeContract],
+    [assistantContract.capability,assistantContract]
+  ]);
   assert.deepEqual(new Set(cases.map(item=>item.kind)),new Set(["positive","negative","boundary"]));
   assert.equal(new Set(cases.map(item=>item.id)).size,cases.length);
   for (const item of cases) {
@@ -118,17 +136,30 @@ test("router Skill and business routing contracts expose one strict text and vis
     if (contract.manual_review_criteria) assert.deepEqual(item.manual_review_criteria,contract.manual_review_criteria);
     else assert.equal(Object.hasOwn(item,"manual_review_criteria"),false);
   }
-  assert.equal(cases.length,10);
+  assert.equal(cases.length,29);
   assert.deepEqual(cases.filter(item=>Object.hasOwn(item,"manual_review_criteria")).map(item=>item.id),[
     "router-negative-cancel-without-conversation"
   ]);
-  assert.deepEqual(byId.get("router-positive-invoice-attachment").input.message,{
-    type:"file",attachment:{displayName:"电子发票.pdf",extension:"pdf",resourceType:"file"},beijingTime:"2026-07-23 10:00:00"
-  });
-  const knowledge=byId.get("router-negative-invoice-knowledge-question");
-  assert.equal(knowledge.input.message.type,"text");
-  assert.match(knowledge.input.message.text,/发票.*区别/);
-  assert.equal(Object.hasOwn(knowledge.input.message,"attachment"),false);
+  const invoiceAttachment=byId.get(
+    "router-positive-invoice-attachment"
+  ).input.message;
+  assert.equal(invoiceAttachment.type,"file");
+  assert.match(invoiceAttachment.attachment.displayName,/发票.*\.pdf$/);
+  assert.deepEqual(
+    {
+      extension:invoiceAttachment.attachment.extension,
+      resourceType:invoiceAttachment.attachment.resourceType
+    },
+    {extension:"pdf",resourceType:"file"}
+  );
+  const invoiceKnowledgeCase=byId.get(
+    "router-negative-invoice-knowledge-question"
+  );
+  assert.equal(invoiceKnowledgeCase.input.message.type,"text");
+  assert.match(invoiceKnowledgeCase.input.message.text,/发票.*区别/);
+  assert.equal(
+    Object.hasOwn(invoiceKnowledgeCase.input.message,"attachment"),false
+  );
   const continuation=byId.get("router-positive-daily-work-continuation");
   assert.equal(continuation.input.message.text,"16:30开始，17:30结束");
   assert.match(continuation.input.conversation.question,/具体时间/);
@@ -143,7 +174,14 @@ test("router Skill and business routing contracts expose one strict text and vis
   const newTask=byId.get("router-boundary-invoice-new-task");
   assert.equal(newTask.input.conversation.capability,"daily-work");
   assert.equal(newTask.input.message.type,"file");
-  assert.deepEqual(newTask.input.message.attachment,{displayName:"差旅电子发票.pdf",extension:"pdf",resourceType:"file"});
+  assert.match(newTask.input.message.attachment.displayName,/发票.*\.pdf$/);
+  assert.deepEqual(
+    {
+      extension:newTask.input.message.attachment.extension,
+      resourceType:newTask.input.message.attachment.resourceType
+    },
+    {extension:"pdf",resourceType:"file"}
+  );
   const disabledDaily=byId.get("router-negative-disabled-daily-work");
   assert.match(disabledDaily.input.message.text,/测试环境巡检/);
   assert.deepEqual(disabledDaily.input.capabilities.map(item=>item.capability),["invoice"]);

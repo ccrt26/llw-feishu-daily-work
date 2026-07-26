@@ -13,7 +13,7 @@ const SUITES=[
     name:"router",
     skillRoot:`${WORKSPACE_ROOT}/.agents/skills/feishu-intent-router`,
     casesPath:`${WORKSPACE_ROOT}/.agents/skills/feishu-intent-router/evals/cases.jsonl`,
-    requiredCount:10
+    requiredCount:29
   },
   {
     name:"daily-work",

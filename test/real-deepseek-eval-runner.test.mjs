@@ -6,7 +6,7 @@ import {runRealDeepSeekEvals,selectFailedCaseIds} from "../tools/run-real-deepse
 
 const run=promisify(execFile);
 
-test("lists the fixed 22-case formal-Skill evaluation plan without Keychain or network access",async()=>{
+test("lists the fixed 41-case formal-Skill evaluation plan without Keychain or network access",async()=>{
   const {stdout}=await run("/usr/local/bin/node",["tools/run-real-deepseek-evals.mjs","--list"],{
     cwd:new URL("..",import.meta.url),
     encoding:"utf8"
@@ -16,7 +16,7 @@ test("lists the fixed 22-case formal-Skill evaluation plan without Keychain or n
   assert.equal(plan.keychainRead,false);
   assert.equal(plan.networkAccess,false);
   assert.deepEqual(plan.suites.map(item=>({name:item.name,count:item.count})),[
-    {name:"router",count:10},
+    {name:"router",count:29},
     {name:"daily-work",count:12}
   ]);
   for (const suite of plan.suites) {
@@ -44,9 +44,9 @@ test("runs the fixed suites through an injected client and keeps the report free
     },
     writeReport:async value=>{saved=structuredClone(value);}
   });
-  assert.equal(calls.length,22);
+  assert.equal(calls.length,41);
   assert.equal(calls.every(call=>call.skillRoot.includes("/LLW/.agents/skills/")),true);
-  assert.deepEqual(report.summary,{total:22,passed:22,failed:0});
+  assert.deepEqual(report.summary,{total:41,passed:41,failed:0});
   assert.deepEqual(saved.summary,report.summary);
   assert.equal(report.rawInputsIncluded,false);
   assert.equal(report.rawOutputsIncluded,false);
