@@ -3,8 +3,11 @@
 ## Status
 
 - Production capability `knowledge-ingest` remains enabled for the bounded
-  Stage A acceptance window, but production has not yet received the managed-root
-  writer fix described below.
+  Stage A acceptance window.
+- Production received the managed-root Writer fix, but real Feishu and WeChat
+  acceptance exposed a second Writer compatibility defect on the managed
+  external volume. The final compatibility fix has passed local verification
+  and is pending deployment.
 - `assistant-work` remains disabled.
 - The existing service remains healthy and has no unreplied outcomes.
 - No knowledge artifact was created by any failed attempt.
@@ -157,9 +160,49 @@ TDD evidence:
 - knowledge capability and writer target tests passed 26/26;
 - the complete integration regression passed 463/463.
 
-The code evidence above is not a production-acceptance claim. Production
-deployment and one real Feishu plus one real WeChat root-library acceptance
-remain required.
+## Evidence that the managed-root fix was also insufficient
+
+After deploying the managed-root fix, two new and distinct real messages were
+processed, one through Feishu and one through WeChat. Both selected
+`knowledge-ingest`, were replied, produced zero artifacts, and logged the same
+value-free `knowledge_writer_failed` stage. This retained the conclusion that
+the remaining failure was in the deterministic program, not the Router or
+private Skill.
+
+The same Writer succeeded against a synthetic Vault under `/private/tmp`, but
+failed against a fully synthetic Vault created on the same external volume as
+the managed libraries. The preserved local diagnostic error was
+`invalid_item_files`. The volume automatically created an AppleDouble companion
+for the logical note and represented owner-only files as `0700`.
+
+The original verification contract required:
+
+- exactly the logical files and no companions;
+- exact mode `0600`.
+
+That contract was APFS-like and incompatible with the external volume's
+owner-only metadata representation.
+
+## Final scoped compatibility fix
+
+The Writer now accepts both `0600` and `0700`, which remain owner-only modes,
+and only an exact `._<logical-name>` companion whose size is bounded and whose
+first four bytes match the AppleDouble magic. It still rejects unrelated hidden
+files, malformed companions, symlinks, ownership changes, or any group/other
+permissions. Receipts contain only logical files.
+
+TDD and verification evidence:
+
+- compatibility RED: 12/14 Writer tests passed; only the two intended positive
+  compatibility cases failed;
+- Writer GREEN: 14/14;
+- knowledge target tests: 30/30;
+- same-volume fully synthetic commit: success;
+- complete integration regression: 467/467;
+- no real model or external API was invoked by these tests.
+
+This evidence is not yet a production-acceptance claim. Deployment and one new
+real Feishu plus one new real WeChat acceptance remain required.
 
 ## Relevant files
 

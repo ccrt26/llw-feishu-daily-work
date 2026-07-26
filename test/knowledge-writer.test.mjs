@@ -76,6 +76,64 @@ test("commits directly under a selected managed library root without creating a 
   } finally { await rm(h.root,{recursive:true,force:true}); }
 });
 
+test("accepts an owner-only logical file mode used by the managed external volume",async()=>{
+  const h=await harness();
+  try {
+    const first=await h.writer.commit(commitInput());
+    const note=join(h.root,first.relativePath,"knowledge.md");
+    await chmod(note,0o700);
+    const duplicate=await h.writer.commit(commitInput());
+    assert.equal(duplicate.status,"existing");
+    assert.deepEqual(duplicate.files,[`${first.relativePath}/knowledge.md`]);
+  } finally { await rm(h.root,{recursive:true,force:true}); }
+});
+
+test("accepts only the exact AppleDouble companion of one logical knowledge file",async()=>{
+  const h=await harness();
+  try {
+    const first=await h.writer.commit(commitInput());
+    const item=join(h.root,first.relativePath);
+    await writeFile(
+      join(item,"._knowledge.md"),
+      Buffer.concat([Buffer.from([0x00,0x05,0x16,0x07]),Buffer.alloc(28)]),
+      {mode:0o600}
+    );
+    const duplicate=await h.writer.commit(commitInput());
+    assert.equal(duplicate.status,"existing");
+    assert.deepEqual(duplicate.files,[`${first.relativePath}/knowledge.md`]);
+  } finally { await rm(h.root,{recursive:true,force:true}); }
+});
+
+test("rejects a malformed AppleDouble companion",async()=>{
+  const h=await harness();
+  try {
+    const first=await h.writer.commit(commitInput());
+    await writeFile(
+      join(h.root,first.relativePath,"._knowledge.md"),
+      Buffer.from("not-appledouble"),
+      {mode:0o600}
+    );
+    await assert.rejects(
+      h.writer.commit(commitInput()),
+      /knowledge_write_rejected/
+    );
+  } finally { await rm(h.root,{recursive:true,force:true}); }
+});
+
+test("rejects an unrelated hidden file inside a knowledge item",async()=>{
+  const h=await harness();
+  try {
+    const first=await h.writer.commit(commitInput());
+    await writeFile(join(h.root,first.relativePath,".unexpected"),"unsafe",{
+      mode:0o600
+    });
+    await assert.rejects(
+      h.writer.commit(commitInput()),
+      /knowledge_write_rejected/
+    );
+  } finally { await rm(h.root,{recursive:true,force:true}); }
+});
+
 test("returns existing for a stable source and never overwrites a title collision",async()=>{
   const h=await harness();
   try {

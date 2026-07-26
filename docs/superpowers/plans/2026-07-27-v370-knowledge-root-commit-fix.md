@@ -118,3 +118,43 @@ artifacts with no staging residue.
 - [ ] **Step 5: Update current-state evidence**
 
 Record the sanitized root cause, fix commit, test counts, deployment health, and real acceptance results.
+
+### Task 3: Support the managed external volume without weakening item verification
+
+**Files:**
+- Modify: `test/knowledge-writer.test.mjs`
+- Modify: `src/capabilities/knowledge-ingest/knowledge-writer.mjs`
+- Modify: `docs/V370_KNOWLEDGE_STAGE_A_INCIDENT_R1.md`
+
+- [x] **Step 1: Reproduce on the same volume**
+
+Run the real Writer against a fully synthetic Vault on the managed external volume.
+Expected before the compatibility fix: `invalid_item_files`, with an automatically
+created `._knowledge.md` AppleDouble entry and owner-only `0700` logical file mode.
+
+- [x] **Step 2: Verify RED for only the required compatibility cases**
+
+Add tests for `0700` logical files and an exact valid AppleDouble companion. Retain
+negative tests for malformed AppleDouble and an unrelated hidden file.
+
+Expected RED result: 12/14 passed; only the two compatibility cases failed.
+
+- [x] **Step 3: Implement the narrow verification policy**
+
+Accept only `0600` or `0700` owner-only ordinary files and only exact AppleDouble
+companions whose size and magic are valid. Return only logical files in receipts.
+
+- [x] **Step 4: Verify locally**
+
+Expected evidence:
+
+- Writer tests: 14/14;
+- knowledge target tests: 30/30;
+- same-volume synthetic Writer commit: success;
+- one complete integration regression: 467/467.
+
+- [ ] **Step 5: Deploy and run real acceptance**
+
+Create an exact pre-deployment rollback point, fast-forward the production component,
+run bounded production checks, restart once, and then require one new Feishu plus one
+new WeChat message for real acceptance.

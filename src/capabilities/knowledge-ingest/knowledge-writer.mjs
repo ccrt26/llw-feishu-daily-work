@@ -10,6 +10,7 @@ const TEXT_SOURCE_FIELDS=new Set([
 ]);
 const OFFICE_SOURCE_FIELDS=new Set([...TEXT_SOURCE_FIELDS,"sourceBytes"]);
 const OFFICE_FORMATS=new Set(["docx","pptx","xlsx"]);
+const OWNER_ONLY_FILE_MODES=new Set([0o600,0o700]);
 const RESERVED=/^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/iu;
 const MAX_SCAN_DIRECTORIES=4096;
 
@@ -350,16 +351,23 @@ async function verifyItem(path,{knowledgeId,expectedMarkdown,source,preserveSour
   }
   const expected=["knowledge.md"];
   if (sourceHasFile(source)&&preserveSource) expected.push(source.jobSourceName);
+  const logicalFiles=new Set(expected);
+  const appleDoubleFiles=new Set(expected.map(name=>`._${name}`));
   const entries=(await readdir(path)).sort();
-  if (entries.length!==expected.length||
-      entries.some((entry,index)=>entry!==expected.sort()[index])) {
+  if (expected.some(name=>!entries.includes(name))||
+      entries.some(name=>!logicalFiles.has(name)&&!appleDoubleFiles.has(name))) {
     throw new Error("invalid_item_files");
   }
   for (const name of entries) {
     const metadata=await lstat(join(path,name));
+    const mode=metadata.mode&0o777;
     if (!metadata.isFile()||metadata.isSymbolicLink()||
-        metadata.uid!==process.getuid()||(metadata.mode&0o777)!==0o600) {
+        metadata.uid!==process.getuid()||
+        !OWNER_ONLY_FILE_MODES.has(mode)) {
       throw new Error("invalid_item_file");
+    }
+    if (appleDoubleFiles.has(name)) {
+      await verifyAppleDouble(join(path,name),metadata);
     }
   }
   const markdown=await readFile(join(path,"knowledge.md"),"utf8");
@@ -373,7 +381,18 @@ async function verifyItem(path,{knowledgeId,expectedMarkdown,source,preserveSour
       throw new Error("invalid_source_copy");
     }
   }
-  return {files:entries};
+  return {files:expected.sort()};
+}
+
+async function verifyAppleDouble(path,metadata) {
+  if (metadata.size<4||metadata.size>64*1024) {
+    throw new Error("invalid_appledouble");
+  }
+  const content=await readFile(path);
+  if (content.length!==metadata.size||
+      !content.subarray(0,4).equals(Buffer.from([0x00,0x05,0x16,0x07]))) {
+    throw new Error("invalid_appledouble");
+  }
 }
 
 async function writeSynced(path,content) {
