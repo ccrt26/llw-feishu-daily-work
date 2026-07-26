@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {readFile} from "node:fs/promises";
+import {mkdir,mkdtemp,readFile,realpath,rm} from "node:fs/promises";
+import {tmpdir} from "node:os";
+import {join} from "node:path";
 import {fileURLToPath} from "node:url";
 
 test("main validates one protected PDFium runtime before state and injects one shared bounded PDF preparer",async () => {
@@ -20,6 +22,7 @@ test("main validates one protected PDFium runtime before state and injects one s
 
 test("main validates business routing contracts and injects one read-only intent router",async () => {
   const source=await readFile(fileURLToPath(new URL("../src/main.mjs",import.meta.url)),"utf8");
+  assert.match(source,/import \{loadPrivateSkillManifest\} from "\.\/core\/private-skill-manifest\.mjs"/);
   assert.match(source,/import \{loadRoutingContract\} from "\.\/core\/routing-contract\.mjs"/);
   assert.match(source,/import \{validateIntentRouterSkill\} from "\.\/core\/intent-router-client\.mjs"/);
   assert.match(source,/import \{createRouterTextTask,createRouterVisualTask,createDailyWorkInterpretTask,createInvoiceVisualTask\} from "\.\/core\/semantic-tasks\.mjs"/);
@@ -30,10 +33,19 @@ test("main validates business routing contracts and injects one read-only intent
   assert.match(source,/deepseekKeychainService:config\.deepseekKeychainService/);
   assert.match(source,/deepseekKeychainAccount:config\.deepseekKeychainAccount/);
   assert.match(source,/deepseekEnabled:config\.deepseekEnabled/);
-  assert.match(source,/feishu-intent-router/);
+  for (const name of [
+    "feishu-intent-router","feishu-daily-work","filing-invoices",
+    "llw-knowledge-ingest","llw-assistant-work"
+  ]) assert.match(source,new RegExp(name));
+  assert.match(source,/name:"llw-knowledge-ingest"[\s\S]*?enabled:false/);
+  assert.match(source,/name:"llw-assistant-work"[\s\S]*?enabled:false/);
+  assert.ok(source.indexOf("await loadPrivateSkillManifest")<source.indexOf("StateStore.open"));
   assert.ok(source.indexOf("await validateIntentRouterSkill(routerSkillRoot)")<source.indexOf("StateStore.open"));
-  assert.match(source,/loadRoutingContract\(config\.capabilities\["daily-work"\]\.skillRoot,"daily-work"\)/);
-  assert.match(source,/loadRoutingContract\(invoiceConfig\.skillRoot,"invoice"\)/);
+  assert.match(source,/loadRoutingContract\(dailySkillRoot,"daily-work"\)/);
+  assert.match(source,/loadRoutingContract\(invoiceSkillRoot,"invoice"\)/);
+  assert.equal(source.includes('join(config.vaultRoot,".agents","skills","feishu-intent-router")'),false);
+  assert.match(source,/createDailyWorkInterpretTask\(\{[\s\S]*?skillRoot:dailySkillRoot/);
+  assert.match(source,/createInvoiceVisualTask\(\{[\s\S]*?skillRoot:invoiceSkillRoot/);
   assert.match(source,/buildCapabilityRegistry\(\{dailyWork:dailyCapability,invoice:invoiceCapability,contracts,enabled:/);
   assert.match(source,/new Dispatcher\(\{binding,bindings,state,capabilities,intentRouter,withPreparedVisual,messenger,modelMode,deepseekEnabled:config\.deepseekEnabled\}\)/);
   assert.match(source,/const routerText=createRouterTextTask\(\{/);
@@ -45,6 +57,27 @@ test("main validates business routing contracts and injects one read-only intent
   assert.match(source,/const withPreparedVisual=createPreparedVisualRunner\(\{/);
   assert.match(source,/preparePdf\n\}\)/);
   assert.match(source,/const intentRouter=\{decide:routerText,decideVisual:routerVisual\}/);
+});
+
+test("requires configured legacy Skill roots to match the validated private catalog",async()=>{
+  const {selectPrivateSkillRoot}=await import("../src/main.mjs");
+  const outer=await mkdtemp(join(tmpdir(),"llw-main-private-root-"));
+  const skillRoot=join(outer,"skill");
+  const otherRoot=join(outer,"other");
+  try {
+    await mkdir(skillRoot,{mode:0o700});
+    await mkdir(otherRoot,{mode:0o700});
+    const catalog={skills:[{name:"synthetic",root:await realpath(skillRoot)}]};
+    assert.equal(await selectPrivateSkillRoot(catalog,"synthetic",skillRoot),await realpath(skillRoot));
+    await assert.rejects(
+      ()=>selectPrivateSkillRoot(catalog,"synthetic",otherRoot),
+      {message:"private_skill_manifest_invalid"}
+    );
+    await assert.rejects(
+      ()=>selectPrivateSkillRoot(catalog,"missing"),
+      {message:"private_skill_manifest_invalid"}
+    );
+  } finally { await rm(outer,{recursive:true,force:true}); }
 });
 
 test("keeps every WeChat read and network call at zero when the switch is false",async () => {

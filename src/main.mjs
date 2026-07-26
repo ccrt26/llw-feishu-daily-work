@@ -1,6 +1,6 @@
 import {execFile} from "node:child_process";
 import {randomBytes,randomUUID} from "node:crypto";
-import {lstat,mkdir,open,readFile,rename,rm,writeFile} from "node:fs/promises";
+import {lstat,mkdir,open,readFile,realpath,rename,rm,writeFile} from "node:fs/promises";
 import {dirname,join,resolve} from "node:path";
 import {fileURLToPath} from "node:url";
 import {promisify} from "node:util";
@@ -30,11 +30,34 @@ import {Dispatcher} from "./core/dispatcher.mjs";
 import {ModelMode} from "./core/model-mode.mjs";
 import {safeLog} from "./core/redaction.mjs";
 import {createPreparedVisualRunner} from "./core/prepared-visual.mjs";
+import {loadPrivateSkillManifest} from "./core/private-skill-manifest.mjs";
 import {loadRoutingContract} from "./core/routing-contract.mjs";
 import {validateIntentRouterSkill} from "./core/intent-router-client.mjs";
 import {createRouterTextTask,createRouterVisualTask,createDailyWorkInterpretTask,createInvoiceVisualTask} from "./core/semantic-tasks.mjs";
 
 const run=promisify(execFile);
+export const PRIVATE_SKILL_ALLOWLIST=[
+  {
+    name:"feishu-intent-router",capability:"router",versions:["1.1.0"],
+    semanticTasks:["router.text","router.visual"],modelSupport:["codex","deepseek"],enabled:true
+  },
+  {
+    name:"feishu-daily-work",capability:"daily-work",versions:["1.0.0"],
+    semanticTasks:["daily-work.interpret"],modelSupport:["codex","deepseek"],enabled:true
+  },
+  {
+    name:"filing-invoices",capability:"invoice",versions:["1.0.0"],
+    semanticTasks:["invoice.visual"],modelSupport:["codex"],enabled:true
+  },
+  {
+    name:"llw-knowledge-ingest",capability:"knowledge-ingest",versions:["1.0.0"],
+    semanticTasks:["knowledge.ingest"],modelSupport:["codex"],enabled:false
+  },
+  {
+    name:"llw-assistant-work",capability:"assistant-work",versions:["1.0.0"],
+    semanticTasks:["assistant.work"],modelSupport:["codex"],enabled:false
+  }
+];
 
 async function runMain() {
 process.umask(0o077);
@@ -42,11 +65,23 @@ process.umask(0o077);
 const configFile=process.argv[2] || "/Users/ccrt/Library/Application Support/LLW Assistant/state/feishu-daily-work/config.json";
 const config=await loadConfig(configFile);
 const invoiceConfig=config.capabilities.invoice;
+const privateSkillCatalog=await loadPrivateSkillManifest({
+  root:config.privateSkills?.root,
+  manifestPath:config.privateSkills?.manifestPath,
+  expectedManifestSha256:config.privateSkills?.expectedManifestSha256,
+  allowlist:PRIVATE_SKILL_ALLOWLIST
+});
+const routerSkillRoot=await selectPrivateSkillRoot(privateSkillCatalog,"feishu-intent-router");
+const dailySkillRoot=await selectPrivateSkillRoot(
+  privateSkillCatalog,"feishu-daily-work",config.capabilities["daily-work"].skillRoot
+);
+const invoiceSkillRoot=await selectPrivateSkillRoot(
+  privateSkillCatalog,"filing-invoices",invoiceConfig.skillRoot
+);
 await validatePdfiumRuntime(invoiceConfig.pdfProcessorPath);
 const contracts={};
-if (config.capabilities["daily-work"].enabled) contracts["daily-work"]=await loadRoutingContract(config.capabilities["daily-work"].skillRoot,"daily-work");
-if (invoiceConfig.enabled) contracts.invoice=await loadRoutingContract(invoiceConfig.skillRoot,"invoice");
-const routerSkillRoot=join(config.vaultRoot,".agents","skills","feishu-intent-router");
+if (config.capabilities["daily-work"].enabled) contracts["daily-work"]=await loadRoutingContract(dailySkillRoot,"daily-work");
+if (invoiceConfig.enabled) contracts.invoice=await loadRoutingContract(invoiceSkillRoot,"invoice");
 await validateIntentRouterSkill(routerSkillRoot);
 const state=await StateStore.open(config.stateFile);
 const modelMode=new ModelMode(config.modelStateFile);
@@ -72,14 +107,14 @@ const deepseekTextConfiguration={
 
 const dailyWriter=new VaultWriter(config.vaultRoot);
 const catalog=new RecordCatalog(config.vaultRoot);
-const dailyWorkInterpret=createDailyWorkInterpretTask({codexPath:config.codexPath,workspaceRoot:config.vaultRoot,skillRoot:config.capabilities["daily-work"].skillRoot,...deepseekTextConfiguration});
+const dailyWorkInterpret=createDailyWorkInterpretTask({codexPath:config.codexPath,workspaceRoot:config.vaultRoot,skillRoot:dailySkillRoot,...deepseekTextConfiguration});
 const dailyService=new DailyWorkService({
   state,catalog,writer:dailyWriter,decide:dailyWorkInterpret
 });
 const dailyCapability=createDailyWorkCapability({service:dailyService});
 
 const invoiceArchiveWriter=new InvoiceArchiveWriter({vaultRoot:config.vaultRoot,state});
-const invoiceVisual=createInvoiceVisualTask({codexPath:config.codexPath,workspaceRoot:config.vaultRoot,skillRoot:invoiceConfig.skillRoot,timeoutMs:invoiceConfig.aiTimeoutMs});
+const invoiceVisual=createInvoiceVisualTask({codexPath:config.codexPath,workspaceRoot:config.vaultRoot,skillRoot:invoiceSkillRoot,timeoutMs:invoiceConfig.aiTimeoutMs});
 const downloadInvoiceResource=resource => {
   if (resource.source==="feishu") {
     return downloadLarkResource({
@@ -198,6 +233,19 @@ export async function startChatEntries({
     wechatListener?.done?.catch(()=>reportWechatEntry(onWechatLog,"wechat_listener_stopped"));
   }
   return {larkListener,wechatListener};
+}
+
+export async function selectPrivateSkillRoot(catalog,name,configuredRoot) {
+  try {
+    const entry=catalog.skills.find(skill=>skill.name===name);
+    if (!entry) throw new Error("invalid");
+    if (configuredRoot!==undefined&&(await realpath(configuredRoot))!==entry.root) {
+      throw new Error("invalid");
+    }
+    return entry.root;
+  } catch {
+    throw new Error("private_skill_manifest_invalid");
+  }
 }
 
 async function openWechatChannel({config,resources}) {

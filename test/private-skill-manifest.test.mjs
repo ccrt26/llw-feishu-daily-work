@@ -176,6 +176,10 @@ test("rejects broad permissions, symlinks, path escape, missing files and hash m
     async value=>chmod(join(value.skillRoot,"SKILL.md"),0o640),
     async value=>rm(join(value.skillRoot,"SKILL.md")),
     async value=>{
+      await rm(join(value.skillRoot,"SKILL.md"));
+      await mkdir(join(value.skillRoot,"SKILL.md"),{mode:0o700});
+    },
+    async value=>{
       await writeFile(join(value.skillRoot,"SKILL.md"),Buffer.from("changed\n"),{mode:0o600});
     },
     async value=>{
