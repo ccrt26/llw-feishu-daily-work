@@ -38,6 +38,7 @@ for (const [kind,skill] of [
     assert.match(prompt,new RegExp(`\\$${skill}`,"u"));
     assert.match(prompt,/current-draft\.md/u);
     assert.match(prompt,new RegExp(`deliverable/output\\.${kind}`,"u"));
+    assert.match(prompt,/WPS 可用的常规字体/u);
     assert.doesNotMatch(prompt,/Volumes\/test|token|飞书事件/u);
   });
 }
