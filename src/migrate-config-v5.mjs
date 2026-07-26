@@ -16,10 +16,11 @@ const INVOICE_FIELDS=new Set([
 ]);
 
 try {
-  const [file,root,manifestPath,expectedManifestSha256]=process.argv.slice(2);
+  const [file,root,manifestPath,expectedManifestSha256,knowledgeConfigFile]=process.argv.slice(2);
   if (!file||!isAbsolute(root)||!isAbsolute(manifestPath)||
       manifestPath!==join(root,"manifest.json")||
-      !/^[0-9a-f]{64}$/.test(expectedManifestSha256||"")) {
+      !/^[0-9a-f]{64}$/.test(expectedManifestSha256||"")||
+      !isAbsolute(knowledgeConfigFile||"")) {
     throw new Error("migration_input_invalid");
   }
   const metadata=await lstat(file);
@@ -32,9 +33,19 @@ try {
   exact(current.capabilities,CAPABILITY_FIELDS);
   exact(current.capabilities["daily-work"],DAILY_FIELDS);
   exact(current.capabilities.invoice,INVOICE_FIELDS);
+  const knowledgeMetadata=await lstat(knowledgeConfigFile);
+  if (!knowledgeMetadata.isFile()||knowledgeMetadata.isSymbolicLink()||
+      knowledgeMetadata.uid!==process.getuid()||(knowledgeMetadata.mode&0o077)!==0) {
+    throw new Error("unsafe_knowledge_config");
+  }
+  const knowledge=JSON.parse(await readFile(knowledgeConfigFile,"utf8"));
   await saveConfig(file,{
     ...current,
     version:5,
+    capabilities:{
+      ...current.capabilities,
+      "knowledge-ingest":{enabled:false,...knowledge}
+    },
     privateSkills:{root,manifestPath,expectedManifestSha256}
   });
 } catch {

@@ -16,6 +16,10 @@ const INVOICE_FIELDS=new Set([
   "enabled","skillRoot","tempRoot","archiveRoot","maxFileBytes","aiTimeoutMs",
   "pdfProcessorPath","maxPdfPages","maxPdfTextBytes","maxPdfRenderBytes","pdfPrepareTimeoutMs"
 ]);
+const KNOWLEDGE_FIELDS=new Set([
+  "enabled","tempRoot","libraries","maxSourceBytes","aiTimeoutMs","inputFormats"
+]);
+const LIBRARY_FIELDS=new Set(["libraryKey","displayName","aliases","root"]);
 
 export async function loadConfig(file,{requireBinding=true}={}) {
   const info=await lstat(file);
@@ -63,14 +67,29 @@ function validateConfig(config,requireBinding,configFile) {
     if (config[field] !== null && (typeof config[field] !== "string" || !config[field])) throw new Error(`invalid_binding:${field}`);
   }
   if (requireBinding && (!config.senderId || !config.chatId)) throw new Error("binding_missing");
-  exact(config.capabilities,new Set(["daily-work","invoice"]),"capabilities");
+  exact(
+    config.capabilities,
+    new Set(config.version===5
+      ?["daily-work","invoice","knowledge-ingest"]
+      :["daily-work","invoice"]),
+    "capabilities"
+  );
   const daily=config.capabilities["daily-work"],invoice=config.capabilities.invoice;
   exact(daily,DAILY_FIELDS,"capability"); exact(invoice,INVOICE_FIELDS,"capability");
   if (typeof daily.enabled !== "boolean" || typeof invoice.enabled !== "boolean") throw new Error("invalid_capability_enabled");
   absolute(daily.skillRoot,"daily-work.skillRoot");
   for (const field of ["skillRoot","tempRoot","archiveRoot"]) absolute(invoice[field],`invoice.${field}`);
   absolute(invoice.pdfProcessorPath,"invoice.pdfProcessorPath");
-  const privatePaths=config.version===5?[config.privateSkills.root,config.privateSkills.manifestPath]:[];
+  const knowledge=config.version===5?config.capabilities["knowledge-ingest"]:null;
+  if (knowledge) validateKnowledgeConfig(knowledge,config.vaultRoot);
+  const privatePaths=config.version===5
+    ?[
+      config.privateSkills.root,
+      config.privateSkills.manifestPath,
+      knowledge.tempRoot,
+      ...knowledge.libraries.map(library=>library.root)
+    ]
+    :[];
   const protectedPaths=[configFile,config.vaultRoot,config.stateFile,config.heartbeatFile,config.wechatStateFile,config.cliPath,config.codexPath,daily.skillRoot,invoice.skillRoot,invoice.tempRoot,invoice.archiveRoot,invoice.pdfProcessorPath,...privatePaths];
   if (protectedPaths.filter(value=>typeof value==="string").some(value=>foldedPath(value)===foldedPath(config.modelStateFile))) throw new Error("invalid_model_state_file_alias");
   const nonWechatPaths=[configFile,config.vaultRoot,config.stateFile,config.heartbeatFile,config.modelStateFile,config.cliPath,config.codexPath,daily.skillRoot,invoice.skillRoot,invoice.tempRoot,invoice.archiveRoot,invoice.pdfProcessorPath,...privatePaths];
@@ -83,6 +102,61 @@ function validateConfig(config,requireBinding,configFile) {
   if (invoice.maxPdfTextBytes !== 262_144) throw new Error("invalid_max_pdf_text_bytes");
   if (invoice.maxPdfRenderBytes !== 100 * 1024 * 1024) throw new Error("invalid_max_pdf_render_bytes");
   if (invoice.pdfPrepareTimeoutMs !== 60_000) throw new Error("invalid_pdf_prepare_timeout");
+}
+
+function validateKnowledgeConfig(knowledge,vaultRoot) {
+  exact(knowledge,KNOWLEDGE_FIELDS,"capability");
+  if (knowledge.enabled!==false) throw new Error("invalid_knowledge_enabled");
+  absolute(knowledge.tempRoot,"knowledge-ingest.tempRoot");
+  if (foldedInside(vaultRoot,knowledge.tempRoot)) throw new Error("invalid_knowledge_temp_root");
+  if (!Array.isArray(knowledge.libraries)||knowledge.libraries.length<2||knowledge.libraries.length>16) {
+    throw new Error("invalid_knowledge_libraries");
+  }
+  const keys=new Set(),names=new Set(),roots=[];
+  for (const library of knowledge.libraries) {
+    exact(library,LIBRARY_FIELDS,"knowledge_library");
+    if (typeof library.libraryKey!=="string"||
+        !/^[a-z][a-z0-9_-]{0,63}$/.test(library.libraryKey)||
+        keys.has(library.libraryKey)) {
+      throw new Error("invalid_knowledge_library_key");
+    }
+    keys.add(library.libraryKey);
+    validateLibraryLabel(library.displayName);
+    if (!Array.isArray(library.aliases)||library.aliases.length>16) {
+      throw new Error("invalid_knowledge_library_aliases");
+    }
+    for (const value of [library.displayName,...library.aliases]) {
+      validateLibraryLabel(value);
+      const folded=value.toLocaleLowerCase("en-US");
+      if (names.has(folded)) throw new Error("duplicate_knowledge_library_alias");
+      names.add(folded);
+    }
+    absolute(library.root,`knowledge-ingest.library.${library.libraryKey}`);
+    if (!foldedInside(vaultRoot,library.root)||foldedPath(library.root)===foldedPath(vaultRoot)) {
+      throw new Error("invalid_knowledge_library_root");
+    }
+    for (const other of roots) {
+      if (foldedInside(other,library.root)||foldedInside(library.root,other)) {
+        throw new Error("overlapping_knowledge_library_root");
+      }
+    }
+    roots.push(library.root);
+  }
+  if (knowledge.maxSourceBytes!==262_144) throw new Error("invalid_knowledge_source_bytes");
+  if (knowledge.aiTimeoutMs!==120_000) throw new Error("invalid_knowledge_ai_timeout");
+  if (!Array.isArray(knowledge.inputFormats)||
+      knowledge.inputFormats.length!==3||
+      knowledge.inputFormats.some((value,index)=>value!==["text","txt","md"][index])) {
+    throw new Error("invalid_knowledge_input_formats");
+  }
+}
+
+function validateLibraryLabel(value) {
+  if (typeof value!=="string"||value!==value.trim()||value!==value.normalize("NFC")||
+      value.length<1||[...value].length>64||value.startsWith(".")||
+      /[\\/\u0000-\u001f\u007f]/u.test(value)) {
+    throw new Error("invalid_knowledge_library_label");
+  }
 }
 
 function normalizeLoadedConfig(config) {
@@ -103,6 +177,10 @@ function normalizeLoadedConfig(config) {
 }
 
 function foldedPath(value) { return resolve(value).toLocaleLowerCase("en-US"); }
+function foldedInside(root,value) {
+  const foldedRoot=foldedPath(root),foldedValue=foldedPath(value);
+  return foldedValue===foldedRoot||foldedValue.startsWith(`${foldedRoot}/`);
+}
 async function hasSymlinkIdentity(file) {
   const absolute=resolve(file),root=parse(absolute).root;
   let current=root;

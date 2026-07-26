@@ -30,14 +30,44 @@ function config(overrides = {}) {
 }
 
 function configV5(overrides={}) {
+  const base=config();
   return {
-    ...config(),
+    ...base,
     version:5,
     privateSkills:{
       root:"/Volumes/test/LLW/.agents/skills",
       manifestPath:"/Volumes/test/LLW/.agents/skills/manifest.json",
       expectedManifestSha256:"a".repeat(64)
     },
+    capabilities:{
+      ...base.capabilities,
+      "knowledge-ingest":knowledgeConfig()
+    },
+    ...overrides
+  };
+}
+
+function knowledgeConfig(overrides={}) {
+  return {
+    enabled:false,
+    tempRoot:"/Users/test/tmp/knowledge",
+    libraries:[
+      {
+        libraryKey:"work-knowledge",
+        displayName:"Synthetic Work",
+        aliases:["Synthetic Work Library"],
+        root:"/Volumes/test/LLW/work"
+      },
+      {
+        libraryKey:"personal-knowledge",
+        displayName:"Synthetic Personal",
+        aliases:["Synthetic Personal Library"],
+        root:"/Volumes/test/LLW/personal"
+      }
+    ],
+    maxSourceBytes:262144,
+    aiTimeoutMs:120000,
+    inputFormats:["text","txt","md"],
     ...overrides
   };
 }
@@ -159,6 +189,56 @@ test("version 5 requires one exact private Skill root, manifest and expected has
     const {privateSkills,...missing}=configV5();
     await assert.rejects(()=>saveConfig(file,missing),/missing_config_field/);
     await assert.rejects(()=>saveConfig(file,{...configV5(),version:6}),/invalid_config_version/);
+  } finally { await rm(dir,{recursive:true,force:true}); }
+});
+
+test("version 5 requires one disabled exact knowledge-ingest configuration with disjoint managed roots",async()=>{
+  const dir=await mkdtemp(join(tmpdir(),"llw-config-v5-knowledge-"));
+  const file=join(dir,"config.json");
+  try {
+    await assert.doesNotReject(()=>saveConfig(file,configV5()));
+    const cases=[
+      knowledgeConfig({enabled:true}),
+      knowledgeConfig({tempRoot:"relative"}),
+      knowledgeConfig({maxSourceBytes:262143}),
+      knowledgeConfig({aiTimeoutMs:119999}),
+      knowledgeConfig({inputFormats:["text","md"]}),
+      knowledgeConfig({inputFormats:["text","txt","md","docx"]}),
+      knowledgeConfig({extra:true}),
+      knowledgeConfig({libraries:[knowledgeConfig().libraries[0]]}),
+      knowledgeConfig({libraries:[
+        knowledgeConfig().libraries[0],
+        {...knowledgeConfig().libraries[1],libraryKey:"work-knowledge"}
+      ]}),
+      knowledgeConfig({libraries:[
+        knowledgeConfig().libraries[0],
+        {...knowledgeConfig().libraries[1],root:"/Volumes/test/LLW/work/nested"}
+      ]}),
+      knowledgeConfig({libraries:[
+        knowledgeConfig().libraries[0],
+        {...knowledgeConfig().libraries[1],aliases:["Synthetic Work Library"]}
+      ]}),
+      knowledgeConfig({libraries:[
+        {...knowledgeConfig().libraries[0],root:"relative"},
+        knowledgeConfig().libraries[1]
+      ]}),
+      knowledgeConfig({libraries:[
+        {...knowledgeConfig().libraries[0],displayName:".hidden"},
+        knowledgeConfig().libraries[1]
+      ]})
+    ];
+    for (const knowledge of cases) {
+      await assert.rejects(
+        ()=>saveConfig(file,configV5({capabilities:{
+          ...configV5().capabilities,
+          "knowledge-ingest":knowledge
+        }})),
+        /knowledge|capability|config_path/
+      );
+    }
+    const missing={...configV5(),capabilities:{...configV5().capabilities}};
+    delete missing.capabilities["knowledge-ingest"];
+    await assert.rejects(()=>saveConfig(file,missing),/capabilities|capability/);
   } finally { await rm(dir,{recursive:true,force:true}); }
 });
 
