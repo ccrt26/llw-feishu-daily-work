@@ -1,0 +1,419 @@
+import {createHash,randomUUID} from "node:crypto";
+import {
+  chmod,lstat,mkdir,mkdtemp,open,readFile,readdir,realpath,rename,rm
+} from "node:fs/promises";
+import {isAbsolute,join,relative,resolve,sep} from "node:path";
+
+const SOURCE_FIELDS=new Set([
+  "version","sourceKind","detectedFormat","displayName","sizeBytes","sha256",
+  "jobSourceName","safeSourceReference","content"
+]);
+const RESERVED=/^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/iu;
+const MAX_SCAN_DIRECTORIES=4096;
+
+export class KnowledgeWriter {
+  constructor({vaultRoot,libraries}) {
+    this.vaultRoot=vaultRoot;
+    this.libraries=structuredClone(libraries);
+  }
+
+  async createFolder({libraryKey,segments}) {
+    try {
+      const context=await this.#openContext(libraryKey);
+      validateSegments(segments);
+      const result=await ensureSegments(context.libraryReal,segments);
+      return {
+        status:result.created?"created":"existing",
+        libraryKey,
+        relativePath:portable(relative(context.vaultReal,result.path))
+      };
+    } catch {
+      throw new Error("knowledge_write_rejected");
+    }
+  }
+
+  async commit(input) {
+    let stage="",lock;
+    try {
+      validateCommitInput(input);
+      const context=await this.#openContext(input.libraryKey);
+      validateSource(input.source);
+      const knowledgeId=knowledgeIdentifier(input.libraryKey,input.source.sha256);
+      const category=await ensureSegments(context.libraryReal,input.folderSegments);
+      lock=await acquireLibraryLock(context.libraryReal);
+      const existing=await findExisting(context.libraryReal,knowledgeId);
+      if (existing) {
+        const verified=await verifyItem(existing.path,{knowledgeId});
+        return resultFor("existing",context,input.libraryKey,knowledgeId,existing.path,verified.files);
+      }
+      const title=normalizeTitle(input.title);
+      const target=await chooseTarget(category.path,title,input.source.sha256,knowledgeId);
+      stage=await mkdtemp(join(category.path,`.llw-knowledge-stage-${randomUUID()}-`));
+      await chmod(stage,0o700);
+      const markdown=renderKnowledgeMarkdown({...input,knowledgeId});
+      await writeSynced(join(stage,"knowledge.md"),markdown);
+      if (input.source.sourceKind==="file"&&input.preserveSource) {
+        await writeSynced(join(stage,input.source.jobSourceName),input.source.content);
+      }
+      await syncDirectory(stage);
+      await verifyItem(stage,{knowledgeId,expectedMarkdown:markdown,source:input.source,
+        preserveSource:input.preserveSource});
+      await assertMissing(target);
+      await rename(stage,target);
+      stage="";
+      await syncDirectory(category.path);
+      const verified=await verifyItem(target,{knowledgeId,expectedMarkdown:markdown,
+        source:input.source,preserveSource:input.preserveSource});
+      return resultFor("created",context,input.libraryKey,knowledgeId,target,verified.files);
+    } catch {
+      throw new Error("knowledge_write_rejected");
+    } finally {
+      if (stage) await rm(stage,{recursive:true,force:true}).catch(()=>{});
+      if (lock) await releaseLibraryLock(lock);
+    }
+  }
+
+  async #openContext(selectedKey) {
+    if (!isAbsolute(this.vaultRoot)||!Array.isArray(this.libraries)||
+        this.libraries.length<1||this.libraries.length>16) {
+      throw new Error("invalid_configuration");
+    }
+    const vaultConfigured=resolve(this.vaultRoot);
+    await assertOwnedDirectory(vaultConfigured);
+    const vaultReal=await realpath(vaultConfigured);
+    await assertOwnedDirectory(join(vaultReal,".obsidian"));
+    await assertOwnedRegularFile(join(vaultReal,".llw-system","SYSTEM_MAP.md"));
+    const seen=new Set(),configured=[];
+    for (const library of this.libraries) {
+      if (!library||typeof library!=="object"||
+          !/^[a-z][a-z0-9_-]{0,63}$/u.test(library.libraryKey)||
+          seen.has(library.libraryKey)||!isAbsolute(library.root)) {
+        throw new Error("invalid_library");
+      }
+      seen.add(library.libraryKey);
+      const root=resolve(library.root);
+      if (root===vaultConfigured||!inside(vaultConfigured,root)) {
+        throw new Error("invalid_library");
+      }
+      const relativeRoot=relative(vaultConfigured,root);
+      configured.push({
+        libraryKey:library.libraryKey,
+        root,
+        expectedReal:resolve(vaultReal,relativeRoot)
+      });
+    }
+    for (let left=0;left<configured.length;left+=1) {
+      for (let right=left+1;right<configured.length;right+=1) {
+        if (inside(configured[left].root,configured[right].root)||
+            inside(configured[right].root,configured[left].root)) {
+          throw new Error("nested_library");
+        }
+      }
+    }
+    const selected=configured.find(item=>item.libraryKey===selectedKey);
+    if (!selected) throw new Error("unknown_library");
+    for (const library of configured) {
+      await assertOwnedDirectory(library.root);
+      const libraryReal=await realpath(library.root);
+      if (libraryReal!==library.expectedReal) throw new Error("library_mismatch");
+      library.libraryReal=libraryReal;
+    }
+    return {vaultReal,libraryReal:selected.libraryReal};
+  }
+}
+
+export function knowledgeIdentifier(libraryKey,sourceSha256) {
+  if (!/^[a-z][a-z0-9_-]{0,63}$/u.test(libraryKey||"")||
+      !/^[a-f0-9]{64}$/u.test(sourceSha256||"")) {
+    throw new Error("invalid_knowledge_identifier");
+  }
+  return createHash("sha256").update(`${libraryKey}\0${sourceSha256}`,"utf8").digest("hex");
+}
+
+function validateCommitInput(input) {
+  if (!input||typeof input!=="object"||Array.isArray(input)||
+      typeof input.libraryKey!=="string"||!Array.isArray(input.folderSegments)||
+      typeof input.title!=="string"||!input.title.trim()||[...input.title].length>160||
+      input.title.includes("\0")||typeof input.summary!=="string"||
+      !input.summary.trim()||[...input.summary].length>4000||input.summary.includes("\0")||
+      !Array.isArray(input.tags)||input.tags.length>20||
+      new Set(input.tags).size!==input.tags.length||
+      input.tags.some(tag=>typeof tag!=="string"||!tag||[...tag].length>64||tag.includes("\0"))||
+      !/^\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?$/iu.test(input.skillVersion||"")||
+      typeof input.preserveSource!=="boolean") {
+    throw new Error("invalid_commit");
+  }
+  validateSegments(input.folderSegments);
+}
+
+function validateSource(source) {
+  if (!source||typeof source!=="object"||Array.isArray(source)||
+      Object.keys(source).length!==SOURCE_FIELDS.size||
+      Object.keys(source).some(field=>!SOURCE_FIELDS.has(field))||
+      source.version!==1||!new Set(["text","file"]).has(source.sourceKind)||
+      !new Set(["text","txt","md"]).has(source.detectedFormat)||
+      typeof source.displayName!=="string"||!source.displayName||
+      [...source.displayName].length>255||/[\\/\u0000-\u001f\u007f]/u.test(source.displayName)||
+      !Number.isSafeInteger(source.sizeBytes)||source.sizeBytes<1||
+      !/^[a-f0-9]{64}$/u.test(source.sha256)||
+      !/^source\.(?:txt|md)$/u.test(source.jobSourceName)||
+      source.safeSourceReference!==""||typeof source.content!=="string"||
+      !source.content.trim()||source.content.includes("\0")) {
+    throw new Error("invalid_source");
+  }
+  if (source.sourceKind==="text"&&
+      (source.detectedFormat!=="text"||source.jobSourceName!=="source.txt")) {
+    throw new Error("invalid_source");
+  }
+  if (source.sourceKind==="file"&&
+      !sameFileFormat(source.detectedFormat,source.jobSourceName)) {
+    throw new Error("invalid_source");
+  }
+  const bytes=Buffer.byteLength(source.content,"utf8");
+  const digest=createHash("sha256").update(source.content,"utf8").digest("hex");
+  if (bytes!==source.sizeBytes||bytes>262_144||digest!==source.sha256) {
+    throw new Error("invalid_source");
+  }
+}
+
+function sameFileFormat(format,name) {
+  return (format==="txt"&&name==="source.txt")||(format==="md"&&name==="source.md");
+}
+
+function validateSegments(segments) {
+  if (!Array.isArray(segments)||segments.length<1||segments.length>5||
+      segments.some(segment=>!validSegment(segment))) {
+    throw new Error("invalid_segments");
+  }
+}
+
+function validSegment(value) {
+  return typeof value==="string"&&value===value.trim()&&value===value.normalize("NFC")&&
+    [...value].length>=1&&[...value].length<=64&&value!=="."&&value!==".."&&
+    !value.startsWith(".")&&!RESERVED.test(value)&&
+    !/[\\/\u0000-\u001f\u007f]/u.test(value);
+}
+
+async function ensureSegments(root,segments) {
+  let current=root,created=false;
+  for (const segment of segments) {
+    const next=resolve(current,segment);
+    if (!inside(root,next)) throw new Error("path_escape");
+    try {
+      await assertOwnedDirectory(next);
+    } catch (error) {
+      if (error?.code!=="ENOENT") throw error;
+      try {
+        await mkdir(next,{mode:0o700});
+        created=true;
+      } catch (mkdirError) {
+        if (mkdirError?.code!=="EEXIST") throw mkdirError;
+      }
+      await chmod(next,0o700);
+      await assertOwnedDirectory(next);
+    }
+    if (await realpath(next)!==next) throw new Error("path_mismatch");
+    current=next;
+  }
+  return {path:current,created};
+}
+
+async function chooseTarget(parent,title,sourceSha256,knowledgeId) {
+  const candidates=[
+    title,
+    `${title}--${sourceSha256.slice(0,8)}`,
+    `${title}--${knowledgeId.slice(0,12)}`
+  ];
+  for (const name of candidates) {
+    const target=resolve(parent,name);
+    if (!inside(parent,target)) throw new Error("path_escape");
+    try {
+      const metadata=await lstat(target);
+      if (metadata.isSymbolicLink()) throw new Error("unsafe_target");
+    } catch (error) {
+      if (error?.code==="ENOENT") return target;
+      throw error;
+    }
+  }
+  throw new Error("title_collision");
+}
+
+function normalizeTitle(value) {
+  let normalized=value.normalize("NFC").trim()
+    .replace(/[\u0000-\u001f\u007f\\/:*?"<>|]+/gu,"-")
+    .replace(/\s+/gu," ")
+    .replace(/-+/gu,"-")
+    .replace(/^[.\s-]+|[.\s-]+$/gu,"");
+  if (!normalized) normalized="知识项";
+  if (RESERVED.test(normalized)||normalized.startsWith(".")) normalized=`${normalized}-知识`;
+  return [...normalized].slice(0,80).join("");
+}
+
+function renderKnowledgeMarkdown({
+  libraryKey,title,summary,tags,source,skillVersion,preserveSource,knowledgeId
+}) {
+  const tagLines=tags.length
+    ? tags.map(tag=>`  - ${JSON.stringify(tag)}`).join("\n")
+    : "  []";
+  return [
+    "---",
+    'llw_schema: "knowledge-item/v1"',
+    `knowledge_id: ${JSON.stringify(knowledgeId)}`,
+    `library_key: ${JSON.stringify(libraryKey)}`,
+    `title: ${JSON.stringify(title.normalize("NFC").trim())}`,
+    "tags:",
+    tagLines,
+    `source_kind: ${JSON.stringify(source.sourceKind)}`,
+    `source_format: ${JSON.stringify(source.detectedFormat)}`,
+    `source_display_name: ${JSON.stringify(source.displayName)}`,
+    `source_sha256: ${JSON.stringify(source.sha256)}`,
+    `source_size_bytes: ${source.sizeBytes}`,
+    `skill_version: ${JSON.stringify(skillVersion)}`,
+    `preserve_source: ${preserveSource}`,
+    "---",
+    "",
+    `# ${title.normalize("NFC").trim()}`,
+    "",
+    "## 摘要",
+    "",
+    summary.normalize("NFC").trim(),
+    "",
+    "## 原始内容",
+    "",
+    source.content,
+    ""
+  ].join("\n");
+}
+
+async function findExisting(root,knowledgeId) {
+  const queue=[root];
+  let visited=0;
+  while (queue.length) {
+    const directory=queue.shift();
+    if (++visited>MAX_SCAN_DIRECTORIES) throw new Error("scan_limit");
+    const entries=await readdir(directory,{withFileTypes:true});
+    for (const entry of entries) {
+      if (entry.name.startsWith(".")) continue;
+      const path=join(directory,entry.name);
+      const metadata=await lstat(path);
+      if (metadata.isSymbolicLink()) throw new Error("unsafe_scan");
+      if (metadata.isDirectory()) queue.push(path);
+      else if (metadata.isFile()&&entry.name==="knowledge.md") {
+        if (metadata.size>512*1024) throw new Error("unsafe_item");
+        const content=await readFile(path,"utf8");
+        if (content.includes(`knowledge_id: "${knowledgeId}"`)) {
+          return {path:directory};
+        }
+      }
+    }
+  }
+  return null;
+}
+
+async function verifyItem(path,{knowledgeId,expectedMarkdown,source,preserveSource}={}) {
+  const directory=await lstat(path);
+  if (!directory.isDirectory()||directory.isSymbolicLink()||
+      directory.uid!==process.getuid()||(directory.mode&0o777)!==0o700) {
+    throw new Error("invalid_item");
+  }
+  const expected=["knowledge.md"];
+  if (source?.sourceKind==="file"&&preserveSource) expected.push(source.jobSourceName);
+  const entries=(await readdir(path)).sort();
+  if (entries.length!==expected.length||
+      entries.some((entry,index)=>entry!==expected.sort()[index])) {
+    throw new Error("invalid_item_files");
+  }
+  for (const name of entries) {
+    const metadata=await lstat(join(path,name));
+    if (!metadata.isFile()||metadata.isSymbolicLink()||
+        metadata.uid!==process.getuid()||(metadata.mode&0o777)!==0o600) {
+      throw new Error("invalid_item_file");
+    }
+  }
+  const markdown=await readFile(join(path,"knowledge.md"),"utf8");
+  if (!markdown.includes(`knowledge_id: "${knowledgeId}"`)||
+      (expectedMarkdown!==undefined&&markdown!==expectedMarkdown)) {
+    throw new Error("invalid_item_content");
+  }
+  if (source?.sourceKind==="file"&&preserveSource) {
+    const raw=await readFile(join(path,source.jobSourceName));
+    if (createHash("sha256").update(raw).digest("hex")!==source.sha256) {
+      throw new Error("invalid_source_copy");
+    }
+  }
+  return {files:entries};
+}
+
+async function writeSynced(path,content) {
+  const handle=await open(path,"wx",0o600);
+  try {
+    await handle.writeFile(content,"utf8");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await chmod(path,0o600);
+}
+
+async function syncDirectory(path) {
+  const handle=await open(path,"r");
+  try { await handle.sync(); } finally { await handle.close(); }
+}
+
+async function acquireLibraryLock(root) {
+  const path=join(root,".llw-knowledge-publish.lock");
+  for (let attempt=0;attempt<200;attempt+=1) {
+    try {
+      const handle=await open(path,"wx",0o600);
+      await handle.writeFile(String(process.pid),"utf8");
+      await handle.sync();
+      return {path,handle};
+    } catch (error) {
+      if (error?.code!=="EEXIST") throw error;
+      await delay(10);
+    }
+  }
+  throw new Error("publish_lock_timeout");
+}
+
+async function releaseLibraryLock(lock) {
+  await lock.handle.close().catch(()=>{});
+  await rm(lock.path,{force:true}).catch(()=>{});
+}
+
+async function assertMissing(path) {
+  try {
+    await lstat(path);
+    throw new Error("target_exists");
+  } catch (error) {
+    if (error?.code!=="ENOENT") throw error;
+  }
+}
+
+async function assertOwnedDirectory(path) {
+  const metadata=await lstat(path);
+  if (!metadata.isDirectory()||metadata.isSymbolicLink()||metadata.uid!==process.getuid()) {
+    throw new Error("unsafe_directory");
+  }
+}
+
+async function assertOwnedRegularFile(path) {
+  const metadata=await lstat(path);
+  if (!metadata.isFile()||metadata.isSymbolicLink()||metadata.uid!==process.getuid()) {
+    throw new Error("unsafe_file");
+  }
+}
+
+function resultFor(status,context,libraryKey,knowledgeId,path,files) {
+  const base=portable(relative(context.vaultReal,path));
+  return {
+    status,knowledgeId,libraryKey,relativePath:base,
+    files:files.map(name=>`${base}/${name}`)
+  };
+}
+
+function inside(parent,child) {
+  return child.startsWith(`${parent}${sep}`);
+}
+function portable(value) { return value.split(sep).join("/"); }
+function delay(milliseconds) { return new Promise(resolve=>setTimeout(resolve,milliseconds)); }
