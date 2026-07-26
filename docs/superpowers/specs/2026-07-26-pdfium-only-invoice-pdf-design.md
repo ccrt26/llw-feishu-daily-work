@@ -43,9 +43,8 @@
 | 十页独立进程峰值内存 | 约 128.7 MiB |
 | 虚构未嵌入中文字体餐饮发票端到端 | 七字段清晰、餐饮、单张；购买方不匹配按 Node.js 规则拒绝 |
 
-PDFium 的文档加载、密码错误、页数、表单初始化、文本页和逐页渲染接口以 pypdfium2 官方 API 为准：
-
-https://pypdfium2.readthedocs.io/en/stable/python_api.html
+PDFium 的文档加载、密码错误、页数、表单初始化、文本页和逐页渲染接口以
+[pypdfium2 Python API](https://pypdfium2.readthedocs.io/en/stable/python_api.html) 为准。
 
 ## 3. 设计决定
 
@@ -149,7 +148,7 @@ Node.js 只向处理器提供：
 
 ### 5.1 受保护的 PDFium 运行件
 
-固定使用 pypdfium2 / PDFium `5.11.0`。生产运行件只包含所需模块、原生 PDFium 库、配置元数据和许可证，约 8.1 MiB，复制到 `~/Library/Application Support/LLW Assistant/` 下的受保护运行件目录：
+固定使用 pypdfium2 / PDFium `5.11.0`。生产运行件只包含所需模块、原生 PDFium 库、配置元数据和许可证，约 8.1 MiB，复制到受保护的本机运行件目录：
 
 - 目录权限 `0700`；
 - 文件权限不得向 group/other 开放；
@@ -251,7 +250,7 @@ Node.js 只向处理器提供：
 
 回滚点不得包含钥匙串、token、普通日志、平台标识、消息正文、真实发票或 Vault 资料。
 
-必须在全新 `/private/tmp` 恢复组件、配置和 PDFium 运行件，验证清单和测试后删除恢复副本。
+必须在全新的隔离临时恢复目录恢复组件、配置和 PDFium 运行件，验证清单和测试后删除恢复副本。
 
 ### 9.2 原子部署
 
@@ -311,8 +310,10 @@ Node.js 只向处理器提供：
 
 - 生产组件 `d06da01`，正式 Skills `78433ab`；
 - 生产与隔离完整回归 `326/326`；
-- 受保护回滚点 `v363-pdfium-pre-deploy-2026-07-26` 已完成清单校验，旧组件与旧 Skills 的全新 `/private/tmp` 恢复回归为 `313/313`；
+- 受保护的版本化回滚点已完成清单校验，旧组件与旧 Skills 在全新隔离临时恢复目录的回归为 `313/313`；
 - 生产只配置一个受保护的 PDFium 处理器路径，pypdfium2 `5.11.0`，运行件 48 个 manifest 文件，启动哈希和动态导入自检通过；
 - 纯合成测试 Vault 已通过合规归档、无关 PDF 路由拒绝、两页顺序、11 页/加密/损坏拒绝、重复幂等、同月同金额后缀、源目标哈希一致和临时清理；
 - 正式微信新发 PDF 得到唯一 `invoice/committed` outcome、一个普通文件工件和一个 `published` 事务；回复已发送、源证据与目标 SHA-256 相同、临时目录和可见待回复均为零；
+- 正式调用链证明 PDF 只下载并准备一次；`router.visual` 查看全部已验证页面、只选择唯一 Capability 且不提取票面字段；`invoice.visual` 随后复用同一准备结果并按照 `filing-invoices` 提取事实；
+- Node.js 继续负责购买方、税号、餐饮类别、月份、金额命名、幂等和 writer 的固定规则；飞书与微信在入口标准化后共用这条链路；
 - 正式微信保持启用，当前有效模型保持 Codex，正式 Vault 既有结构未移动或改名。
