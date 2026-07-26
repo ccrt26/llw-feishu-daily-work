@@ -95,6 +95,30 @@ test("runs Codex read-only with only the selected Skill and AI-safe context",asy
   } finally { await rm(h.root,{recursive:true,force:true}); }
 });
 
+test("ignores macOS AppleDouble metadata when copying the selected Skill",async()=>{
+  const h=await harness();
+  const request="Save one synthetic note.";
+  const source={
+    version:1,sourceKind:"text",detectedFormat:"text",displayName:"message.txt",
+    sizeBytes:Buffer.byteLength(request),sha256:"d".repeat(64),
+    jobSourceName:"source.txt",safeSourceReference:""
+  };
+  try {
+    await writeFile(
+      join(h.skillRoot,"references","._source-integrity.md"),
+      "synthetic AppleDouble metadata",
+      {mode:0o600}
+    );
+    const result=await invokeKnowledgeDecision({
+      codexPath:fakeCodex,skillRoot:h.skillRoot,tempRoot:h.tempRoot,
+      input:{request,source,sourceContent:request,allowedLibraries:libraries,taskSummary:null},
+      environment:{...process.env,FAKE_RESPONSE:JSON.stringify(decision)}
+    });
+    assert.deepEqual(result,decision);
+    assert.deepEqual(await readdir(h.tempRoot),[]);
+  } finally { await rm(h.root,{recursive:true,force:true}); }
+});
+
 test("rejects invalid output, unknown models and unsafe private Skill files without leakage",async()=>{
   const h=await harness();
   const request="Save one synthetic note.";

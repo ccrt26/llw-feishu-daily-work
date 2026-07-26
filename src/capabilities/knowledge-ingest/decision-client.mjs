@@ -66,6 +66,7 @@ async function copySelectedSkill(sourceRoot,destinationRoot) {
   await assertPrivateDirectory(sourceReferences);
   const entries=await readdir(sourceReferences,{withFileTypes:true});
   for (const entry of entries) {
+    if (entry.name.startsWith("._")) continue;
     if (entry.name.startsWith(".")||entry.name!==basename(entry.name)||
         !entry.isFile()||entry.isSymbolicLink()) {
       throw new Error("unsafe_skill");

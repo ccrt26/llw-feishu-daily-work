@@ -68,6 +68,22 @@ test("runs only the selected private Skill in one read-only bounded job",async()
   }
 });
 
+test("ignores macOS AppleDouble metadata when copying the selected Skill",async()=>{
+  await chmod(fixture,0o700);
+  const tempRoot=await mkdtemp(join(tmpdir(),"llw-aw-client-"));
+  const skillRoot=await syntheticSkillRoot(tempRoot);
+  await writeFile(
+    join(skillRoot,"references","._output-schema.json"),
+    "synthetic AppleDouble metadata",
+    {mode:0o600}
+  );
+  const result=await invokeAssistantWorkDecision({
+    codexPath:fixture,skillRoot,tempRoot,input,
+    environment:{...process.env,FAKE_RESPONSE:JSON.stringify(response)}
+  });
+  assert.deepEqual(result,response);
+});
+
 test("rejects forged source decisions after the model returns",async()=>{
   await chmod(fixture,0o700);
   const tempRoot=await mkdtemp(join(tmpdir(),"llw-aw-client-"));
