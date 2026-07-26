@@ -1,7 +1,12 @@
 const MAX_INPUT_BYTES=32 * 1024;
 const MAX_KNOWLEDGE_INPUT_BYTES=512 * 1024;
+const MAX_ASSISTANT_INPUT_BYTES=512 * 1024;
 const ROUTER_ROOT=new Set(["message","conversation","capabilities"]);
 const ROUTER_CONVERSATION=new Set(["capability","question","startedAt"]);
+const ROUTER_TASK_SESSION=new Set([
+  "capability","status","goal","task_summary","current_draft_version",
+  "model","grounding_mode","startedAt"
+]);
 const ROUTING_CONTRACT=new Set(["capability","purpose","accepts","positive_examples","negative_examples","supports_continuation"]);
 const DAILY_ROOT=new Set(["message","conversation","candidates"]);
 const DAILY_MESSAGE=new Set(["ok","messageId","text","createTime"]);
@@ -14,6 +19,21 @@ const KNOWLEDGE_SOURCE=new Set([
   "jobSourceName","safeSourceReference"
 ]);
 const KNOWLEDGE_LIBRARY=new Set(["libraryKey","displayName","aliases","existingFolders"]);
+const ASSISTANT_ROOT=new Set([
+  "message","session","currentDraft","baseVersion","sources",
+  "allowedOutputFormats","verifiedArtifact","entrySupportsFileReply"
+]);
+const ASSISTANT_MESSAGE=new Set(["text","received_at"]);
+const ASSISTANT_SESSION=new Set([
+  "session_id","goal","task_summary","confirmed_requirements",
+  "rejected_directions","source_paths","current_draft_version","recent_turns",
+  "grounding_mode","model"
+]);
+const ASSISTANT_DRAFT=new Set(["version","text"]);
+const ASSISTANT_SOURCE=new Set(["path","excerpt","score"]);
+const ASSISTANT_ARTIFACT=new Set(["kind","jobFile","displayName"]);
+const ASSISTANT_TURN=new Set(["role","text"]);
+const SAFE_PATH=/^(?!\/)(?!~)(?![A-Za-z][A-Za-z0-9+.-]*:)(?!.*\\)(?!.*(?:^|\/)\.\.(?:\/|$)).+$/u;
 
 const PRIVATE_KEY_HEADER=/-----BEGIN (?:PRIVATE KEY|RSA PRIVATE KEY|EC PRIVATE KEY|OPENSSH PRIVATE KEY)-----/u;
 const BEARER_VALUE=/\bauthorization\s*:\s*bearer\s+([^\s,，;；。！？?]+)/iu;
@@ -44,9 +64,12 @@ export function prepareGuardedAiInput(task,input) {
     }
     else if (task==="daily-work.interpret") prepared=prepareDaily(input);
     else if (task==="knowledge.ingest") prepared=prepareKnowledge(input);
+    else if (task==="assistant.work") prepared=prepareAssistant(input);
     else reject();
     const serialized=JSON.stringify(prepared.context);
-    const maxBytes=task==="knowledge.ingest"?MAX_KNOWLEDGE_INPUT_BYTES:MAX_INPUT_BYTES;
+    const maxBytes=task==="knowledge.ingest"
+      ?MAX_KNOWLEDGE_INPUT_BYTES
+      :task==="assistant.work"?MAX_ASSISTANT_INPUT_BYTES:MAX_INPUT_BYTES;
     if (Buffer.byteLength(serialized,"utf8")>maxBytes) reject();
     for (const value of modelTextValues(task,prepared.context)) {
       if (detectPaymentCredential(value)) reject("payment");
@@ -95,6 +118,9 @@ function* modelTextValues(task,context) {
     if (typeof context.message.text==="string") yield context.message.text;
     if (typeof context.message.attachment?.displayName==="string") yield context.message.attachment.displayName;
     if (typeof context.conversation?.question==="string") yield context.conversation.question;
+    if (typeof context.conversation?.goal==="string") yield context.conversation.goal;
+    if (typeof context.conversation?.task_summary==="string"&&
+        context.conversation.task_summary) yield context.conversation.task_summary;
     return;
   }
   if (task==="knowledge.ingest") {
@@ -108,6 +134,17 @@ function* modelTextValues(task,context) {
     }
     return;
   }
+  if (task==="assistant.work") {
+    yield context.message.text;
+    yield context.session.goal;
+    if (context.session.task_summary) yield context.session.task_summary;
+    yield* context.session.confirmed_requirements;
+    yield* context.session.rejected_directions;
+    for (const turn of context.session.recent_turns) yield turn.text;
+    if (context.currentDraft) yield context.currentDraft.text;
+    for (const source of context.sources) yield source.excerpt;
+    return;
+  }
   yield context.message.text;
   for (const turn of context.conversation?.turns||[]) yield turn.text;
   for (const candidate of context.candidates) {
@@ -117,6 +154,87 @@ function* modelTextValues(task,context) {
     yield candidate.summary;
     yield* candidate.follow_ups;
   }
+}
+
+function prepareAssistant(input) {
+  exact(input,ASSISTANT_ROOT);
+  exact(input.message,ASSISTANT_MESSAGE);
+  if (!text(input.message.text,12_000)||
+      !canonicalIso(input.message.received_at)) reject();
+  exact(input.session,ASSISTANT_SESSION);
+  const session=input.session;
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
+    .test(session.session_id)||!text(session.goal,1000)||
+    typeof session.task_summary!=="string"||
+    Buffer.byteLength(session.task_summary,"utf8")>8000||
+    !new Set(["source_strict","hybrid","creative"]).has(session.grounding_mode)||
+    session.model!=="codex"||
+    !Number.isInteger(session.current_draft_version)||
+    session.current_draft_version<0||session.current_draft_version>1_000_000) {
+    reject();
+  }
+  for (const [value,maxItems,maxBytes] of [
+    [session.confirmed_requirements,20,1000],
+    [session.rejected_directions,20,1000]
+  ]) if (!stringArray(value,maxItems,maxBytes)) reject();
+  validateSafePaths(session.source_paths);
+  if (!Array.isArray(session.recent_turns)||session.recent_turns.length>12) reject();
+  for (const turn of session.recent_turns) {
+    exact(turn,ASSISTANT_TURN);
+    if (!new Set(["user","assistant"]).has(turn.role)||!text(turn.text,2000)) {
+      reject();
+    }
+  }
+  if (input.currentDraft===null) {
+    if (session.current_draft_version!==0) reject();
+  } else {
+    exact(input.currentDraft,ASSISTANT_DRAFT);
+    if (input.currentDraft.version!==session.current_draft_version||
+        !text(input.currentDraft.text,256*1024)) reject();
+  }
+  if (!Number.isInteger(input.baseVersion)||input.baseVersion<0||
+      input.baseVersion>1_000_000) reject();
+  if (!Array.isArray(input.sources)||input.sources.length>20) reject();
+  const sourcePaths=[];
+  for (const source of input.sources) {
+    exact(source,ASSISTANT_SOURCE);
+    if (!safePath(source.path)||!text(source.excerpt,64*1024)||
+        !Number.isInteger(source.score)||source.score<1) reject();
+    sourcePaths.push(source.path);
+  }
+  if (new Set(sourcePaths).size!==sourcePaths.length||
+      sourcePaths.some(path=>!session.source_paths.includes(path))) reject();
+  const formats=["docx","pptx","xlsx","pdf","md"];
+  if (!Array.isArray(input.allowedOutputFormats)||
+      input.allowedOutputFormats.length>formats.length||
+      new Set(input.allowedOutputFormats).size!==input.allowedOutputFormats.length||
+      input.allowedOutputFormats.some(value=>!formats.includes(value))||
+      typeof input.entrySupportsFileReply!=="boolean") reject();
+  if (input.verifiedArtifact!==null) {
+    exact(input.verifiedArtifact,ASSISTANT_ARTIFACT);
+    if (!formats.includes(input.verifiedArtifact.kind)||
+        input.verifiedArtifact.jobFile!==`output.${input.verifiedArtifact.kind}`||
+        !safeLabel(input.verifiedArtifact.displayName,160)) reject();
+  }
+  return {context:structuredClone(input),validation:{}};
+}
+
+function validateSafePaths(value) {
+  if (!Array.isArray(value)||value.length>20||
+      new Set(value).size!==value.length||value.some(path=>!safePath(path))) reject();
+}
+
+function safePath(value) {
+  return typeof value==="string"&&value.length>0&&[...value].length<=240&&
+    Buffer.byteLength(value,"utf8")<=240&&
+    SAFE_PATH.test(value)&&value.split("/").every(segment=>
+      segment&&segment!=="."&&segment!==".."
+    );
+}
+
+function canonicalIso(value) {
+  return typeof value==="string"&&Number.isFinite(Date.parse(value))&&
+    new Date(value).toISOString()===value;
 }
 
 function prepareKnowledge(input) {
@@ -179,9 +297,25 @@ function validateRouter(input) {
     if (!text(message.attachment.displayName,255)||typeof message.attachment.extension!=="string"||message.attachment.extension.length>20||message.attachment.resourceType!==message.type) reject();
   }
   if (input.conversation!==null) {
-    exact(input.conversation,ROUTER_CONVERSATION);
-    if (input.conversation.capability!==null&&!text(input.conversation.capability,64)) reject();
-    if (!text(input.conversation.question,200)||!text(input.conversation.startedAt,64)) reject();
+    const conversation=input.conversation;
+    if (Object.keys(conversation).length===ROUTER_CONVERSATION.size) {
+      exact(conversation,ROUTER_CONVERSATION);
+      if (conversation.capability!==null&&!text(conversation.capability,64)) reject();
+      if (!text(conversation.question,200)||!text(conversation.startedAt,64)) reject();
+    } else {
+      exact(conversation,ROUTER_TASK_SESSION);
+      if (conversation.capability!=="assistant-work"||
+          conversation.status!=="open"||!text(conversation.goal,1000)||
+          typeof conversation.task_summary!=="string"||
+          conversation.task_summary.length>8000||
+          !Number.isInteger(conversation.current_draft_version)||
+          conversation.current_draft_version<0||
+          conversation.current_draft_version>1_000_000||
+          conversation.model!=="codex"||
+          !new Set(["source_strict","hybrid","creative"])
+            .has(conversation.grounding_mode)||
+          !text(conversation.startedAt,64)) reject();
+    }
   }
   if (!Array.isArray(input.capabilities)||input.capabilities.length>20) reject();
   for (const contract of input.capabilities) {

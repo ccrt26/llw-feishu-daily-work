@@ -33,6 +33,20 @@ const knowledgeInput=text=>({
   taskSummary:null
 });
 
+const assistantInput=text=>({
+  message:{text,received_at:"2026-07-26T01:00:00.000Z"},
+  session:{
+    session_id:"123e4567-e89b-42d3-a456-426614174000",
+    goal:"讨论合成方案",task_summary:"",confirmed_requirements:[],
+    rejected_directions:[],source_paths:["工作资料/合成.md"],
+    current_draft_version:0,recent_turns:[],
+    grounding_mode:"hybrid",model:"codex"
+  },
+  currentDraft:null,baseVersion:0,
+  sources:[{path:"工作资料/合成.md",excerpt:"普通合成资料",score:1}],
+  allowedOutputFormats:[],verifiedArtifact:null,entrySupportsFileReply:false
+});
+
 function rejected(task,input) {
   try { guardAiInput(task,input); } catch (error) { return error; }
   assert.fail("expected ai_input_rejected");
@@ -122,4 +136,35 @@ test("scans knowledge content and safe catalog labels for prohibited values",()=
   const catalog=knowledgeInput("普通内容");
   catalog.allowedLibraries[0].displayName="Authorization: Bearer actual-token";
   assert.equal(rejected("knowledge.ingest",catalog).reasonCode,"credential");
+});
+
+test("allows only bounded verified assistant-work context",()=>{
+  const input=assistantInput("讨论合成方案");
+  assert.deepEqual(guardAiInput("assistant.work",input),input);
+  assert.throws(
+    ()=>guardAiInput("assistant.work",{
+      ...input,sources:[{path:"../outside.md",excerpt:"普通内容",score:1}]
+    }),
+    /ai_input_rejected/
+  );
+  assert.throws(
+    ()=>guardAiInput("assistant.work",{
+      ...input,vaultRoot:"/private/vault"
+    }),
+    /ai_input_rejected/
+  );
+});
+
+test("scans assistant messages, drafts and source excerpts for prohibited values",()=>{
+  assert.equal(
+    rejected("assistant.work",assistantInput("API Key: actual-api-key")).reasonCode,
+    "credential"
+  );
+  const draft=assistantInput("修改当前稿");
+  draft.session.current_draft_version=1;
+  draft.currentDraft={version:1,text:"支付密码: actual-password"};
+  assert.equal(rejected("assistant.work",draft).reasonCode,"payment");
+  const source=assistantInput("总结资料");
+  source.sources[0].excerpt="Authorization: Bearer actual-token";
+  assert.equal(rejected("assistant.work",source).reasonCode,"credential");
 });

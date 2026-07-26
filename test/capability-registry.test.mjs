@@ -4,24 +4,53 @@ import {buildCapabilityRegistry} from "../src/capabilities/index.mjs";
 
 test("registry has stable explicit order and omits disabled capabilities",() => {
   const daily={name:"daily-work"},invoice={name:"invoice"};
-  const knowledge={name:"knowledge-ingest"};
+  const knowledge={name:"knowledge-ingest"},assistant={name:"assistant-work"};
   const contracts={
     "daily-work":{capability:"daily-work"},
     invoice:{capability:"invoice"},
-    "knowledge-ingest":{capability:"knowledge-ingest"}
+    "knowledge-ingest":{capability:"knowledge-ingest"},
+    "assistant-work":{capability:"assistant-work"}
   };
   assert.deepEqual(buildCapabilityRegistry({
-    dailyWork:daily,invoice,knowledgeIngest:knowledge,contracts,
-    enabled:{"daily-work":true,invoice:true,"knowledge-ingest":false}
+    dailyWork:daily,invoice,knowledgeIngest:knowledge,assistantWork:assistant,contracts,
+    enabled:{"daily-work":true,invoice:true,"knowledge-ingest":false,"assistant-work":false}
   }),[
     {...daily,routingContract:contracts["daily-work"]},{...invoice,routingContract:contracts.invoice}
   ]);
   assert.deepEqual(buildCapabilityRegistry({
-    dailyWork:daily,invoice,knowledgeIngest:knowledge,contracts,
-    enabled:{"daily-work":true,invoice:false,"knowledge-ingest":false}
+    dailyWork:daily,invoice,knowledgeIngest:knowledge,assistantWork:assistant,contracts,
+    enabled:{"daily-work":true,invoice:false,"knowledge-ingest":false,"assistant-work":false}
   }),[
     {...daily,routingContract:contracts["daily-work"]}
   ]);
+});
+
+test("adds exactly one static assistant-work handler only when explicitly enabled",()=>{
+  const daily={name:"daily-work"},invoice={name:"invoice"};
+  const knowledge={name:"knowledge-ingest",handle:async()=>({status:"ignored"})};
+  const assistant={name:"assistant-work",handle:async()=>({status:"ignored"})};
+  const contracts={
+    "daily-work":{capability:"daily-work"},invoice:{capability:"invoice"},
+    "knowledge-ingest":{capability:"knowledge-ingest"},
+    "assistant-work":{capability:"assistant-work",supports_continuation:true}
+  };
+  const registry=buildCapabilityRegistry({
+    dailyWork:daily,invoice,knowledgeIngest:knowledge,assistantWork:assistant,
+    contracts,enabled:{
+      "daily-work":true,invoice:true,"knowledge-ingest":false,
+      "assistant-work":true
+    }
+  });
+  assert.deepEqual(registry.map(item=>item.name),[
+    "daily-work","invoice","assistant-work"
+  ]);
+  assert.throws(()=>buildCapabilityRegistry({
+    dailyWork:daily,invoice,knowledgeIngest:knowledge,contracts,
+    enabled:{
+      "daily-work":true,invoice:true,"knowledge-ingest":false,
+      "assistant-work":true
+    }
+  }),/invalid_capability_registry/);
 });
 
 test("adds exactly one static knowledge handler only when explicitly enabled",()=>{
@@ -34,7 +63,7 @@ test("adds exactly one static knowledge handler only when explicitly enabled",()
   };
   const registry=buildCapabilityRegistry({
     dailyWork:daily,invoice,knowledgeIngest:knowledge,contracts,
-    enabled:{"daily-work":true,invoice:true,"knowledge-ingest":true}
+    enabled:{"daily-work":true,invoice:true,"knowledge-ingest":true,"assistant-work":false}
   });
   assert.deepEqual(registry.map(item=>item.name),[
     "daily-work","invoice","knowledge-ingest"
@@ -44,7 +73,7 @@ test("adds exactly one static knowledge handler only when explicitly enabled",()
   assert.throws(
     ()=>buildCapabilityRegistry({
       dailyWork:daily,invoice,contracts,
-      enabled:{"daily-work":true,invoice:true,"knowledge-ingest":true}
+      enabled:{"daily-work":true,invoice:true,"knowledge-ingest":true,"assistant-work":false}
     }),
     /invalid_capability_registry/
   );

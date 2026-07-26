@@ -19,6 +19,11 @@ const INVOICE_FIELDS=new Set([
 const KNOWLEDGE_FIELDS=new Set([
   "enabled","tempRoot","libraries","maxSourceBytes","aiTimeoutMs","inputFormats"
 ]);
+const ASSISTANT_FIELDS=new Set([
+  "enabled","tempRoot","workspaceRoot","maxSearchFiles","maxSearchFileBytes",
+  "maxSearchResults","maxSourceExcerptBytes","aiTimeoutMs",
+  "allowedOutputFormats"
+]);
 const LIBRARY_FIELDS=new Set(["libraryKey","displayName","aliases","root"]);
 
 export async function loadConfig(file,{requireBinding=true}={}) {
@@ -70,7 +75,7 @@ function validateConfig(config,requireBinding,configFile) {
   exact(
     config.capabilities,
     new Set(config.version===5
-      ?["daily-work","invoice","knowledge-ingest"]
+      ?["daily-work","invoice","knowledge-ingest","assistant-work"]
       :["daily-work","invoice"]),
     "capabilities"
   );
@@ -82,12 +87,30 @@ function validateConfig(config,requireBinding,configFile) {
   absolute(invoice.pdfProcessorPath,"invoice.pdfProcessorPath");
   const knowledge=config.version===5?config.capabilities["knowledge-ingest"]:null;
   if (knowledge) validateKnowledgeConfig(knowledge,config.vaultRoot);
+  const assistant=config.version===5?config.capabilities["assistant-work"]:null;
+  if (assistant) validateAssistantConfig(
+    assistant,{vaultRoot:config.vaultRoot,knowledge,invoice}
+  );
+  if (assistant) {
+    const protectedFiles=[
+      configFile,config.stateFile,config.heartbeatFile,config.modelStateFile,
+      config.wechatStateFile,config.cliPath,config.codexPath,
+      invoice.pdfProcessorPath
+    ];
+    for (const root of [assistant.tempRoot,assistant.workspaceRoot]) {
+      if (protectedFiles.some(file=>
+        foldedPath(file)===foldedPath(root)||foldedInside(root,file)
+      )) throw new Error("invalid_assistant_root");
+    }
+  }
   const privatePaths=config.version===5
     ?[
       config.privateSkills.root,
       config.privateSkills.manifestPath,
       knowledge.tempRoot,
-      ...knowledge.libraries.map(library=>library.root)
+      ...knowledge.libraries.map(library=>library.root),
+      assistant.tempRoot,
+      assistant.workspaceRoot
     ]
     :[];
   const protectedPaths=[configFile,config.vaultRoot,config.stateFile,config.heartbeatFile,config.wechatStateFile,config.cliPath,config.codexPath,daily.skillRoot,invoice.skillRoot,invoice.tempRoot,invoice.archiveRoot,invoice.pdfProcessorPath,...privatePaths];
@@ -102,6 +125,47 @@ function validateConfig(config,requireBinding,configFile) {
   if (invoice.maxPdfTextBytes !== 262_144) throw new Error("invalid_max_pdf_text_bytes");
   if (invoice.maxPdfRenderBytes !== 100 * 1024 * 1024) throw new Error("invalid_max_pdf_render_bytes");
   if (invoice.pdfPrepareTimeoutMs !== 60_000) throw new Error("invalid_pdf_prepare_timeout");
+}
+
+function validateAssistantConfig(assistant,{vaultRoot,knowledge,invoice}) {
+  exact(assistant,ASSISTANT_FIELDS,"capability");
+  if (assistant.enabled!==false) throw new Error("invalid_assistant_enabled");
+  absolute(assistant.tempRoot,"assistant-work.tempRoot");
+  absolute(assistant.workspaceRoot,"assistant-work.workspaceRoot");
+  for (const root of [assistant.tempRoot,assistant.workspaceRoot]) {
+    if (foldedInside(vaultRoot,root)) throw new Error("invalid_assistant_root");
+  }
+  if (foldedInside(assistant.tempRoot,assistant.workspaceRoot)||
+      foldedInside(assistant.workspaceRoot,assistant.tempRoot)||
+      foldedInside(knowledge.tempRoot,assistant.tempRoot)||
+      foldedInside(assistant.tempRoot,knowledge.tempRoot)||
+      foldedInside(knowledge.tempRoot,assistant.workspaceRoot)||
+      foldedInside(assistant.workspaceRoot,knowledge.tempRoot)||
+      foldedInside(invoice.tempRoot,assistant.tempRoot)||
+      foldedInside(assistant.tempRoot,invoice.tempRoot)||
+      foldedInside(invoice.tempRoot,assistant.workspaceRoot)||
+      foldedInside(assistant.workspaceRoot,invoice.tempRoot)) {
+    throw new Error("invalid_assistant_root");
+  }
+  if (assistant.maxSearchFiles!==512) {
+    throw new Error("invalid_assistant_search_files");
+  }
+  if (assistant.maxSearchFileBytes!==262_144) {
+    throw new Error("invalid_assistant_search_file_bytes");
+  }
+  if (assistant.maxSearchResults!==20) {
+    throw new Error("invalid_assistant_search_results");
+  }
+  if (assistant.maxSourceExcerptBytes!==262_144) {
+    throw new Error("invalid_assistant_source_bytes");
+  }
+  if (assistant.aiTimeoutMs!==120_000) {
+    throw new Error("invalid_assistant_ai_timeout");
+  }
+  if (!Array.isArray(assistant.allowedOutputFormats)||
+      assistant.allowedOutputFormats.length!==0) {
+    throw new Error("invalid_assistant_output_formats");
+  }
 }
 
 function validateKnowledgeConfig(knowledge,vaultRoot) {

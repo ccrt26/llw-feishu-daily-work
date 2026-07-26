@@ -2,6 +2,7 @@ import {invokeIntentRouter} from "./intent-router-client.mjs";
 import {invokeCodex} from "../codex-client.mjs";
 import {invokeInvoiceDecision} from "../capabilities/invoice/decision-client.mjs";
 import {invokeKnowledgeDecision} from "../capabilities/knowledge-ingest/decision-client.mjs";
+import {invokeAssistantWorkDecision} from "../capabilities/assistant-work/decision-client.mjs";
 import {invokeDeepSeek} from "../ai/deepseek-client.mjs";
 import {guardAiInput} from "../ai/ai-input-guard.mjs";
 import {validatePreparedVisual} from "./prepared-visual.mjs";
@@ -76,6 +77,25 @@ export function createKnowledgeIngestTask({invoke=invokeKnowledgeDecision,...con
     const {model="codex",...taskInput}=input;
     if (model!=="codex") throw new Error("invalid_task_model");
     guardAiInput("knowledge.ingest",taskInput);
+    return invoke({...fixed,input:taskInput});
+  };
+}
+
+export function createAssistantWorkTask({
+  invoke=invokeAssistantWorkDecision,...configuration
+}) {
+  const fixed=structuredClone(configuration);
+  return async input=>{
+    if (!input||typeof input!=="object"||Array.isArray(input)||
+        !input.message||!input.session||!Array.isArray(input.sources)||
+        !Array.isArray(input.allowedOutputFormats)) {
+      throw new Error("invalid_assistant_work_input");
+    }
+    const {model="codex",...taskInput}=input;
+    if (model!=="codex"||taskInput.session.model!=="codex") {
+      throw new Error("invalid_task_model");
+    }
+    guardAiInput("assistant.work",taskInput);
     return invoke({...fixed,input:taskInput});
   };
 }

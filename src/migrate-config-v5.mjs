@@ -16,11 +16,15 @@ const INVOICE_FIELDS=new Set([
 ]);
 
 try {
-  const [file,root,manifestPath,expectedManifestSha256,knowledgeConfigFile]=process.argv.slice(2);
+  const [
+    file,root,manifestPath,expectedManifestSha256,
+    knowledgeConfigFile,assistantConfigFile
+  ]=process.argv.slice(2);
   if (!file||!isAbsolute(root)||!isAbsolute(manifestPath)||
       manifestPath!==join(root,"manifest.json")||
       !/^[0-9a-f]{64}$/.test(expectedManifestSha256||"")||
-      !isAbsolute(knowledgeConfigFile||"")) {
+      !isAbsolute(knowledgeConfigFile||"")||
+      !isAbsolute(assistantConfigFile||"")) {
     throw new Error("migration_input_invalid");
   }
   const metadata=await lstat(file);
@@ -39,12 +43,20 @@ try {
     throw new Error("unsafe_knowledge_config");
   }
   const knowledge=JSON.parse(await readFile(knowledgeConfigFile,"utf8"));
+  const assistantMetadata=await lstat(assistantConfigFile);
+  if (!assistantMetadata.isFile()||assistantMetadata.isSymbolicLink()||
+      assistantMetadata.uid!==process.getuid()||
+      (assistantMetadata.mode&0o077)!==0) {
+    throw new Error("unsafe_assistant_config");
+  }
+  const assistant=JSON.parse(await readFile(assistantConfigFile,"utf8"));
   await saveConfig(file,{
     ...current,
     version:5,
     capabilities:{
       ...current.capabilities,
-      "knowledge-ingest":{enabled:false,...knowledge}
+      "knowledge-ingest":{enabled:false,...knowledge},
+      "assistant-work":{enabled:false,...assistant}
     },
     privateSkills:{root,manifestPath,expectedManifestSha256}
   });

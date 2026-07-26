@@ -7,12 +7,12 @@ import {classifyAiFailure} from "./ai-failure.mjs";
 import {failure as invoiceFailure} from "../capabilities/invoice/receipt.mjs";
 
 export class Dispatcher {
-  constructor({binding,bindings,state,capabilities,intentRouter,withPreparedVisual,messenger,modelMode,deepseekEnabled}) {
+  constructor({binding,bindings,state,capabilities,intentRouter,withPreparedVisual,messenger,modelMode,deepseekEnabled,taskSessionManager}) {
     this.binding=binding;
     this.bindings=bindings||{
       feishu:{userId:binding?.senderId,conversationId:binding?.chatId}
     };
-    this.state=state; this.capabilities=capabilities; this.intentRouter=intentRouter; this.withPreparedVisual=withPreparedVisual; this.messenger=messenger; this.modelMode=modelMode; this.deepseekEnabled=deepseekEnabled; this.queue=Promise.resolve();
+    this.state=state; this.capabilities=capabilities; this.intentRouter=intentRouter; this.withPreparedVisual=withPreparedVisual; this.messenger=messenger; this.modelMode=modelMode; this.deepseekEnabled=deepseekEnabled; this.taskSessionManager=taskSessionManager||null; this.queue=Promise.resolve();
   }
 
   handleRawEvent(raw) { const next=this.queue.then(()=>this.processRawEvent(raw)); this.queue=next.catch(()=>{}); return next; }
@@ -52,7 +52,10 @@ export class Dispatcher {
       const command=await handleModelCommand(message.text,{modelMode:this.modelMode,deepseekEnabled:this.deepseekEnabled});
       if (command) return this.persistAndSend(message,"model",command);
     }
-    const conversation=await this.state.getRouterConversation(Date.parse(message.receivedAt));
+    const routerConversation=await this.state.getRouterConversation(Date.parse(message.receivedAt));
+    const taskConversation=routerConversation
+      ?null:await this.taskSessionManager?.routerConversation?.();
+    const conversation=routerConversation||taskConversation||null;
     const dailyConversation=this.state.getConversation();
     const activeSnapshot=conversation?.model||dailyConversation?.model||null;
     let globalModel;
@@ -119,6 +122,11 @@ export class Dispatcher {
       if (decision.reason==="cancelled") {
         if (conversation) {
           await this.state.closeRouterConversation("cancelled");
+          if (isTaskSessionConversation(conversation)) {
+            await this.taskSessionManager.close(
+              "cancelled",message.receivedAt
+            );
+          }
           if (conversation.capability==="daily-work") await this.state.clearConversation();
           if (conversation.capability==="knowledge-ingest") {
             await this.state.clearKnowledgePending();
@@ -211,7 +219,17 @@ export function outcomeKey(message) {
   throw new Error("invalid_incoming_message");
 }
 
-function publicConversation(value) { return {capability:value.capability,question:value.question,startedAt:value.startedAt}; }
+function publicConversation(value) {
+  if (isTaskSessionConversation(value)) return structuredClone(value);
+  return {
+    capability:value.capability,question:value.question,startedAt:value.startedAt
+  };
+}
+function isTaskSessionConversation(value) {
+  return value?.capability==="assistant-work"&&value?.status==="open"&&
+    typeof value?.goal==="string"&&
+    Number.isInteger(value?.current_draft_version);
+}
 function fallbackMessage(event) {
   if (event?.source&&event?.replyTarget) return event;
   return {

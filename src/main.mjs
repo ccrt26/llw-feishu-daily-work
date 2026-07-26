@@ -19,6 +19,10 @@ import {KnowledgeWriter} from "./capabilities/knowledge-ingest/knowledge-writer.
 import {prepareKnowledgeFile,prepareKnowledgeText} from "./capabilities/knowledge-ingest/source-preparer.mjs";
 import {prepareKnowledgeOfficeFile} from "./capabilities/knowledge-ingest/office-source-preparer.mjs";
 import {createFeishuDocumentExporter} from "./capabilities/knowledge-ingest/feishu-document-exporter.mjs";
+import {createAssistantWorkCapability} from "./capabilities/assistant-work/capability.mjs";
+import {
+  loadKnowledgeSources,searchKnowledge
+} from "./capabilities/assistant-work/knowledge-search.mjs";
 import {inspectInvoiceFile} from "./capabilities/invoice/file-inspector.mjs";
 import {parseInvoiceResource} from "./capabilities/invoice/resource-marker.mjs";
 import {validateInvoiceExtraction,deriveInvoiceRuleDecision} from "./capabilities/invoice/decision-validator.mjs";
@@ -39,7 +43,12 @@ import {createPreparedVisualRunner} from "./core/prepared-visual.mjs";
 import {loadPrivateSkillManifest} from "./core/private-skill-manifest.mjs";
 import {loadRoutingContract} from "./core/routing-contract.mjs";
 import {validateIntentRouterSkill} from "./core/intent-router-client.mjs";
-import {createRouterTextTask,createRouterVisualTask,createDailyWorkInterpretTask,createInvoiceVisualTask,createKnowledgeIngestTask} from "./core/semantic-tasks.mjs";
+import {TaskSessionManager} from "./core/task-session-manager.mjs";
+import {TaskWorkspace} from "./workspace/task-workspace.mjs";
+import {
+  createRouterTextTask,createRouterVisualTask,createDailyWorkInterpretTask,
+  createInvoiceVisualTask,createKnowledgeIngestTask,createAssistantWorkTask
+} from "./core/semantic-tasks.mjs";
 
 const run=promisify(execFile);
 export const PRIVATE_SKILL_ALLOWLIST=[
@@ -72,12 +81,20 @@ const configFile=process.argv[2] || "/Users/ccrt/Library/Application Support/LLW
 const config=await loadConfig(configFile);
 const invoiceConfig=config.capabilities.invoice;
 const knowledgeConfig=config.version===5?config.capabilities["knowledge-ingest"]:null;
+const assistantConfig=config.version===5?config.capabilities["assistant-work"]:null;
 const knowledgePolicy=PRIVATE_SKILL_ALLOWLIST.find(
   item=>item.name==="llw-knowledge-ingest"
 );
 const knowledgeEnabled=knowledgeCandidateEnabled({
   allowlistEnabled:knowledgePolicy.enabled,
   configurationEnabled:knowledgeConfig?.enabled
+});
+const assistantPolicy=PRIVATE_SKILL_ALLOWLIST.find(
+  item=>item.name==="llw-assistant-work"
+);
+const assistantEnabled=assistantCandidateEnabled({
+  allowlistEnabled:assistantPolicy.enabled,
+  configurationEnabled:assistantConfig?.enabled
 });
 const privateSkillCatalog=await loadPrivateSkillManifest({
   root:config.privateSkills?.root,
@@ -98,6 +115,12 @@ if (knowledgeEnabled) {
     privateSkillCatalog,"llw-knowledge-ingest"
   );
 }
+let assistantSkillRoot=null;
+if (assistantEnabled) {
+  assistantSkillRoot=await selectPrivateSkillRoot(
+    privateSkillCatalog,"llw-assistant-work"
+  );
+}
 await validatePdfiumRuntime(invoiceConfig.pdfProcessorPath);
 const contracts={};
 if (config.capabilities["daily-work"].enabled) contracts["daily-work"]=await loadRoutingContract(dailySkillRoot,"daily-work");
@@ -107,8 +130,15 @@ if (knowledgeEnabled) {
     knowledgeSkillRoot,"knowledge-ingest"
   );
 }
+if (assistantEnabled) {
+  contracts["assistant-work"]=await loadRoutingContract(
+    assistantSkillRoot,"assistant-work"
+  );
+}
 await validateIntentRouterSkill(routerSkillRoot);
-const state=await StateStore.open(config.stateFile);
+const state=await StateStore.open(config.stateFile,{
+  taskSessionPolicy:[{capability:"assistant-work",models:["codex"]}]
+});
 const modelMode=new ModelMode(config.modelStateFile);
 const binding={senderId:config.senderId,chatId:config.chatId};
 const bindings={feishu:{userId:config.senderId,conversationId:config.chatId}};
@@ -253,21 +283,65 @@ if (knowledgeEnabled) {
   });
 }
 
+let assistantCapability=null;
+let taskSessionManager=null;
+if (assistantEnabled) {
+  const assistantDecision=createAssistantWorkTask({
+    codexPath:config.codexPath,
+    skillRoot:assistantSkillRoot,
+    tempRoot:assistantConfig.tempRoot,
+    timeoutMs:assistantConfig.aiTimeoutMs
+  });
+  const taskWorkspace=new TaskWorkspace(assistantConfig.workspaceRoot);
+  taskSessionManager=new TaskSessionManager({
+    state,workspace:taskWorkspace
+  });
+  await taskSessionManager.recover();
+  const searchLibraries=knowledgeConfig.libraries.map(library=>({
+    libraryKey:library.libraryKey,root:library.root
+  }));
+  const assistantSearch=({query,sourcePaths})=>sourcePaths.length
+    ?loadKnowledgeSources({
+      vaultRoot:config.vaultRoot,libraries:searchLibraries,sourcePaths,
+      maxFileBytes:assistantConfig.maxSearchFileBytes,
+      maxTotalExcerptBytes:assistantConfig.maxSourceExcerptBytes
+    })
+    :searchKnowledge({
+      vaultRoot:config.vaultRoot,libraries:searchLibraries,query,
+      maxFiles:assistantConfig.maxSearchFiles,
+      maxFileBytes:assistantConfig.maxSearchFileBytes,
+      maxResults:assistantConfig.maxSearchResults,
+      maxTotalExcerptBytes:assistantConfig.maxSourceExcerptBytes
+    });
+  assistantCapability=createAssistantWorkCapability({
+    decide:assistantDecision,
+    search:assistantSearch,
+    workspace:taskWorkspace,
+    sessionManager:taskSessionManager,
+    allowedOutputFormats:assistantConfig.allowedOutputFormats
+  });
+}
+
 const capabilities=buildCapabilityRegistry({
   dailyWork:dailyCapability,
   invoice:invoiceCapability,
   knowledgeIngest:knowledgeCapability,
+  assistantWork:assistantCapability,
   contracts,
   enabled:{
     "daily-work":config.capabilities["daily-work"].enabled,
     invoice:invoiceConfig.enabled,
-    "knowledge-ingest":knowledgeEnabled
+    "knowledge-ingest":knowledgeEnabled,
+    "assistant-work":assistantEnabled
   }
 });
 const routerText=createRouterTextTask({codexPath:config.codexPath,workspaceRoot:config.vaultRoot,skillRoot:routerSkillRoot,timeoutMs:invoiceConfig.aiTimeoutMs,...deepseekTextConfiguration});
 const routerVisual=createRouterVisualTask({codexPath:config.codexPath,workspaceRoot:config.vaultRoot,skillRoot:routerSkillRoot,timeoutMs:invoiceConfig.aiTimeoutMs});
 const intentRouter={decide:routerText,decideVisual:routerVisual};
-const dispatcher=new Dispatcher({binding,bindings,state,capabilities,intentRouter,withPreparedVisual,messenger,modelMode,deepseekEnabled:config.deepseekEnabled});
+const dispatcher=new Dispatcher({
+  binding,bindings,state,capabilities,intentRouter,withPreparedVisual,messenger,
+  modelMode,deepseekEnabled:config.deepseekEnabled,taskSessionManager
+});
 
 await scavengeInvoiceTempRoot(invoiceConfig.tempRoot);
 await invoiceArchiveWriter.recoverTransactions();
@@ -344,6 +418,12 @@ export async function startChatEntries({
 }
 
 export function knowledgeCandidateEnabled({
+  allowlistEnabled,configurationEnabled
+}) {
+  return allowlistEnabled===true&&configurationEnabled===true;
+}
+
+export function assistantCandidateEnabled({
   allowlistEnabled,configurationEnabled
 }) {
   return allowlistEnabled===true&&configurationEnabled===true;

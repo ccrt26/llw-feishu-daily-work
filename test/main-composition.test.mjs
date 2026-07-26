@@ -25,7 +25,7 @@ test("main validates business routing contracts and injects one read-only intent
   assert.match(source,/import \{loadPrivateSkillManifest\} from "\.\/core\/private-skill-manifest\.mjs"/);
   assert.match(source,/import \{loadRoutingContract\} from "\.\/core\/routing-contract\.mjs"/);
   assert.match(source,/import \{validateIntentRouterSkill\} from "\.\/core\/intent-router-client\.mjs"/);
-  assert.match(source,/import \{createRouterTextTask,createRouterVisualTask,createDailyWorkInterpretTask,createInvoiceVisualTask,createKnowledgeIngestTask\} from "\.\/core\/semantic-tasks\.mjs"/);
+  assert.match(source,/createAssistantWorkTask/);
   assert.match(source,/import \{createPreparedVisualRunner\} from "\.\/core\/prepared-visual\.mjs"/);
   assert.match(source,/import \{parseInvoiceResource\} from "\.\/capabilities\/invoice\/resource-marker\.mjs"/);
   assert.match(source,/import \{ModelMode\} from "\.\/core\/model-mode\.mjs"/);
@@ -48,7 +48,8 @@ test("main validates business routing contracts and injects one read-only intent
   assert.match(source,/createDailyWorkInterpretTask\(\{[\s\S]*?skillRoot:dailySkillRoot/);
   assert.match(source,/createInvoiceVisualTask\(\{[\s\S]*?skillRoot:invoiceSkillRoot/);
   assert.match(source,/knowledgeIngest:knowledgeCapability/);
-  assert.match(source,/new Dispatcher\(\{binding,bindings,state,capabilities,intentRouter,withPreparedVisual,messenger,modelMode,deepseekEnabled:config\.deepseekEnabled\}\)/);
+  assert.match(source,/assistantWork:assistantCapability/);
+  assert.match(source,/taskSessionManager/);
   assert.match(source,/const routerText=createRouterTextTask\(\{/);
   assert.match(source,/const routerVisual=createRouterVisualTask\(\{/);
   assert.match(source,/const dailyWorkInterpret=createDailyWorkInterpretTask\(\{/);
@@ -58,6 +59,33 @@ test("main validates business routing contracts and injects one read-only intent
   assert.match(source,/const withPreparedVisual=createPreparedVisualRunner\(\{/);
   assert.match(source,/preparePdf\n\}\)/);
   assert.match(source,/const intentRouter=\{decide:routerText,decideVisual:routerVisual\}/);
+});
+
+test("keeps assistant work doubly disabled while retaining one bounded candidate composition",async()=>{
+  const source=await readFile(fileURLToPath(new URL("../src/main.mjs",import.meta.url)),"utf8");
+  for (const expected of [
+    "createAssistantWorkCapability","createAssistantWorkTask","TaskSessionManager",
+    "TaskWorkspace","searchKnowledge","loadKnowledgeSources"
+  ]) assert.equal(source.includes(expected),true);
+  assert.match(source,/const assistantEnabled=assistantCandidateEnabled\(\{/);
+  assert.match(source,/allowlistEnabled:assistantPolicy\.enabled/);
+  assert.match(source,/configurationEnabled:assistantConfig\?\.enabled/);
+  assert.match(source,/"assistant-work":assistantEnabled/);
+  const {PRIVATE_SKILL_ALLOWLIST,assistantCandidateEnabled}=await import("../src/main.mjs");
+  const policy=PRIVATE_SKILL_ALLOWLIST.find(item=>item.name==="llw-assistant-work");
+  assert.equal(policy.enabled,false);
+  assert.equal(assistantCandidateEnabled({
+    allowlistEnabled:policy.enabled,configurationEnabled:false
+  }),false);
+  assert.equal(assistantCandidateEnabled({
+    allowlistEnabled:true,configurationEnabled:false
+  }),false);
+  assert.equal(assistantCandidateEnabled({
+    allowlistEnabled:false,configurationEnabled:true
+  }),false);
+  assert.equal(assistantCandidateEnabled({
+    allowlistEnabled:true,configurationEnabled:true
+  }),true);
 });
 
 test("keeps knowledge ingest doubly disabled while retaining one bounded candidate composition",async()=>{

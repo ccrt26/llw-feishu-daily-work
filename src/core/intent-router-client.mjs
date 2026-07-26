@@ -69,8 +69,30 @@ function validateInput(input,{visual=false}={}) {
     const attachment=message.attachment;
     if (typeof attachment.displayName!=="string"||!attachment.displayName||attachment.displayName.length>255||typeof attachment.extension!=="string"||attachment.extension.length>20||attachment.resourceType!==message.type) throw new Error("invalid_intent_input");
   }
-  if (input.conversation!==null && (!exact(input.conversation,["capability","question","startedAt"]) || typeof input.conversation.question!=="string" || typeof input.conversation.startedAt!=="string")) throw new Error("invalid_intent_input");
+  if (input.conversation!==null&&!validConversation(input.conversation)) {
+    throw new Error("invalid_intent_input");
+  }
   for (const contract of input.capabilities) if (!contract || typeof contract.capability!=="string") throw new Error("invalid_intent_input");
+}
+
+function validConversation(value) {
+  if (exact(value,["capability","question","startedAt"])) {
+    return (value.capability===null||
+      typeof value.capability==="string"&&value.capability.length>0)&&
+      typeof value.question==="string"&&typeof value.startedAt==="string";
+  }
+  if (!exact(value,[
+    "capability","status","goal","task_summary","current_draft_version",
+    "model","grounding_mode","startedAt"
+  ])) return false;
+  return value.capability==="assistant-work"&&value.status==="open"&&
+    typeof value.goal==="string"&&value.goal.length>0&&value.goal.length<=1000&&
+    typeof value.task_summary==="string"&&value.task_summary.length<=8000&&
+    Number.isInteger(value.current_draft_version)&&
+    value.current_draft_version>=0&&value.current_draft_version<=1_000_000&&
+    value.model==="codex"&&
+    new Set(["source_strict","hybrid","creative"]).has(value.grounding_mode)&&
+    typeof value.startedAt==="string"&&Number.isFinite(Date.parse(value.startedAt));
 }
 
 function exact(value,fields) { return value&&typeof value==="object"&&!Array.isArray(value)&&Object.keys(value).length===fields.length&&Object.keys(value).every(key=>fields.includes(key)); }

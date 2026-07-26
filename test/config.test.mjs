@@ -41,8 +41,24 @@ function configV5(overrides={}) {
     },
     capabilities:{
       ...base.capabilities,
-      "knowledge-ingest":knowledgeConfig()
+      "knowledge-ingest":knowledgeConfig(),
+      "assistant-work":assistantConfig()
     },
+    ...overrides
+  };
+}
+
+function assistantConfig(overrides={}) {
+  return {
+    enabled:false,
+    tempRoot:"/Users/test/tmp/assistant-work",
+    workspaceRoot:"/Users/test/assistant-workspace",
+    maxSearchFiles:512,
+    maxSearchFileBytes:262144,
+    maxSearchResults:20,
+    maxSourceExcerptBytes:262144,
+    aiTimeoutMs:120000,
+    allowedOutputFormats:[],
     ...overrides
   };
 }
@@ -238,6 +254,35 @@ test("version 5 requires one disabled exact knowledge-ingest configuration with 
     }
     const missing={...configV5(),capabilities:{...configV5().capabilities}};
     delete missing.capabilities["knowledge-ingest"];
+    await assert.rejects(()=>saveConfig(file,missing),/capabilities|capability/);
+  } finally { await rm(dir,{recursive:true,force:true}); }
+});
+
+test("version 5 requires one disabled exact assistant-work candidate configuration",async()=>{
+  const dir=await mkdtemp(join(tmpdir(),"llw-config-v5-assistant-"));
+  const file=join(dir,"config.json");
+  try {
+    await assert.doesNotReject(()=>saveConfig(file,configV5()));
+    for (const assistant of [
+      assistantConfig({enabled:true}),
+      assistantConfig({tempRoot:"relative"}),
+      assistantConfig({workspaceRoot:"relative"}),
+      assistantConfig({maxSearchFiles:511}),
+      assistantConfig({maxSearchFileBytes:262143}),
+      assistantConfig({maxSearchResults:19}),
+      assistantConfig({maxSourceExcerptBytes:262143}),
+      assistantConfig({aiTimeoutMs:119999}),
+      assistantConfig({allowedOutputFormats:["docx"]}),
+      assistantConfig({extra:true}),
+      assistantConfig({tempRoot:knowledgeConfig().tempRoot}),
+      assistantConfig({workspaceRoot:"/Volumes/test/LLW/workspace"})
+    ]) {
+      await assert.rejects(()=>saveConfig(file,configV5({capabilities:{
+        ...configV5().capabilities,"assistant-work":assistant
+      }})),/assistant|capability|config_path/);
+    }
+    const missing={...configV5(),capabilities:{...configV5().capabilities}};
+    delete missing.capabilities["assistant-work"];
     await assert.rejects(()=>saveConfig(file,missing),/capabilities|capability/);
   } finally { await rm(dir,{recursive:true,force:true}); }
 });

@@ -192,8 +192,8 @@ PDF 固定边界包括最多 10 页、文本最多 262,144 字节、渲染输出
 
 ### 10.1 V3.7.0 默认禁用候选
 
-`integration/v370` 已形成一个尚未部署、尚未启用的最小
-`knowledge-ingest` 候选闭环。它处理明确要求保存的直接文字，单个 TXT、Markdown、
+`integration/v370` 已形成尚未部署、尚未启用的 `knowledge-ingest` 与
+`assistant-work` 候选闭环。`knowledge-ingest` 处理明确要求保存的直接文字，单个 TXT、Markdown、
 DOCX、PPTX 或 XLSX 来源，一个受支持的飞书云文档一次性快照，以及在受管资料根下
 创建明确指定的空分类目录。
 
@@ -220,14 +220,27 @@ Office 文件仍只下载一次并只建立一个私有 job。程序在 AI 前�
 的 WPS WebOffice。后台 OOXML 安全准备为本地确定性处理，不调用 AI 插件、不消耗额外
 模型额度；语义理解仍保持一次 Codex 调用。
 
-该候选当前保持双重禁用：
+`assistant-work` 复用同一个 Dispatcher、Router 和 StateStore。它只搜索候选配置
+允许的知识资料根，只读取有界 Markdown 正文，并把实际使用的 Vault 相对路径交给
+严格决策校验。每个绑定用户首批最多一个开放 Task Session；会话固定 Codex 与
+`source_strict`、`hybrid` 或 `creative` 模式。完整工作稿只保存在本机私有的受控
+工作区中，按 `draft-vN.md` 新建版本，不进入长期知识库或状态正文；服务重启可以从
+状态与工作区恢复。开放任务的明显续接仍进入 `assistant-work`，明确知识入库等独立
+动作仍由统一 Router 分配，且不会删除当前工作稿。
+
+本批次只实现文字答复、提纲、起草、修改、完成和取消。DOCX、PPTX、XLSX、PDF 与
+Markdown 文件生成、验证和原入口回传属于下一批受控文件输出，当前不得声称文件已
+生成或发送。
+
+两个候选当前都保持双重禁用：
 
 - `llw-knowledge-ingest` 私有 Skill allowlist 为 `enabled: false`；
-- version 5 候选配置强制 `knowledge-ingest.enabled: false`。
+- `llw-assistant-work` 私有 Skill allowlist 为 `enabled: false`；
+- version 5 候选配置强制两项能力的 `enabled: false`。
 
 因此本节只记录集成分支的可审查候选事实，不改变第 10 节的 V3.6.3 正式运行基线。
 本阶段没有迁移正式配置、注册生产 Capability、重启服务或修改用户资料。
-该集成候选的公开组件完整回归为 `408/408`，零失败、零跳过、零取消。
+该集成候选的公开组件完整回归为 `436/436`，零失败、零跳过、零取消。
 
 ## 11. Deliberately Unsupported or Deferred Scope
 

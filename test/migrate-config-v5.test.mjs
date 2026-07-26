@@ -28,6 +28,12 @@ const knowledge={
   aiTimeoutMs:120000,
   inputFormats:["text","txt","md"]
 };
+const assistant={
+  tempRoot:"/Users/test/assistant-work-jobs",
+  workspaceRoot:"/Users/test/assistant-workspace",
+  maxSearchFiles:512,maxSearchFileBytes:262144,maxSearchResults:20,
+  maxSourceExcerptBytes:262144,aiTimeoutMs:120000,allowedOutputFormats:[]
+};
 
 function v4() {
   return {
@@ -52,12 +58,13 @@ function v4() {
   };
 }
 
-function migrationArgs(knowledgeFile) {
+function migrationArgs(knowledgeFile,assistantFile) {
   return [
     privateSkills.root,
     privateSkills.manifestPath,
     privateSkills.expectedManifestSha256,
-    knowledgeFile
+    knowledgeFile,
+    assistantFile
   ];
 }
 
@@ -76,17 +83,20 @@ test("atomically migrates exact version 4 to disabled version 5 knowledge metada
   const dir=await mkdtemp(join(tmpdir(),"llw-config-v5-migrate-"));
   const file=join(dir,"config.json");
   const knowledgeFile=join(dir,"knowledge.json");
+  const assistantFile=join(dir,"assistant.json");
   const before=v4();
   await writeFile(file,`${JSON.stringify(before,null,2)}\n`,{mode:0o600});
   await writeFile(knowledgeFile,`${JSON.stringify(knowledge,null,2)}\n`,{mode:0o600});
+  await writeFile(assistantFile,`${JSON.stringify(assistant,null,2)}\n`,{mode:0o600});
   try {
-    assert.deepEqual(await run(file,migrationArgs(knowledgeFile)),{code:0,stdout:"",stderr:""});
+    assert.deepEqual(await run(file,migrationArgs(knowledgeFile,assistantFile)),{code:0,stdout:"",stderr:""});
     assert.deepEqual(JSON.parse(await readFile(file,"utf8")),{
       ...before,
       version:5,
       capabilities:{
         ...before.capabilities,
-        "knowledge-ingest":{enabled:false,...knowledge}
+        "knowledge-ingest":{enabled:false,...knowledge},
+        "assistant-work":{enabled:false,...assistant}
       },
       privateSkills
     });
@@ -98,15 +108,18 @@ test("rejects invalid arguments, non-v4 input, broad mode and symlink without ch
   const dir=await mkdtemp(join(tmpdir(),"llw-config-v5-unsafe-"));
   try {
     const knowledgeFile=join(dir,"knowledge.json");
+    const assistantFile=join(dir,"assistant.json");
     await writeFile(knowledgeFile,`${JSON.stringify(knowledge)}\n`,{mode:0o600});
+    await writeFile(assistantFile,`${JSON.stringify(assistant)}\n`,{mode:0o600});
     const cases=[
       ["missing",v4(),0o600,[]],
-      ["root",v4(),0o600,["relative",privateSkills.manifestPath,privateSkills.expectedManifestSha256,knowledgeFile]],
-      ["manifest",v4(),0o600,[privateSkills.root,"/Volumes/test/other.json",privateSkills.expectedManifestSha256,knowledgeFile]],
-      ["hash",v4(),0o600,[privateSkills.root,privateSkills.manifestPath,"A".repeat(64),knowledgeFile]],
-      ["fragment",v4(),0o600,[privateSkills.root,privateSkills.manifestPath,privateSkills.expectedManifestSha256,"relative"]],
-      ["v5",{...v4(),version:5,privateSkills},0o600,migrationArgs(knowledgeFile)],
-      ["broad",v4(),0o644,migrationArgs(knowledgeFile)]
+      ["root",v4(),0o600,["relative",privateSkills.manifestPath,privateSkills.expectedManifestSha256,knowledgeFile,assistantFile]],
+      ["manifest",v4(),0o600,[privateSkills.root,"/Volumes/test/other.json",privateSkills.expectedManifestSha256,knowledgeFile,assistantFile]],
+      ["hash",v4(),0o600,[privateSkills.root,privateSkills.manifestPath,"A".repeat(64),knowledgeFile,assistantFile]],
+      ["fragment",v4(),0o600,[privateSkills.root,privateSkills.manifestPath,privateSkills.expectedManifestSha256,"relative",assistantFile]],
+      ["assistant-fragment",v4(),0o600,[privateSkills.root,privateSkills.manifestPath,privateSkills.expectedManifestSha256,knowledgeFile,"relative"]],
+      ["v5",{...v4(),version:5,privateSkills},0o600,migrationArgs(knowledgeFile,assistantFile)],
+      ["broad",v4(),0o644,migrationArgs(knowledgeFile,assistantFile)]
     ];
     for (const [name,value,mode,args] of cases) {
       const file=join(dir,`${name}.json`),bytes=`${JSON.stringify(value)}\n`;
@@ -118,7 +131,7 @@ test("rejects invalid arguments, non-v4 input, broad mode and symlink without ch
     const target=join(dir,"target.json"),link=join(dir,"link.json");
     const bytes=`${JSON.stringify(v4())}\n`;
     await writeFile(target,bytes,{mode:0o600}); await symlink(target,link);
-    assert.deepEqual(await run(link,migrationArgs(knowledgeFile)),{code:1,stdout:"",stderr:""});
+    assert.deepEqual(await run(link,migrationArgs(knowledgeFile,assistantFile)),{code:1,stdout:"",stderr:""});
     assert.equal(await readFile(target,"utf8"),bytes);
     const broadKnowledge=join(dir,"broad-knowledge.json");
     await writeFile(broadKnowledge,`${JSON.stringify(knowledge)}\n`,{mode:0o644});
@@ -126,7 +139,14 @@ test("rejects invalid arguments, non-v4 input, broad mode and symlink without ch
     const safeFile=join(dir,"safe-config.json");
     const safeBytes=`${JSON.stringify(v4())}\n`;
     await writeFile(safeFile,safeBytes,{mode:0o600});
-    assert.deepEqual(await run(safeFile,migrationArgs(broadKnowledge)),{code:1,stdout:"",stderr:""});
+    assert.deepEqual(await run(safeFile,migrationArgs(broadKnowledge,assistantFile)),{code:1,stdout:"",stderr:""});
+    const broadAssistant=join(dir,"broad-assistant.json");
+    await writeFile(broadAssistant,`${JSON.stringify(assistant)}\n`,{mode:0o644});
+    await chmod(broadAssistant,0o644);
+    assert.deepEqual(
+      await run(safeFile,migrationArgs(knowledgeFile,broadAssistant)),
+      {code:1,stdout:"",stderr:""}
+    );
     assert.equal(await readFile(safeFile,"utf8"),safeBytes);
   } finally { await rm(dir,{recursive:true,force:true}); }
 });

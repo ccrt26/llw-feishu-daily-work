@@ -134,6 +134,32 @@ test("normalizes a capability change during an active conversation as a new task
   assert.deepEqual(result,{action:"route",capability:"invoice",confidence:"high",reasonCode:"new_task"});
 });
 
+test("accepts one exact minimal Task Session summary and no draft text",async()=>{
+  await chmod(fixture,0o700);
+  const activeInput={
+    ...input,
+    conversation:{
+      capability:"assistant-work",status:"open",goal:"修改合成方案",
+      task_summary:"继续修改第二段",current_draft_version:2,model:"codex",
+      grounding_mode:"hybrid",startedAt:"2026-07-26T01:00:00.000Z"
+    },
+    capabilities:[{
+      capability:"assistant-work",purpose:"连续写作",accepts:["text"],
+      positive_examples:["修改第二段"],negative_examples:["保存到知识库"],
+      supports_continuation:true
+    }]
+  };
+  const continuation={
+    action:"route",capability:"assistant-work",confidence:"high",
+    reason_code:"continuation",question:"",reason:""
+  };
+  const result=await invokeIntentRouter({
+    codexPath:fixture,workspaceRoot:"/tmp",skillRoot,input:activeInput,
+    environment:{...process.env,FAKE_RESPONSE:JSON.stringify(continuation)}
+  });
+  assert.equal(result.reasonCode,"continuation");
+});
+
 test("validates the router Skill before startup and rejects any extra context field",async () => {
   await assert.doesNotReject(()=>validateIntentRouterSkill(skillRoot));
   await assert.rejects(()=>validateIntentRouterSkill("/private/tmp/missing-router-skill"),/unsafe_intent_router_skill/);
