@@ -20,11 +20,17 @@ const REASONS=new Set([
   "unsafe_folder_plan"
 ]);
 const INTEGRITIES=new Set(["complete","partial","unreadable"]);
+const WRAPPER_FIELDS=new Set(["result"]);
 
 export function normalizeKnowledgeCandidate(candidate,{
   libraries,source,confirmedTarget=null
 }) {
   try {
+    if (candidate&&typeof candidate==="object"&&!Array.isArray(candidate)&&
+        Object.keys(candidate).length===1&&
+        Object.keys(candidate).every(key=>WRAPPER_FIELDS.has(key))) {
+      candidate=candidate.result;
+    }
     exactKnown(candidate,CANDIDATE_FIELDS);
     if (!ACTIONS.has(candidate.action)) throw new Error("invalid");
     const catalog=normalizeLibraries(libraries);

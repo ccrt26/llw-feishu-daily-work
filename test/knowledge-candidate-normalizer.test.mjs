@@ -56,7 +56,9 @@ function commit(overrides={}) {
 
 test("normalizes the V3.7.1 commit candidate into one strict internal decision",()=>{
   assert.deepEqual(
-    normalizeKnowledgeCandidate(commit({library_key:"工作资料"}),{
+    normalizeKnowledgeCandidate({
+      result:commit({library_key:"工作资料"})
+    },{
       libraries,source
     }),
     {

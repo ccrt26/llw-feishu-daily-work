@@ -55,6 +55,7 @@ const normalizedDecision={
   },
   sourceIntegrity:"complete"
 };
+const wireDecision={result:decision};
 
 async function harness() {
   const root=await mkdtemp(join(tmpdir(),"llw-knowledge-client-"));
@@ -101,7 +102,7 @@ test("runs Codex read-only with only the selected Skill and AI-safe context",asy
         FAKE_ARGS_FILE:argsFile,
         FAKE_STDIN_FILE:stdinFile,
         FAKE_CWD_FILE:cwdFile,
-        FAKE_RESPONSE:JSON.stringify(decision)
+        FAKE_RESPONSE:JSON.stringify(wireDecision)
       }
     });
     assert.deepEqual(result,normalizedDecision);
@@ -139,7 +140,7 @@ test("ignores macOS AppleDouble metadata when copying the selected Skill",async(
     const result=await invokeKnowledgeDecision({
       codexPath:fakeCodex,skillRoot:h.skillRoot,tempRoot:h.tempRoot,
       input:{request,source,sourceContent:request,allowedLibraries:libraries,taskSummary:null},
-      environment:{...process.env,FAKE_RESPONSE:JSON.stringify(decision)}
+      environment:{...process.env,FAKE_RESPONSE:JSON.stringify(wireDecision)}
     });
     assert.deepEqual(result,normalizedDecision);
     assert.deepEqual(await readdir(h.tempRoot),[]);
@@ -162,7 +163,12 @@ test("rejects invalid output, unknown models and unsafe private Skill files with
     await assert.rejects(
       ()=>invokeKnowledgeDecision({
         ...common,
-        environment:{...process.env,FAKE_RESPONSE:JSON.stringify({...decision,library_key:"unknown"})}
+        environment:{
+          ...process.env,
+          FAKE_RESPONSE:JSON.stringify({
+            result:{...decision,library_key:"unknown"}
+          })
+        }
       }),
       error=>error.message==="knowledge_decision_failed"
     );
@@ -173,7 +179,7 @@ test("rejects invalid output, unknown models and unsafe private Skill files with
     await assert.rejects(
       ()=>invokeKnowledgeDecision({
         ...common,
-        environment:{...process.env,FAKE_RESPONSE:JSON.stringify(decision)}
+        environment:{...process.env,FAKE_RESPONSE:JSON.stringify(wireDecision)}
       }),
       error=>error.message==="knowledge_decision_failed"
     );
@@ -197,7 +203,7 @@ test("retries one transient Codex exit within the bounded policy",async()=>{
       maxAttempts:2,retryDelayMs:1,
       environment:{
         ...process.env,FAKE_CODEX_MODE:"transient",FAKE_CODEX_ATTEMPTS:attempts,
-        FAKE_RESPONSE:JSON.stringify(decision)
+        FAKE_RESPONSE:JSON.stringify(wireDecision)
       }
     });
     assert.deepEqual(result,normalizedDecision);
@@ -226,7 +232,7 @@ test("returns bounded stage codes for every private decision-client failure boun
       ),
       invoke:h=>({
         codexPath:fakeCodex,skillRoot:h.skillRoot,tempRoot:h.tempRoot,input,
-        environment:{...process.env,FAKE_RESPONSE:JSON.stringify(decision)}
+        environment:{...process.env,FAKE_RESPONSE:JSON.stringify(wireDecision)}
       }),
       expected:"knowledge_decision_copy_failed"
     },
@@ -246,7 +252,7 @@ test("returns bounded stage codes for every private decision-client failure boun
         timeoutMs:20,maxAttempts:1,retryDelayMs:0,
         environment:{
           ...process.env,FAKE_CODEX_MODE:"timeout",
-          FAKE_RESPONSE:JSON.stringify(decision)
+          FAKE_RESPONSE:JSON.stringify(wireDecision)
         }
       }),
       expected:"knowledge_decision_timeout"
@@ -258,7 +264,7 @@ test("returns bounded stage codes for every private decision-client failure boun
         maxAttempts:2,retryDelayMs:0,
         environment:{
           ...process.env,FAKE_CODEX_MODE:"process-failure",
-          FAKE_RESPONSE:JSON.stringify(decision)
+          FAKE_RESPONSE:JSON.stringify(wireDecision)
         }
       }),
       expected:"knowledge_decision_process_failed",
@@ -270,7 +276,7 @@ test("returns bounded stage codes for every private decision-client failure boun
         codexPath:fakeCodex,skillRoot:h.skillRoot,tempRoot:h.tempRoot,input,
         environment:{
           ...process.env,FAKE_CODEX_MODE:"no-output",
-          FAKE_RESPONSE:JSON.stringify(decision)
+          FAKE_RESPONSE:JSON.stringify(wireDecision)
         }
       }),
       expected:"knowledge_decision_output_failed"
@@ -291,7 +297,9 @@ test("returns bounded stage codes for every private decision-client failure boun
         codexPath:fakeCodex,skillRoot:h.skillRoot,tempRoot:h.tempRoot,input,
         environment:{
           ...process.env,
-          FAKE_RESPONSE:JSON.stringify({...decision,library_key:"unknown"})
+          FAKE_RESPONSE:JSON.stringify({
+            result:{...decision,library_key:"unknown"}
+          })
         }
       }),
       expected:"knowledge_decision_validation_failed"
