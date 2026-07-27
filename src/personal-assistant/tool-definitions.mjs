@@ -11,20 +11,28 @@ const definitions={
     description:"记录新的每日工作事实，或补充一个明确且唯一的既有工作记录。",
     parameters:{
       type:"object",additionalProperties:false,
-      required:["operation","records"],
+      required:["operation","targetRecordId","records"],
       properties:{
         operation:{type:"string",enum:["create","supplement"]},
+        targetRecordId:string(128,0),
         records:{
           type:"array",minItems:1,maxItems:20,
           items:{
             type:"object",additionalProperties:false,
-            required:["originalText","title","date","summary"],
+            required:[
+              "occurred_date","occurred_time","occurred_end_time","title",
+              "people","location","summary","follow_ups","original_text"
+            ],
             properties:{
-              originalText:string(12_000),
+              occurred_date:{type:"string",pattern:"^\\d{4}-\\d{2}-\\d{2}$"},
+              occurred_time:string(5,0),
+              occurred_end_time:string(5,0),
               title:string(200),
-              date:{type:"string",pattern:"^\\d{4}-\\d{2}-\\d{2}$"},
+              people:stringArray(50,200),
+              location:string(500,0),
               summary:string(4_000),
-              targetRecordId:string(128,0)
+              follow_ups:stringArray(50,1000),
+              original_text:string(12_000)
             }
           }
         }
@@ -40,11 +48,18 @@ const definitions={
       properties:{
         extraction:{
           type:"object",additionalProperties:false,
-          required:["invoiceNumber","invoiceDate","buyerName","buyerTaxId","sellerName","totalAmount","itemSummary"],
-          properties:Object.fromEntries([
-            "invoiceNumber","invoiceDate","buyerName","buyerTaxId",
-            "sellerName","totalAmount","itemSummary"
-          ].map(key=>[key,string(500,0)]))
+          required:["invoice","field_quality","category","document_verification"],
+          properties:{
+            invoice:invoiceFields(string(500,0)),
+            field_quality:invoiceFields({
+              type:"string",enum:["clear","missing","unclear"]
+            }),
+            category:{type:"string",enum:["dining","non_dining","uncertain"]},
+            document_verification:{
+              type:"string",
+              enum:["single_invoice","multiple_invoices","conflicting_fields","unclear"]
+            }
+          }
         }
       }
     }
@@ -154,6 +169,17 @@ function deepFreeze(value) {
   if (!value||typeof value!=="object"||Object.isFrozen(value)) return value;
   for (const item of Object.values(value)) deepFreeze(item);
   return Object.freeze(value);
+}
+
+function invoiceFields(fieldSchema) {
+  const names=[
+    "invoice_number","issue_date","buyer_name","buyer_tax_id",
+    "seller_name","item_name","total_with_tax"
+  ];
+  return {
+    type:"object",additionalProperties:false,required:names,
+    properties:Object.fromEntries(names.map(name=>[name,fieldSchema]))
+  };
 }
 
 function reject() {
