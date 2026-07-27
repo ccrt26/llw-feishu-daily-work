@@ -75,3 +75,26 @@ test("accepts an attachment with empty instructionText",async()=>{
   assert.equal(calls,1);
 });
 
+test("persists a bounded failure Outcome before replying when preparation or AI fails",async()=>{
+  const saved=[],sent=[];
+  const dispatcher=new PersonalAssistantDispatcher({
+    binding:{senderId:"owner",chatId:"private"},
+    bindings:{feishu:{userId:"owner",conversationId:"private"}},
+    state:{
+      hasOutcome:()=>false,
+      async saveOutcome(key,outcome){saved.push({key,outcome});},
+      async markReplied(key){saved.push({marked:key});}
+    },
+    coordinator:{async handle(){throw new Error("private_provider_detail");}},
+    modelMode:{},deepseekEnabled:false,
+    messenger:{async send(value){sent.push(value);}}
+  });
+  const result=await dispatcher.handleIncomingMessage(incoming());
+  assert.deepEqual(result,{handled:true,status:"failed"});
+  assert.equal(saved[0].key,"feishu:m1");
+  assert.equal(saved[0].outcome.status,"failed");
+  assert.equal(saved[0].outcome.reply.includes("private_provider_detail"),false);
+  assert.equal(sent.length,1);
+  assert.equal(sent[0].idempotencyKey,"reply:feishu:m1");
+  assert.deepEqual(saved[1],{marked:"feishu:m1"});
+});

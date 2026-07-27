@@ -1,10 +1,38 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {createFeishuIncomingMessage} from "../src/core/incoming-message.mjs";
-import {prepareKnowledgeText} from "../src/capabilities/knowledge-ingest/source-preparer.mjs";
+import {execFile} from "node:child_process";
+import {chmod,mkdir,mkdtemp,readFile,rm,writeFile} from "node:fs/promises";
+import {tmpdir} from "node:os";
+import {dirname,join} from "node:path";
+import {promisify} from "node:util";
+import {
+  createFeishuIncomingMessage,createWechatIncomingMessage
+} from "../src/core/incoming-message.mjs";
+import {
+  prepareKnowledgeFile,prepareKnowledgeText
+} from "../src/capabilities/knowledge-ingest/source-preparer.mjs";
+import {
+  prepareKnowledgeOfficeFile
+} from "../src/capabilities/knowledge-ingest/office-source-preparer.mjs";
+import {
+  KnowledgeWriter
+} from "../src/capabilities/knowledge-ingest/knowledge-writer.mjs";
 import {createSourceEvidence} from "../src/personal-assistant/source-evidence.mjs";
 import {PersonalAssistantClient} from "../src/personal-assistant/client.mjs";
 import {PersonalAssistantCoordinator} from "../src/personal-assistant/coordinator.mjs";
+import {
+  createAssistantSourcePreparer
+} from "../src/personal-assistant/source-preparer.mjs";
+import {StateStore} from "../src/state-store.mjs";
+
+const run=promisify(execFile);
+const KNOWLEDGE_SECTIONS={
+  keyFacts:["文档要求先确认交流目标。"],
+  structureAndMainContent:"文档包含交流目标和准备动作。",
+  reusableContent:["交流前确认目标。"],
+  sourceNotes:"根据完整 DOCX 文字来源忠实整理。",
+  contentIndex:"来源共一段。"
+};
 
 test("Feishu text travels through real preparation, one assistant, tool, Writer, Outcome and Reply",async() => {
   const order=[];
@@ -106,3 +134,137 @@ test("reply recovery reuses Outcome without rerunning assistant or Writer",async
   assert.equal(writerCalls,0);
   assert.equal(sent.length,1);
 });
+
+test("WeChat waiting_file DOCX travels through real preparation, State, Writer, Outcome and Reply",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"llw-v401-wechat-docx-"));
+  try {
+    const sourceFile=await createDocx(root,"交流方案正文：先确认交流目标。");
+    const vaultRoot=join(root,"vault");
+    const libraryRoot=join(vaultRoot,"personal-library");
+    await mkdir(join(vaultRoot,".obsidian"),{recursive:true,mode:0o700});
+    await mkdir(join(vaultRoot,".llw-system"),{recursive:true,mode:0o700});
+    await mkdir(libraryRoot,{recursive:true,mode:0o700});
+    await writeFile(
+      join(vaultRoot,".llw-system","SYSTEM_MAP.md"),
+      "# synthetic\n",{mode:0o600}
+    );
+    const state=await StateStore.open(join(root,"state.json"));
+    const sent=[];
+    const decisions=[
+      {
+        type:"ask",question:"请发送要保存的 DOCX 文件。",
+        waitingType:"waiting_file",preparedTool:"save_knowledge"
+      },
+      {
+        type:"tool_call",toolName:"save_knowledge",
+        arguments:{
+          libraryKey:"personal-knowledge",folderSegments:["测试资料"],
+          title:"交流方案",summary:"交流准备资料。",tags:["测试"],
+          knowledgeSections:KNOWLEDGE_SECTIONS
+        }
+      }
+    ];
+    const assistant=new PersonalAssistantClient({
+      codex:async context=>{
+        if (decisions.length===1) {
+          assert.equal(context.instructionText,
+            "把我接下来发的文件整理后保存到日常生活");
+          assert.equal(context.sourceEvidence.kind,"docx");
+          assert.match(context.sourceEvidence.text,/交流方案正文/u);
+        }
+        return decisions.shift();
+      },
+      deepseek:async()=>{throw new Error("unexpected");}
+    });
+    const prepareSource=createAssistantSourcePreparer({
+      download:async()=>({file:sourceFile,tempDir:root}),
+      inspect:async()=>{throw new Error("unexpected");},
+      preparePdf:async()=>{throw new Error("unexpected");},
+      prepareOffice:input=>prepareKnowledgeOfficeFile({
+        ...input,
+        processorPath:new URL(
+          "../src/capabilities/knowledge-ingest/ooxml_processor.py",
+          import.meta.url
+        )
+      }),
+      prepareTextFile:prepareKnowledgeFile,
+      cleanup:async()=>{}
+    });
+    const coordinator=new PersonalAssistantCoordinator({
+      prepareSource,assistant,
+      writer:new KnowledgeWriter({
+        vaultRoot,
+        libraries:[{
+          libraryKey:"personal-knowledge",displayName:"Synthetic",
+          aliases:[],root:libraryRoot
+        }]
+      }),
+      outcomeStore:{
+        get:key=>state.getOutcome(key),
+        save:(outcome,key)=>state.saveOutcome(key,outcome),
+        markReplied:key=>state.markReplied(key)
+      },
+      messenger:{
+        async send(value){sent.push(structuredClone(value));}
+      },
+      conversationStore:{
+        get:(source,now)=>state.getPersonalAssistantConversation(source,now),
+        set:(source,value)=>state.setPersonalAssistantConversation(source,value),
+        clear:source=>state.clearPersonalAssistantConversation(source)
+      },
+      personalRules:[],model:"codex",skillVersion:"4.0.1"
+    });
+    const first=await coordinator.handle(createWechatIncomingMessage({
+      messageId:"wx-text-1",userId:"owner",conversationId:"owner",
+      createTimeMs:1785196800000,type:"text",contextToken:"ctx",
+      text:"把我接下来发的文件整理后保存到日常生活"
+    }));
+    assert.equal(first.status,"awaiting_clarification");
+    assert.equal(
+      (await state.getPersonalAssistantConversation(
+        "wechat","2026-07-28T00:01:00.000Z"
+      )).waitingType,
+      "waiting_file"
+    );
+    const second=await coordinator.handle(createWechatIncomingMessage({
+      messageId:"wx-file-2",userId:"owner",conversationId:"owner",
+      createTimeMs:1785196860000,type:"file",contextToken:"ctx",
+      attachment:{
+        type:"file",sourceAttachmentId:"wxr_1",
+        displayName:"交流方案.docx",extension:"docx"
+      }
+    }));
+    assert.equal(second.status,"committed");
+    assert.equal(sent.length,2);
+    assert.equal(
+      await state.getPersonalAssistantConversation(
+        "wechat","2026-07-28T00:02:00.000Z"
+      ),
+      null
+    );
+    assert.match(
+      await readFile(join(vaultRoot,second.artifacts[0]),"utf8"),
+      /source_format: "docx"[\s\S]*交流方案正文/u
+    );
+    assert.ok(state.getOutcome("wechat:wx-file-2"));
+  } finally {
+    await rm(root,{recursive:true,force:true});
+  }
+});
+
+async function createDocx(root,text) {
+  const packageRoot=join(root,"docx-package");
+  const parts={
+    "[Content_Types].xml":`<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`,
+    "word/document.xml":`<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:body></w:document>`
+  };
+  for (const [name,content] of Object.entries(parts)) {
+    const target=join(packageRoot,name);
+    await mkdir(dirname(target),{recursive:true,mode:0o700});
+    await writeFile(target,content,{mode:0o600});
+  }
+  const output=join(root,"source.docx");
+  await run("/usr/bin/zip",["-q","-r",output,"."],{cwd:packageRoot});
+  await chmod(output,0o600);
+  return output;
+}

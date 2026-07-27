@@ -70,8 +70,17 @@ export class PersonalAssistantDispatcher {
         return {handled:true,status:command.status};
       }
     }
-    const outcome=await this.coordinator.handle(message);
-    return {handled:true,status:outcome.status};
+    try {
+      const outcome=await this.coordinator.handle(message);
+      return {handled:true,status:outcome.status};
+    } catch (error) {
+      if (this.state.hasOutcome(key)) throw error;
+      await this.persistAndSendCommand(key,message,{
+        status:"failed",
+        reply:"本次处理失败，系统没有确认任何写入；请稍后重试。"
+      });
+      return {handled:true,status:"failed"};
+    }
   }
 
   async persistAndSendCommand(key,message,draft) {

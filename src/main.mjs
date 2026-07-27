@@ -274,7 +274,7 @@ async function runPersonalAssistantMain(config) {
       set:(source,value)=>state.setPersonalAssistantConversation(source,value),
       clear:source=>state.clearPersonalAssistantConversation(source)
     },
-    loadDailyCandidates:()=>dailyCatalog.list({limit:20}),
+    loadDailyCandidates:()=>dailyCatalog.list({limit:20}).catch(()=>[]),
     personalRules:[],
     selectModel:async()=>effectiveModel(
       await modelMode.read(),config.deepseekEnabled

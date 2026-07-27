@@ -22,12 +22,12 @@ export async function handleModelCommand(content,{modelMode,deepseekEnabled}) {
   await modelMode.write(command);
   return draft("existing",command==="codex"
     ?"模型已切换为 Codex。\n生效范围：下一条新任务。\n当前处理中任务不受影响。"
-    :"模型已切换为 DeepSeek。\n生效范围：下一条新任务。\n当前处理中任务不受影响。\n注意：发票图片/PDF视觉判断暂不支持 DeepSeek。");
+    :"模型已切换为 DeepSeek。\n生效范围：下一条新任务。\n当前处理中任务不受影响。\n注意：V4.0.1 中 DeepSeek 仅支持已批准的纯文字每日工作子集；附件、知识保存、发票和文档生成请使用 Codex。");
 }
 
 function draft(status,reply) { return {status,reply,artifacts:[]}; }
 function statusReply(mode) {
   return mode==="deepseek"
-    ?"当前模型：DeepSeek\n切换方式：手工\n发票视觉任务：不可用"
+    ?"当前模型：DeepSeek\n切换方式：手工\n支持范围：仅纯文字每日工作子集\n其他任务：请切换 Codex"
     :"当前模型：Codex\n切换方式：手工";
 }

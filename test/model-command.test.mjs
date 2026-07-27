@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {handleModelCommand,parseLocalModelCommand,parseModelCommand} from "../src/core/model-command.mjs";
 
 const CODEX_SWITCH="模型已切换为 Codex。\n生效范围：下一条新任务。\n当前处理中任务不受影响。";
-const DEEPSEEK_SWITCH="模型已切换为 DeepSeek。\n生效范围：下一条新任务。\n当前处理中任务不受影响。\n注意：发票图片/PDF视觉判断暂不支持 DeepSeek。";
+const DEEPSEEK_SWITCH="模型已切换为 DeepSeek。\n生效范围：下一条新任务。\n当前处理中任务不受影响。\n注意：V4.0.1 中 DeepSeek 仅支持已批准的纯文字每日工作子集；附件、知识保存、发票和文档生成请使用 Codex。";
 
 test("accepts only the three exact chat-entry and local model commands",() => {
   assert.equal(parseModelCommand("/llw-model status"),"status");
@@ -22,7 +22,7 @@ test("reports exact status and confirmation copy while respecting the DeepSeek f
   assert.deepEqual(await handleModelCommand("/llw-model status",{modelMode,deepseekEnabled:true}),{status:"existing",reply:"当前模型：Codex\n切换方式：手工",artifacts:[]});
   assert.deepEqual(await handleModelCommand("/llw-model codex",{modelMode,deepseekEnabled:true}),{status:"existing",reply:CODEX_SWITCH,artifacts:[]});
   assert.deepEqual(await handleModelCommand("/llw-model deepseek",{modelMode,deepseekEnabled:true}),{status:"existing",reply:DEEPSEEK_SWITCH,artifacts:[]});
-  assert.deepEqual(await handleModelCommand("/llw-model status",{modelMode,deepseekEnabled:true}),{status:"existing",reply:"当前模型：DeepSeek\n切换方式：手工\n发票视觉任务：不可用",artifacts:[]});
+  assert.deepEqual(await handleModelCommand("/llw-model status",{modelMode,deepseekEnabled:true}),{status:"existing",reply:"当前模型：DeepSeek\n切换方式：手工\n支持范围：仅纯文字每日工作子集\n其他任务：请切换 Codex",artifacts:[]});
   assert.deepEqual(await handleModelCommand("/llw-model deepseek",{modelMode,deepseekEnabled:false}),{status:"rejected",reply:"DeepSeek 模型当前未启用。",artifacts:[]});
   assert.deepEqual(await handleModelCommand("/llw-model status",{modelMode:{read:async()=>"deepseek"},deepseekEnabled:false}),{status:"existing",reply:"当前模型：Codex\n切换方式：手工",artifacts:[]});
   assert.deepEqual(writes,["codex","deepseek"]);
