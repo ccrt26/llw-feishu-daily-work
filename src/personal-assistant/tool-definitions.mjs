@@ -54,14 +54,31 @@ const definitions={
     description:"把当前程序绑定的完整来源保存为一个新的知识项。",
     parameters:{
       type:"object",additionalProperties:false,
-      required:["libraryKey","folderSegments","title","summary","tags","body"],
+      required:[
+        "libraryKey","folderSegments","title","summary","tags","knowledgeSections"
+      ],
       properties:{
         libraryKey:{type:"string",pattern:"^[a-z][a-z0-9_-]{0,63}$"},
         folderSegments:stringArray(5,64),
         title:string(200),
         summary:string(2_000),
         tags:stringArray(20,64),
-        body:string(262_144)
+        knowledgeSections:{
+          type:"object",additionalProperties:false,
+          required:[
+            "keyFacts","structureAndMainContent","reusableContent",
+            "sourceNotes","contentIndex"
+          ],
+          properties:{
+            keyFacts:{
+              type:"array",minItems:1,maxItems:50,items:string(1000)
+            },
+            structureAndMainContent:string(16_000),
+            reusableContent:stringArray(50,1000),
+            sourceNotes:string(4_000),
+            contentIndex:string(16_000)
+          }
+        }
       }
     }
   },

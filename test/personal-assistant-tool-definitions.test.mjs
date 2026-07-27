@@ -22,7 +22,13 @@ test("accepts one business-only save_knowledge call",() => {
       title:"交流方法",
       summary:"整理交流前的准备方法。",
       tags:["交流","准备"],
-      body:"## 关键事实\n- 先确认目标"
+      knowledgeSections:{
+        keyFacts:["先确认目标"],
+        structureAndMainContent:"准备、交流、确认三部分。",
+        reusableContent:["交流前确认目标。"],
+        sourceNotes:"根据当前完整来源忠实整理。",
+        contentIndex:"来源共两段。"
+      }
     }
   }),{
     name:"save_knowledge",
@@ -32,7 +38,13 @@ test("accepts one business-only save_knowledge call",() => {
       title:"交流方法",
       summary:"整理交流前的准备方法。",
       tags:["交流","准备"],
-      body:"## 关键事实\n- 先确认目标"
+      knowledgeSections:{
+        keyFacts:["先确认目标"],
+        structureAndMainContent:"准备、交流、确认三部分。",
+        reusableContent:["交流前确认目标。"],
+        sourceNotes:"根据当前完整来源忠实整理。",
+        contentIndex:"来源共两段。"
+      }
     }
   });
 });
@@ -42,11 +54,11 @@ test("rejects unknown tools, paths, hashes, source objects and extra fields",() 
     {name:"reply_only",arguments:{}},
     {name:"save_knowledge",arguments:{}},
     {name:"save_knowledge",arguments:{
-      libraryKey:"personal",folderSegments:[],title:"x",summary:"x",tags:[],body:"x",
+      libraryKey:"personal",folderSegments:[],title:"x",summary:"x",tags:[],knowledgeSections:{},
       path:"/tmp/x"
     }},
     {name:"save_knowledge",arguments:{
-      libraryKey:"personal",folderSegments:[],title:"x",summary:"x",tags:[],body:"x",
+      libraryKey:"personal",folderSegments:[],title:"x",summary:"x",tags:[],knowledgeSections:{},
       source:{sha256:"a".repeat(64)}
     }}
   ]) assert.throws(()=>validateToolCall(call),/tool_call_invalid/);
