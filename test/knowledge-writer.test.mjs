@@ -332,3 +332,28 @@ test("concurrent publication creates once and verifies fixed ordinary files",asy
     assert.equal((await realpath(item)).startsWith(await realpath(h.work)),true);
   } finally { await rm(h.root,{recursive:true,force:true}); }
 });
+
+test("preserves one complete prepared PDF source without weakening hashes",async()=>{
+  const h=await harness();
+  const bytes=Buffer.from("%PDF-1.7\nsynthetic knowledge source");
+  const sha256=createHash("sha256").update(bytes).digest("hex");
+  try {
+    const result=await h.writer.commit(commitInput({
+      source:{
+        version:1,sourceKind:"file",detectedFormat:"pdf",
+        displayName:"材料.pdf",sizeBytes:bytes.length,sha256,
+        jobSourceName:"source.pdf",safeSourceReference:"",
+        extractionIntegrity:"complete",extractionLimitations:[],
+        content:"完整 PDF 的已验证文字和页面证据。",
+        structure:[{page:1}],sourceBytes:bytes
+      },
+      skillVersion:"4.0.1"
+    }));
+    const item=join(h.root,result.relativePath);
+    assert.deepEqual(await readFile(join(item,"source.pdf")),bytes);
+    assert.match(
+      await readFile(join(item,"knowledge.md"),"utf8"),
+      /source_format: "pdf"[\s\S]*source_preserved: true/
+    );
+  } finally { await rm(h.root,{recursive:true,force:true}); }
+});

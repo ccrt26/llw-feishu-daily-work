@@ -45,7 +45,10 @@ export class Dispatcher {
   async processIncomingMessage(message) {
     const security=checkIncomingSecurity(message,this.bindings);
     if (!security.ok) return {handled:false,reason:security.reason};
-    if (typeof message.text==="string"&&!message.text.trim()) return {handled:false,reason:"empty_text"};
+    if (typeof message.text==="string"&&!message.text.trim()&&
+        !message.attachments?.length) {
+      return {handled:false,reason:"empty_text"};
+    }
     const key=outcomeKey(message);
     if (this.state.hasOutcome(key)) return {handled:false,reason:"duplicate"};
     if (typeof message.text==="string") {

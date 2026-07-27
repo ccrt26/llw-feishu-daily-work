@@ -125,7 +125,10 @@ function toIncoming(raw,binding,resources) {
   if (!nonempty(rawName)) return null;
   const displayName=rawName.split(/[\\/]/).at(-1).slice(0,255);
   const extension=type==="image"?"":extname(displayName).slice(1).toLowerCase();
-  if (!displayName||extension.length>20||type==="file"&&extension!=="pdf") return null;
+  if (!displayName||extension.length>20||
+      type==="file"&&!new Set([
+        "pdf","txt","md","docx","pptx","xlsx"
+      ]).has(extension)) return null;
   const resourceId=`wxr_${randomUUID().replaceAll("-","")}`;
   while (resources.size>=MAX_RESOURCES) resources.delete(resources.keys().next().value);
   resources.set(resourceId,{url,aesKey,type,displayName,extension});

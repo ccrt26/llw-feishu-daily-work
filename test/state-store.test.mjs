@@ -66,6 +66,52 @@ test("persists one shared Task Session in state version 4 and restores it after 
   assert.equal((await stat(file)).mode&0o777,0o600);
 });
 
+test("persists one bounded personal-assistant conversation per entry",async()=>{
+  const {file}=await fresh();
+  const store=await StateStore.open(file);
+  const conversation={
+    waitingType:"waiting_file",
+    question:"请发送要保存的文件。",
+    instructionText:"把我接下来发的文件保存到日常生活",
+    preparedTool:"save_knowledge",
+    confirmed:{libraryKey:"personal-knowledge"},
+    turns:[],
+    model:"codex",
+    startedAt:"2026-07-28T00:00:00.000Z",
+    updatedAt:"2026-07-28T00:00:00.000Z"
+  };
+  await store.setPersonalAssistantConversation("wechat",conversation);
+  assert.equal(
+    (await store.getPersonalAssistantConversation(
+      "feishu","2026-07-28T01:00:00.000Z"
+    )),
+    null
+  );
+  assert.deepEqual(
+    await store.getPersonalAssistantConversation(
+      "wechat","2026-07-28T01:00:00.000Z"
+    ),
+    conversation
+  );
+  const reopened=await StateStore.open(file);
+  assert.deepEqual(
+    await reopened.getPersonalAssistantConversation(
+      "wechat","2026-07-28T02:00:00.000Z"
+    ),
+    conversation
+  );
+  assert.equal(JSON.stringify(
+    reopened.getCapabilityState("personal-assistant")
+  ).includes("/Users/"),false);
+  await reopened.clearPersonalAssistantConversation("wechat");
+  assert.equal(
+    await reopened.getPersonalAssistantConversation(
+      "wechat","2026-07-28T02:00:00.000Z"
+    ),
+    null
+  );
+});
+
 test("updates only the same open Task Session without identity, model, time or draft rollback",async()=>{
   const {file}=await fresh();
   const store=await StateStore.open(file,{taskSessionPolicy});

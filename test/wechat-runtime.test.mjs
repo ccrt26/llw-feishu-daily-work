@@ -75,7 +75,7 @@ test("delivers only one bound p2p finished user text and atomically advances its
     userId:owner,
     conversationId:owner,
     receivedAt:"2026-07-24T00:00:00.000Z",
-    text:"今天完成评审",
+    instructionText:"今天完成评审",
     attachments:[],
     replyTarget:{
       source:"wechat",sourceMessageId:"1001",conversationId:owner,contextToken:"test-context"
@@ -277,7 +277,7 @@ test("validates required messages and cursor before delivering any message",asyn
   }
 });
 
-test("keeps one image or PDF media reference only in the current in-memory resource table",async () => {
+test("keeps one image, PDF or Office media reference only in the current in-memory resource table",async () => {
   const channelState=state();
   const received=[];
   const mediaUrl="https://media.weixin.qq.com/encrypted";
@@ -285,7 +285,8 @@ test("keeps one image or PDF media reference only in the current in-memory resou
   const replies=[
     {ret:0,get_updates_buf:"cursor-2",msgs:[
       {...baseMessage,message_id:2001,item_list:[{type:2,image_item:{media:{full_url:mediaUrl,aes_key:aesKey}}}]},
-      {...baseMessage,message_id:2002,item_list:[{type:4,file_item:{file_name:"发票.PDF",media:{full_url:mediaUrl,aes_key:aesKey}}}]}
+      {...baseMessage,message_id:2002,item_list:[{type:4,file_item:{file_name:"发票.PDF",media:{full_url:mediaUrl,aes_key:aesKey}}}]},
+      {...baseMessage,message_id:2003,item_list:[{type:4,file_item:{file_name:"材料.DOCX",media:{full_url:mediaUrl,aes_key:aesKey}}}]}
     ]},
     {ret:1,errcode:-14}
   ];
@@ -297,12 +298,12 @@ test("keeps one image or PDF media reference only in the current in-memory resou
     retryDelayMs:0
   });
   await listener.done;
-  assert.equal(received.length,2);
-  assert.deepEqual(received.map(message=>message.attachments[0].type),["image","file"]);
-  assert.deepEqual(received.map(message=>message.attachments[0].extension),["","pdf"]);
+  assert.equal(received.length,3);
+  assert.deepEqual(received.map(message=>message.attachments[0].type),["image","file","file"]);
+  assert.deepEqual(received.map(message=>message.attachments[0].extension),["","pdf","docx"]);
   assert.equal(JSON.stringify(received).includes(mediaUrl),false);
   assert.equal(JSON.stringify(received).includes(aesKey),false);
-  assert.equal(channelState.resources.size,2);
+  assert.equal(channelState.resources.size,3);
   for (const message of received) {
     const id=message.attachments[0].sourceAttachmentId;
     assert.match(id,/^wxr_[a-f0-9]{32}$/);

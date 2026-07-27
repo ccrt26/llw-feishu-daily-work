@@ -6,7 +6,13 @@ export function adaptProviderResult({provider,raw}) {
       return {kind:"reply",text:raw.text};
     }
     if ((raw.type==="ask"||raw.action==="ask")&&safeText(raw.question,1000)) {
-      return {kind:"ask",question:raw.question};
+      const waitingType=raw.waitingType??"waiting_answer";
+      const preparedTool=raw.preparedTool??null;
+      if (!new Set([
+        "waiting_answer","waiting_file","waiting_confirmation"
+      ]).has(waitingType)||
+          (preparedTool!==null&&!safeName(preparedTool))) reject();
+      return {kind:"ask",question:raw.question,waitingType,preparedTool};
     }
     if ((raw.type==="tool_call"||raw.action==="tool_call")&&
         safeName(raw.toolName||raw.name)&&

@@ -10,9 +10,15 @@ test("stores only one bounded waiting_file conversation per channel",() => {
   const state={feishu:null,wechat:null};
   const next=applyConversationDecision({
     state,source:"feishu",now,
-    decision:{kind:"ask",waitingType:"waiting_file",question:"请发送要保存的文件。",preparedTool:"save_knowledge"}
+    decision:{
+      kind:"ask",waitingType:"waiting_file",
+      question:"请发送要保存的文件。",
+      instructionText:"保存我接下来发的文件",
+      preparedTool:"save_knowledge"
+    }
   });
   assert.equal(next.feishu.waitingType,"waiting_file");
+  assert.equal(next.feishu.instructionText,"保存我接下来发的文件");
   assert.equal(next.wechat,null);
   assert.equal(JSON.stringify(next).includes("/Users/"),false);
 });

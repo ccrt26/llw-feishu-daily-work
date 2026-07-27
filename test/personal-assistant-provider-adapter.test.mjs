@@ -7,8 +7,14 @@ test("adapts direct replies, one question and one tool without business rewritin
     provider:"codex",raw:{type:"reply",text:"这是总结。"}
   }),{kind:"reply",text:"这是总结。"});
   assert.deepEqual(adaptProviderResult({
-    provider:"deepseek",raw:{action:"ask",question:"希望保存到工作还是生活资料？"}
-  }),{kind:"ask",question:"希望保存到工作还是生活资料？"});
+    provider:"deepseek",raw:{
+      action:"ask",question:"请发送要保存的文件。",
+      waitingType:"waiting_file",preparedTool:"save_knowledge"
+    }
+  }),{
+    kind:"ask",question:"请发送要保存的文件。",
+    waitingType:"waiting_file",preparedTool:"save_knowledge"
+  });
   const args={libraryKey:"personal"};
   const result=adaptProviderResult({
     provider:"codex",raw:{type:"tool_call",toolName:"save_knowledge",arguments:args}

@@ -5,6 +5,27 @@ import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {fileURLToPath} from "node:url";
 
+test("version 6 enters one personal-assistant composition before legacy routing",async()=>{
+  const source=await readFile(
+    fileURLToPath(new URL("../src/main.mjs",import.meta.url)),"utf8"
+  );
+  assert.match(source,/if \(config\.version===6\) \{\s*await runPersonalAssistantMain\(config\);\s*return;/);
+  for (const expected of [
+    "PersonalAssistantClient","createAssistantSourcePreparer",
+    "PersonalAssistantCoordinator","PersonalAssistantDispatcher",
+    "invokePersonalAssistantCodex","invokePersonalAssistantDeepSeek"
+  ]) assert.equal(source.includes(expected),true);
+  const {V6_PRIVATE_SKILL_ALLOWLIST}=await import("../src/main.mjs");
+  assert.deepEqual(V6_PRIVATE_SKILL_ALLOWLIST,[{
+    name:"llw-personal-assistant",
+    capability:"personal-assistant",
+    versions:["4.0.1"],
+    semanticTasks:["personal-assistant.turn"],
+    modelSupport:["codex","deepseek"],
+    enabled:true
+  }]);
+});
+
 test("main validates one protected PDFium runtime before state and injects one shared bounded PDF preparer",async () => {
   const source=await readFile(fileURLToPath(new URL("../src/main.mjs",import.meta.url)),"utf8");
   assert.match(source,/import \{loadConfig\} from "\.\/config\.mjs"/);
@@ -41,7 +62,13 @@ test("main validates business routing contracts and injects one read-only intent
   assert.match(source,/name:"llw-knowledge-ingest",capability:"knowledge-ingest",versions:\["1\.3\.0"\][\s\S]*?enabled:true/);
   assert.match(source,/name:"llw-assistant-work",capability:"assistant-work",versions:\["1\.1\.0"\][\s\S]*?enabled:true/);
   assert.ok(source.indexOf("await loadPrivateSkillManifest")<source.indexOf("StateStore.open"));
-  assert.ok(source.indexOf("await validateIntentRouterSkill(routerSkillRoot)")<source.indexOf("StateStore.open"));
+  const legacyRouterValidation=source.indexOf(
+    "await validateIntentRouterSkill(routerSkillRoot)"
+  );
+  assert.ok(
+    legacyRouterValidation<
+      source.indexOf("StateStore.open",legacyRouterValidation)
+  );
   assert.match(source,/loadRoutingContract\(dailySkillRoot,"daily-work"\)/);
   assert.match(source,/loadRoutingContract\(invoiceSkillRoot,"invoice"\)/);
   assert.equal(source.includes('join(config.vaultRoot,".agents","skills","feishu-intent-router")'),false);

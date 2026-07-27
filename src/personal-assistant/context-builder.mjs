@@ -7,7 +7,8 @@ const PRIORITY=Object.freeze([
 ]);
 
 export function buildAgentTurnContext({
-  message,evidence,conversation,personalRules,model,toolDeclarations
+  message,evidence,conversation,personalRules,model,toolDeclarations,
+  dailyCandidates=[]
 }) {
   if (!message||typeof message.instructionText!=="string"||
       !canonicalIso(message.receivedAt)||
@@ -15,11 +16,13 @@ export function buildAgentTurnContext({
       personalRules.some(rule=>typeof rule!=="string"||
         Buffer.byteLength(rule,"utf8")>1000)||
       !new Set(["codex","deepseek"]).has(model)||
-      !Array.isArray(toolDeclarations)) {
+      !Array.isArray(toolDeclarations)||
+      !Array.isArray(dailyCandidates)||dailyCandidates.length>20) {
     throw new Error("agent_turn_context_invalid");
   }
   return Object.freeze({
     instructionText:message.instructionText,
+    entry:message.source,
     currentTime:message.receivedAt,
     sourceEvidence:evidence===null?null:structuredClone(evidence),
     conversation:conversation===null?null:structuredClone(conversation),
@@ -30,6 +33,7 @@ export function buildAgentTurnContext({
       description:item.description,
       parameters:item.parameters
     })),
+    dailyCandidates:structuredClone(dailyCandidates),
     priority:PRIORITY
   });
 }

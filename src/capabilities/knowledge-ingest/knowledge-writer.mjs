@@ -10,7 +10,10 @@ const TEXT_SOURCE_FIELDS=new Set([
   "extractionLimitations","content"
 ]);
 const OFFICE_SOURCE_FIELDS=new Set([...TEXT_SOURCE_FIELDS,"sourceBytes"]);
+const VISUAL_SOURCE_FIELDS=new Set([...OFFICE_SOURCE_FIELDS,"structure"]);
 const OFFICE_FORMATS=new Set(["docx","pptx","xlsx"]);
+const VISUAL_FORMATS=new Set(["pdf","image"]);
+const BINARY_FORMATS=new Set([...OFFICE_FORMATS,...VISUAL_FORMATS]);
 const OWNER_ONLY_FILE_MODES=new Set([0o600,0o700]);
 const RESERVED=/^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/iu;
 const MAX_SCAN_DIRECTORIES=4096;
@@ -196,19 +199,23 @@ function validText(value,max) {
 }
 
 function validateSource(source) {
-  const fields=OFFICE_FORMATS.has(source?.detectedFormat)
-    ?OFFICE_SOURCE_FIELDS:TEXT_SOURCE_FIELDS;
+  const fields=VISUAL_FORMATS.has(source?.detectedFormat)
+    ?VISUAL_SOURCE_FIELDS
+    :OFFICE_FORMATS.has(source?.detectedFormat)
+      ?OFFICE_SOURCE_FIELDS
+      :TEXT_SOURCE_FIELDS;
   if (!source||typeof source!=="object"||Array.isArray(source)||
       Object.keys(source).length!==fields.size||
       Object.keys(source).some(field=>!fields.has(field))||
       source.version!==1||
       !new Set(["text","file","feishu_document"]).has(source.sourceKind)||
-      !new Set(["text","txt","md","docx","pptx","xlsx"]).has(source.detectedFormat)||
+      !new Set(["text","txt","md","docx","pptx","xlsx","pdf","image"]).has(source.detectedFormat)||
       typeof source.displayName!=="string"||!source.displayName||
       [...source.displayName].length>255||/[\\/\u0000-\u001f\u007f]/u.test(source.displayName)||
       !Number.isSafeInteger(source.sizeBytes)||source.sizeBytes<1||
       !/^[a-f0-9]{64}$/u.test(source.sha256)||
-      !/^source\.(?:txt|md|docx|pptx|xlsx)$/u.test(source.jobSourceName)||
+      !/^source\.(?:txt|md|docx|pptx|xlsx|pdf|jpg|jpeg|png|webp)$/u
+        .test(source.jobSourceName)||
       !validSourceReference(source.sourceKind,source.safeSourceReference)||
       source.extractionIntegrity!=="complete"||
       !Array.isArray(source.extractionLimitations)||
@@ -227,12 +234,14 @@ function validateSource(source) {
   }
   const contentBytes=Buffer.byteLength(source.content,"utf8");
   if (contentBytes>262_144) throw new Error("invalid_source");
-  if (OFFICE_FORMATS.has(source.detectedFormat)) {
+  if (BINARY_FORMATS.has(source.detectedFormat)) {
     if (!new Set(["file","feishu_document"]).has(source.sourceKind)||
         !Buffer.isBuffer(source.sourceBytes)||
         source.sourceBytes.length!==source.sizeBytes||
         source.sourceBytes.length>20*1024*1024||
-        createHash("sha256").update(source.sourceBytes).digest("hex")!==source.sha256) {
+        createHash("sha256").update(source.sourceBytes).digest("hex")!==source.sha256||
+        (VISUAL_FORMATS.has(source.detectedFormat)&&
+          (!Array.isArray(source.structure)||source.structure.length>1000))) {
       throw new Error("invalid_source");
     }
   } else {
@@ -244,8 +253,11 @@ function validateSource(source) {
 }
 
 function sameFileFormat(format,name) {
-  return new Set(["txt","md","docx","pptx","xlsx"]).has(format)&&
-    name===`source.${format}`;
+  if (new Set(["txt","md","docx","pptx","xlsx","pdf"]).has(format)) {
+    return name===`source.${format}`;
+  }
+  return format==="image"&&
+    /^source\.(?:jpg|jpeg|png|webp)$/u.test(name);
 }
 
 function validSourceReference(kind,value) {

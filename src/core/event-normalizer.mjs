@@ -7,7 +7,7 @@ export function normalizeEvent(raw) {
   if (typeof raw.content !== "string") throw new Error("invalid_event");
   const createTimeMs = Number(raw.create_time);
   if (!Number.isFinite(createTimeMs) || createTimeMs <= 0) throw new Error("invalid_event");
-  return {
+  const event={
     eventId: raw.event_id,
     messageId: raw.message_id,
     senderId: raw.sender_id,
@@ -17,4 +17,12 @@ export function normalizeEvent(raw) {
     content: raw.content,
     createTimeMs
   };
+  if (raw.instruction_text!==undefined) {
+    if (typeof raw.instruction_text!=="string"||
+        Buffer.byteLength(raw.instruction_text,"utf8")>32_768) {
+      throw new Error("invalid_event");
+    }
+    event.instructionText=raw.instruction_text;
+  }
+  return event;
 }

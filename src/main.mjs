@@ -51,6 +51,19 @@ import {
   createRouterTextTask,createRouterVisualTask,createDailyWorkInterpretTask,
   createInvoiceVisualTask,createKnowledgeIngestTask,createAssistantWorkTask
 } from "./core/semantic-tasks.mjs";
+import {PersonalAssistantClient} from "./personal-assistant/client.mjs";
+import {
+  invokePersonalAssistantCodex,invokePersonalAssistantDeepSeek
+} from "./personal-assistant/invoke-personal-assistant.mjs";
+import {
+  createAssistantSourcePreparer
+} from "./personal-assistant/source-preparer.mjs";
+import {
+  PersonalAssistantCoordinator
+} from "./personal-assistant/coordinator.mjs";
+import {
+  PersonalAssistantDispatcher
+} from "./personal-assistant/dispatcher.mjs";
 
 const run=promisify(execFile);
 export const PRIVATE_SKILL_ALLOWLIST=[
@@ -75,12 +88,24 @@ export const PRIVATE_SKILL_ALLOWLIST=[
     semanticTasks:["assistant.work"],modelSupport:["codex"],enabled:true
   }
 ];
+export const V6_PRIVATE_SKILL_ALLOWLIST=[{
+  name:"llw-personal-assistant",
+  capability:"personal-assistant",
+  versions:["4.0.1"],
+  semanticTasks:["personal-assistant.turn"],
+  modelSupport:["codex","deepseek"],
+  enabled:true
+}];
 
 async function runMain() {
 process.umask(0o077);
 
 const configFile=process.argv[2] || "/Users/ccrt/Library/Application Support/LLW Assistant/state/feishu-daily-work/config.json";
 const config=await loadConfig(configFile);
+if (config.version===6) {
+  await runPersonalAssistantMain(config);
+  return;
+}
 const invoiceConfig=config.capabilities.invoice;
 const knowledgeConfig=config.version===5?config.capabilities["knowledge-ingest"]:null;
 const assistantConfig=config.version===5?config.capabilities["assistant-work"]:null;
@@ -116,6 +141,224 @@ if (knowledgeEnabled) {
   knowledgeSkillRoot=await selectPrivateSkillRoot(
     privateSkillCatalog,"llw-knowledge-ingest"
   );
+}
+
+async function runPersonalAssistantMain(config) {
+  const invoiceConfig=config.capabilities.invoice;
+  const knowledgeConfig=config.capabilities["knowledge-ingest"];
+  const documentConfig=config.capabilities["assistant-work"];
+  const privateSkillCatalog=await loadPrivateSkillManifest({
+    root:config.privateSkills.root,
+    manifestPath:config.privateSkills.manifestPath,
+    expectedManifestSha256:config.privateSkills.expectedManifestSha256,
+    allowlist:V6_PRIVATE_SKILL_ALLOWLIST
+  });
+  const skillRoot=await selectPrivateSkillRoot(
+    privateSkillCatalog,config.personalAssistant.skillName
+  );
+  await validatePdfiumRuntime(invoiceConfig.pdfProcessorPath);
+  const state=await StateStore.open(config.stateFile);
+  const modelMode=new ModelMode(config.modelStateFile);
+  const binding={senderId:config.senderId,chatId:config.chatId};
+  const bindings={
+    feishu:{userId:config.senderId,conversationId:config.chatId}
+  };
+  const larkMessenger=createLarkMessenger({
+    cliPath:config.cliPath,profile:config.profile,boundChatId:config.chatId
+  });
+  const wechatResources=new Map();
+  let wechatApi=null,wechatMessenger=null;
+  const messenger=createChannelMessenger({
+    feishu:larkMessenger,
+    wechat:{send:message=>{
+      if (!wechatMessenger) throw new Error("invalid_reply_target");
+      return wechatMessenger.send(message);
+    }}
+  });
+  const preparePdf=({file})=>prepareInvoicePdf({
+    file,pdfProcessorPath:invoiceConfig.pdfProcessorPath,
+    maxPages:invoiceConfig.maxPdfPages,
+    maxTextBytes:invoiceConfig.maxPdfTextBytes,
+    maxRenderBytes:invoiceConfig.maxPdfRenderBytes,
+    timeoutMs:invoiceConfig.pdfPrepareTimeoutMs
+  });
+  const download=({message,attachment})=>{
+    if (message.source==="feishu") {
+      return downloadLarkResource({
+        cliPath:config.cliPath,profile:config.profile,
+        messageId:message.sourceMessageId,
+        fileKey:attachment.sourceAttachmentId,
+        type:attachment.type==="image"?"image":"file",
+        tempRoot:knowledgeConfig.tempRoot,
+        timeoutMs:config.personalAssistant.aiTimeoutMs
+      });
+    }
+    if (message.source==="wechat"&&wechatApi) {
+      return downloadWechatResource({
+        api:wechatApi,resourceId:attachment.sourceAttachmentId,
+        resources:wechatResources,tempRoot:knowledgeConfig.tempRoot,
+        maxFileBytes:invoiceConfig.maxFileBytes,
+        timeoutMs:config.personalAssistant.aiTimeoutMs,
+        allowedFileExtensions:[
+          "pdf","txt","md","docx","pptx","xlsx"
+        ]
+      });
+    }
+    throw new Error("download_failed");
+  };
+  const prepareSource=createAssistantSourcePreparer({
+    download,
+    inspect:file=>inspectInvoiceFile(file,{
+      maxBytes:invoiceConfig.maxFileBytes
+    }),
+    preparePdf,
+    prepareOffice:input=>prepareKnowledgeOfficeFile({
+      ...input,
+      processorPath:new URL(
+        "./capabilities/knowledge-ingest/ooxml_processor.py",import.meta.url
+      ),
+      timeoutMs:30_000
+    }),
+    prepareTextFile:prepareKnowledgeFile,
+    cleanup:directory=>rm(directory,{recursive:true,force:true}),
+    maxSourceBytes:knowledgeConfig.maxSourceBytes,
+    maxFileBytes:invoiceConfig.maxFileBytes
+  });
+  const assistant=new PersonalAssistantClient({
+    codex:(context,{imageFiles})=>invokePersonalAssistantCodex({
+      codexPath:config.codexPath,workspaceRoot:config.vaultRoot,
+      skillRoot,context,imageFiles,
+      timeoutMs:config.personalAssistant.aiTimeoutMs
+    }),
+    deepseek:(context,{imageFiles})=>invokePersonalAssistantDeepSeek({
+      model:config.deepseekModel,
+      keychainService:config.deepseekKeychainService,
+      keychainAccount:config.deepseekKeychainAccount,
+      skillRoot,context,imageFiles
+    })
+  });
+  const dailyCatalog=new RecordCatalog(config.vaultRoot);
+  const invoiceWriter=new InvoiceArchiveWriter({
+    vaultRoot:config.vaultRoot,state
+  });
+  const documentWorkspace=new FileOutputWorkspace({
+    tempRoot:documentConfig.tempRoot,
+    outputRoot:documentConfig.outputRoot,
+    maxOutputBytes:documentConfig.maxOutputBytes,
+    outputRetentionDays:documentConfig.outputRetentionDays
+  });
+  const outcomeStore={
+    get:key=>state.getOutcome(key),
+    save:(outcome,key)=>state.saveOutcome(key,{
+      capability:"personal-assistant",
+      ...outcome,
+      createdAt:new Date().toISOString()
+    }),
+    markReplied:key=>state.markReplied(key)
+  };
+  const coordinator=new PersonalAssistantCoordinator({
+    prepareSource,assistant,
+    writer:new KnowledgeWriter({
+      vaultRoot:config.vaultRoot,libraries:knowledgeConfig.libraries
+    }),
+    dailyWriter:new VaultWriter(config.vaultRoot),
+    invoiceWriter,
+    documentWorkspace,
+    artifactGenerator:job=>invokeLocalArtifactGeneration({
+      codexPath:config.codexPath,
+      timeoutMs:documentConfig.aiTimeoutMs,...job
+    }),
+    outcomeStore,messenger,
+    conversationStore:{
+      get:(source,now)=>state.getPersonalAssistantConversation(source,now),
+      set:(source,value)=>state.setPersonalAssistantConversation(source,value),
+      clear:source=>state.clearPersonalAssistantConversation(source)
+    },
+    loadDailyCandidates:()=>dailyCatalog.list({limit:20}),
+    personalRules:[],
+    selectModel:async()=>effectiveModel(
+      await modelMode.read(),config.deepseekEnabled
+    ),
+    model:"codex",
+    skillVersion:"4.0.1"
+  });
+  const dispatcher=new PersonalAssistantDispatcher({
+    binding,bindings,state,coordinator,modelMode,
+    deepseekEnabled:config.deepseekEnabled,messenger
+  });
+  await scavengeInvoiceTempRoot(invoiceConfig.tempRoot);
+  await scavengeInvoiceTempRoot(knowledgeConfig.tempRoot);
+  await invoiceWriter.recoverTransactions();
+  await dispatcher.resumeReplies();
+  const cleanupOutputs=()=>documentWorkspace.cleanup({
+    protectedPaths:state.retainedReplyFilePaths({
+      retentionDays:documentConfig.outputRetentionDays
+    })
+  });
+  await cleanupOutputs();
+  await heartbeat(config.heartbeatFile);
+  const heartbeatTimer=setInterval(()=>
+    heartbeat(config.heartbeatFile).catch(()=>{}),30_000
+  );
+  const cleanupTimer=setInterval(()=>
+    cleanupOutputs().catch(()=>{}),24*60*60*1000
+  );
+  cleanupTimer.unref();
+  const {larkListener,wechatListener}=await startChatEntries({
+    wechatEnabled:config.wechatEnabled,
+    startFeishu:startLarkListener,
+    startWechat:async options=>{
+      const channel=await openWechatChannel({
+        config,resources:wechatResources
+      });
+      wechatApi=channel.api;
+      wechatMessenger=createWechatMessenger({
+        api:channel.api,boundUserId:channel.binding.userId
+      });
+      bindings.wechat=channel.binding;
+      return startWechatListener({
+        ...options,api:channel.api,state:channel.state,
+        binding:channel.binding
+      });
+    },
+    feishuOptions:{
+      cliPath:config.cliPath,profile:config.profile,
+      onEvent:event=>dispatcher.handleRawEvent(event),
+      onError:()=>process.stderr.write(
+        `${safeLog({stage:"listener",code:"event_handler_failed"})}\n`
+      )
+    },
+    wechatOptions:{
+      onMessage:message=>dispatcher.handleIncomingMessage(message),
+      onError:error=>process.stderr.write(
+        `${safeLog({
+          stage:"listener",code:error?.code||"wechat_listener_error"
+        })}\n`
+      )
+    },
+    onWechatLog:code=>process.stderr.write(
+      `${safeLog({stage:"listener",code})}\n`
+    )
+  });
+  let stopping=false;
+  const shutdown=async()=>{
+    if (stopping) return;
+    stopping=true;
+    clearInterval(heartbeatTimer);
+    clearInterval(cleanupTimer);
+    try { await wechatListener?.stop?.(); } catch {}
+    try { await larkListener.stop(); }
+    finally { process.exit(0); }
+  };
+  process.on("SIGINT",shutdown);
+  process.on("SIGTERM",shutdown);
+  try {
+    await larkListener.done;
+    if (!stopping) throw new Error("listener_exited");
+  } finally {
+    clearInterval(heartbeatTimer);
+    clearInterval(cleanupTimer);
+  }
 }
 let assistantSkillRoot=null;
 if (assistantEnabled) {

@@ -19,7 +19,10 @@ export async function executeCreateDocument({
     return {
       status:"committed",
       reply:`${displayName} 已生成并通过本地校验。`,
-      replyFile:structuredClone(artifact),
+      replyFile:{
+        ...structuredClone(artifact),
+        idempotencyKey:`assistant-file:${sessionId}:${draftVersion}`
+      },
       artifacts:[]
     };
   } catch {

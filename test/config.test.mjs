@@ -209,7 +209,7 @@ test("version 5 requires one exact private Skill root, manifest and expected has
     }
     const {privateSkills,...missing}=configV5();
     await assert.rejects(()=>saveConfig(file,missing),/missing_config_field/);
-    await assert.rejects(()=>saveConfig(file,{...configV5(),version:6}),/invalid_config_version/);
+    await assert.rejects(()=>saveConfig(file,{...configV5(),version:7}),/invalid_config_version/);
   } finally { await rm(dir,{recursive:true,force:true}); }
 });
 

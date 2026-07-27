@@ -111,6 +111,7 @@ test("routes once, invokes only the selected capability, persists before send an
   assert.equal(h.routerCalls.length,1); assert.deepEqual(h.runs,["invoice"]); assert.deepEqual(order,["invoice","save","send"]);
   assert.deepEqual(h.messages[0],{
     source:"feishu",sourceMessageId:"m1",userId:"u1",conversationId:"c1",receivedAt:"2026-07-19T02:00:00.000Z",
+    instructionText:"",
     attachments:[{type:"image",sourceAttachmentId:"img_abc",displayName:"飞书图片",extension:""}],
     replyTarget:{source:"feishu",sourceMessageId:"m1",conversationId:"c1"}
   });

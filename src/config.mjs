@@ -9,7 +9,11 @@ const V4_TOP_FIELDS=new Set([
   "cliPath","codexPath","profile","senderId","chatId","capabilities"
 ]);
 const V5_TOP_FIELDS=new Set([...V4_TOP_FIELDS,"privateSkills"]);
+const V6_TOP_FIELDS=new Set([...V5_TOP_FIELDS,"personalAssistant"]);
 const PRIVATE_SKILLS_FIELDS=new Set(["root","manifestPath","expectedManifestSha256"]);
+const PERSONAL_ASSISTANT_FIELDS=new Set([
+  "enabled","skillName","aiTimeoutMs","maxContextBytes","personalRulesFile"
+]);
 const DEEPSEEK_MODELS=new Set(["deepseek-v4-pro"]);
 const DAILY_FIELDS=new Set(["enabled","skillRoot"]);
 const INVOICE_FIELDS=new Set([
@@ -53,15 +57,25 @@ export function bindingFromEvent(event) {
 }
 
 function validateConfig(config,requireBinding,configFile) {
-  if (config?.version!==4&&config?.version!==5) throw new Error("invalid_config_version");
-  exact(config,config.version===5?V5_TOP_FIELDS:V4_TOP_FIELDS,"config");
+  if (![4,5,6].includes(config?.version)) throw new Error("invalid_config_version");
+  exact(
+    config,
+    config.version===6?V6_TOP_FIELDS:
+      config.version===5?V5_TOP_FIELDS:V4_TOP_FIELDS,
+    "config"
+  );
   for (const field of ["vaultRoot","stateFile","heartbeatFile","modelStateFile","wechatStateFile","cliPath","codexPath"]) absolute(config[field],field);
-  if (config.version===5) {
+  if (config.version>=5) {
     exact(config.privateSkills,PRIVATE_SKILLS_FIELDS,"private_skills");
     absolute(config.privateSkills.root,"privateSkills.root");
     absolute(config.privateSkills.manifestPath,"privateSkills.manifestPath");
     if (config.privateSkills.manifestPath!==join(config.privateSkills.root,"manifest.json")) throw new Error("invalid_private_skills_manifest");
     if (typeof config.privateSkills.expectedManifestSha256!=="string"||!/^[0-9a-f]{64}$/.test(config.privateSkills.expectedManifestSha256)) throw new Error("invalid_private_skills_hash");
+  }
+  if (config.version===6) {
+    validatePersonalAssistantConfig(
+      config.personalAssistant,config.vaultRoot
+    );
   }
   if (typeof config.deepseekEnabled!=="boolean") throw new Error("invalid_deepseek_enabled");
   if (!DEEPSEEK_MODELS.has(config.deepseekModel)) throw new Error("invalid_deepseek_model");
@@ -75,7 +89,7 @@ function validateConfig(config,requireBinding,configFile) {
   if (requireBinding && (!config.senderId || !config.chatId)) throw new Error("binding_missing");
   exact(
     config.capabilities,
-    new Set(config.version===5
+    new Set(config.version>=5
       ?["daily-work","invoice","knowledge-ingest","assistant-work"]
       :["daily-work","invoice"]),
     "capabilities"
@@ -86,9 +100,9 @@ function validateConfig(config,requireBinding,configFile) {
   absolute(daily.skillRoot,"daily-work.skillRoot");
   for (const field of ["skillRoot","tempRoot","archiveRoot"]) absolute(invoice[field],`invoice.${field}`);
   absolute(invoice.pdfProcessorPath,"invoice.pdfProcessorPath");
-  const knowledge=config.version===5?config.capabilities["knowledge-ingest"]:null;
+  const knowledge=config.version>=5?config.capabilities["knowledge-ingest"]:null;
   if (knowledge) validateKnowledgeConfig(knowledge,config.vaultRoot);
-  const assistant=config.version===5?config.capabilities["assistant-work"]:null;
+  const assistant=config.version>=5?config.capabilities["assistant-work"]:null;
   if (assistant) validateAssistantConfig(
     assistant,{vaultRoot:config.vaultRoot,knowledge,invoice}
   );
@@ -106,7 +120,7 @@ function validateConfig(config,requireBinding,configFile) {
       )) throw new Error("invalid_assistant_root");
     }
   }
-  const privatePaths=config.version===5
+  const privatePaths=config.version>=5
     ?[
       config.privateSkills.root,
       config.privateSkills.manifestPath,
@@ -115,6 +129,8 @@ function validateConfig(config,requireBinding,configFile) {
       assistant.tempRoot,
       assistant.workspaceRoot,
       assistant.outputRoot
+      ,...(typeof config.personalAssistant?.personalRulesFile==="string"
+        ?[config.personalAssistant.personalRulesFile]:[])
     ]
     :[];
   const protectedPaths=[configFile,config.vaultRoot,config.stateFile,config.heartbeatFile,config.wechatStateFile,config.cliPath,config.codexPath,daily.skillRoot,invoice.skillRoot,invoice.tempRoot,invoice.archiveRoot,invoice.pdfProcessorPath,...privatePaths];
@@ -129,6 +145,24 @@ function validateConfig(config,requireBinding,configFile) {
   if (invoice.maxPdfTextBytes !== 262_144) throw new Error("invalid_max_pdf_text_bytes");
   if (invoice.maxPdfRenderBytes !== 100 * 1024 * 1024) throw new Error("invalid_max_pdf_render_bytes");
   if (invoice.pdfPrepareTimeoutMs !== 60_000) throw new Error("invalid_pdf_prepare_timeout");
+}
+
+function validatePersonalAssistantConfig(value,vaultRoot) {
+  exact(value,PERSONAL_ASSISTANT_FIELDS,"personal_assistant");
+  if (value.enabled!==true||
+      value.skillName!=="llw-personal-assistant"||
+      value.aiTimeoutMs!==120_000||
+      value.maxContextBytes!==512*1024) {
+    throw new Error("invalid_personal_assistant");
+  }
+  if (value.personalRulesFile!==null) {
+    absolute(value.personalRulesFile,"personalAssistant.personalRulesFile");
+    const privateRoot=join(vaultRoot,".llw-private");
+    if (!foldedInside(privateRoot,value.personalRulesFile)||
+        foldedPath(value.personalRulesFile)===foldedPath(privateRoot)) {
+      throw new Error("invalid_personal_assistant_rules");
+    }
+  }
 }
 
 function validateAssistantConfig(assistant,{vaultRoot,knowledge,invoice}) {
