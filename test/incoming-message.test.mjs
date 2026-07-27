@@ -11,16 +11,48 @@ test("converts a secured Feishu event to the exact minimal IncomingMessage and R
     userId:"u1",
     conversationId:"c1",
     receivedAt:"2026-07-19T02:00:00.000Z",
+    instructionText:"",
     attachments:[{type:"image",sourceAttachmentId:"img_abc",displayName:"飞书图片",extension:""}],
     replyTarget:{source:"feishu",sourceMessageId:"m1",conversationId:"c1"}
   });
   assert.deepEqual(createFeishuIncomingMessage({...event,messageType:"text",content:"今天完成评审"}),{
     source:"feishu",sourceMessageId:"m1",userId:"u1",conversationId:"c1",receivedAt:"2026-07-19T02:00:00.000Z",
-    text:"今天完成评审",attachments:[],replyTarget:{source:"feishu",sourceMessageId:"m1",conversationId:"c1"}
+    instructionText:"今天完成评审",attachments:[],replyTarget:{source:"feishu",sourceMessageId:"m1",conversationId:"c1"}
   });
   assert.deepEqual(createFeishuIncomingMessage({...event,messageType:"file",content:'<file name="folder/发票.PDF" key="file_secret"/> '}).attachments,[
     {type:"file",sourceAttachmentId:"file_secret",displayName:"发票.PDF",extension:"pdf"}
   ]);
+});
+
+test("keeps one same-turn instruction and attachment in one IncomingMessage",() => {
+  assert.deepEqual(createFeishuIncomingMessage({
+    ...event,
+    messageType:"file",
+    content:'<file name="方案.docx" key="file_secret"/>',
+    instructionText:"整理后保存到日常生活"
+  }),{
+    source:"feishu",
+    sourceMessageId:"m1",
+    userId:"u1",
+    conversationId:"c1",
+    receivedAt:"2026-07-19T02:00:00.000Z",
+    instructionText:"整理后保存到日常生活",
+    attachments:[{
+      type:"file",
+      sourceAttachmentId:"file_secret",
+      displayName:"方案.docx",
+      extension:"docx"
+    }],
+    replyTarget:{source:"feishu",sourceMessageId:"m1",conversationId:"c1"}
+  });
+  const wechat=createWechatIncomingMessage({
+    messageId:"1002",userId:"wx-owner",conversationId:"wx-owner",
+    createTimeMs:1784851200000,type:"file",instructionText:"只总结，不保存",
+    attachment:{type:"file",sourceAttachmentId:"media-2",displayName:"材料.pdf",extension:"pdf"},
+    contextToken:"test-context"
+  });
+  assert.equal(wechat.instructionText,"只总结，不保存");
+  assert.equal(wechat.attachments.length,1);
 });
 
 test("accepts the current lark-cli image marker without widening the resource key boundary",() => {
@@ -54,7 +86,7 @@ test("converts one sanitized WeChat text event to the exact minimal internal con
   assert.deepEqual(message,{
     source:"wechat",sourceMessageId:"1001",userId:"wx-owner",
     conversationId:"wx-owner",receivedAt:"2026-07-24T00:00:00.000Z",
-    text:"今天完成评审",attachments:[],
+    instructionText:"今天完成评审",attachments:[],
     replyTarget:{source:"wechat",sourceMessageId:"1001",conversationId:"wx-owner",contextToken:"test-context"}
   });
   assert.equal(message.contextToken,undefined);

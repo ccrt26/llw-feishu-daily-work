@@ -21,8 +21,15 @@ export function createFeishuIncomingMessage(event) {
     conversationId:event.chatId,
     receivedAt:new Date(event.createTimeMs).toISOString()
   };
-  if (event.messageType==="text") return {...base,text:event.content,attachments:[],replyTarget};
-  return {...base,attachments:[createAttachment(event)],replyTarget};
+  if (event.messageType==="text") {
+    return withLegacyText({...base,instructionText:event.content,attachments:[],replyTarget});
+  }
+  return withLegacyText({
+    ...base,
+    instructionText:optionalInstruction(event.instructionText),
+    attachments:[createAttachment(event)],
+    replyTarget
+  });
 }
 
 export function createWechatIncomingMessage(event) {
@@ -40,8 +47,15 @@ export function createWechatIncomingMessage(event) {
     conversationId:event.conversationId,
     receivedAt:new Date(event.createTimeMs).toISOString()
   };
-  if (event.type==="text") return {...base,text:event.text,attachments:[],replyTarget};
-  return {...base,attachments:[{...event.attachment}],replyTarget};
+  if (event.type==="text") {
+    return withLegacyText({...base,instructionText:event.text,attachments:[],replyTarget});
+  }
+  return withLegacyText({
+    ...base,
+    instructionText:optionalInstruction(event.instructionText),
+    attachments:[{...event.attachment}],
+    replyTarget
+  });
 }
 
 function createAttachment(event) {
@@ -67,12 +81,21 @@ function validateEvent(event) {
   if (!event||typeof event!=="object"||Array.isArray(event)) throw new Error("invalid_incoming_message");
   for (const field of ["messageId","senderId","chatId","messageType","content"]) if (!nonempty(event[field])) throw new Error("invalid_incoming_message");
   if (!Number.isFinite(event.createTimeMs)||event.createTimeMs<=0||!new Set(["text","image","file"]).has(event.messageType)) throw new Error("invalid_incoming_message");
+  if (event.messageType!=="text"&&
+      event.instructionText!==undefined&&
+      !optionalBounded(event.instructionText,32_768)) {
+    throw new Error("invalid_incoming_message");
+  }
 }
 
 function validateWechatEvent(event) {
   if (!event||typeof event!=="object"||Array.isArray(event)) throw new Error("invalid_incoming_message");
   const common=["messageId","userId","conversationId","createTimeMs","type","contextToken"];
-  const allowed=new Set([...common,event.type==="text"?"text":"attachment"]);
+  const allowed=new Set([
+    ...common,
+    event.type==="text"?"text":"attachment",
+    ...(event.type==="text"?[]:["instructionText"])
+  ]);
   if (Object.keys(event).some(field=>!allowed.has(field))) throw new Error("invalid_incoming_message");
   for (const field of ["messageId","userId","conversationId","type","contextToken"]) if (!nonempty(event[field])) throw new Error("invalid_incoming_message");
   for (const field of ["messageId","userId","conversationId"]) if (!bounded(event[field],512)) throw new Error("invalid_incoming_message");
@@ -87,8 +110,26 @@ function validateWechatEvent(event) {
   if (!attachment||typeof attachment!=="object"||Array.isArray(attachment)) throw new Error("invalid_incoming_message");
   if (Object.keys(attachment).some(field=>!new Set(["type","sourceAttachmentId","displayName","extension"]).has(field))) throw new Error("invalid_incoming_message");
   if (attachment.type!==event.type||!bounded(attachment.sourceAttachmentId,512)||!bounded(attachment.displayName,255)||typeof attachment.extension!=="string"||Buffer.byteLength(attachment.extension,"utf8")>20) throw new Error("invalid_incoming_message");
+  if (event.instructionText!==undefined&&
+      !optionalBounded(event.instructionText,32_768)) {
+    throw new Error("invalid_incoming_message");
+  }
 }
 
 function nonempty(value) { return typeof value==="string"&&value.length>0; }
 function bounded(value,max) { return nonempty(value)&&Buffer.byteLength(value,"utf8")<=max; }
+function optionalBounded(value,max) {
+  return typeof value==="string"&&Buffer.byteLength(value,"utf8")<=max;
+}
+function optionalInstruction(value) {
+  return value===undefined?"":value;
+}
+function withLegacyText(message) {
+  Object.defineProperty(message,"text",{
+    configurable:false,
+    enumerable:false,
+    get() { return message.instructionText; }
+  });
+  return message;
+}
 function decodeXml(value) { return value.replaceAll("&quot;",'"').replaceAll("&amp;","&").replaceAll("&lt;","<").replaceAll("&gt;",">"); }
