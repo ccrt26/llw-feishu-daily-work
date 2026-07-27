@@ -3,7 +3,8 @@ import {validateKnowledgeDecision} from "./decision-validator.mjs";
 import {
   formatKnowledgeAttachmentNeedsRequest,formatKnowledgeCodexOnly,
   formatKnowledgeCommit,formatKnowledgeFailure,
-  formatKnowledgeFolder,formatKnowledgePending,formatKnowledgeQuestion,
+  formatKnowledgeExtractionPartial,formatKnowledgeFolder,
+  formatKnowledgePending,formatKnowledgeQuestion,
   formatKnowledgeReject
 } from "./receipt.mjs";
 
@@ -28,7 +29,7 @@ export function createKnowledgeIngestCapability({
 }) {
   async function processPrepared({
     request,source,content,sourceBytes,libraries,state,startedAt,allowPending,
-    channel,confirmedTarget=null
+    channel,ingestedAt,confirmedTarget=null
   }) {
     const raw=await runStage("knowledge_decision_failed",()=>decide({
       model:"codex",request,source,sourceContent:content,
@@ -51,7 +52,7 @@ export function createKnowledgeIngestCapability({
         source:sourceBytes
           ?{...source,content,sourceBytes}
           :{...source,content},
-        skillVersion
+        skillVersion,ingestedAt
       }));
       await runStage(
         "knowledge_state_failed",()=>state.clearKnowledgePending(channel)
@@ -120,12 +121,17 @@ export function createKnowledgeIngestCapability({
           const {content,sourceBytes,...source}=preparedFile;
           source.sourceKind="feishu_document";
           source.safeSourceReference=exported.safeSourceReference;
+          if (source.extractionIntegrity!=="complete") {
+            return formatKnowledgeExtractionPartial(
+              source.extractionLimitations
+            );
+          }
           stage="knowledge_library_catalog_failed";
           const libraries=await catalog();
           return await processPrepared({
             request:documentRequest.safeRequest,source,content,sourceBytes,
             libraries,state,startedAt:message.receivedAt,allowPending:false,
-            channel:message.source
+            channel:message.source,ingestedAt:message.receivedAt
           });
         } catch (error) {
           return reportFailure(onFailureStage,error,stage);
@@ -145,7 +151,7 @@ export function createKnowledgeIngestCapability({
           return await processPrepared({
             request,source,content:request,libraries,state,
             startedAt:message.receivedAt,allowPending:true,
-            channel:message.source
+            channel:message.source,ingestedAt:message.receivedAt
           });
         } catch (error) {
           return reportFailure(onFailureStage,error,stage);
@@ -176,13 +182,18 @@ export function createKnowledgeIngestCapability({
           extension:attachment.extension
         });
         const {content,sourceBytes,...source}=preparedFile;
+        if (source.extractionIntegrity!=="complete") {
+          return formatKnowledgeExtractionPartial(
+            source.extractionLimitations
+          );
+        }
         stage="knowledge_library_catalog_failed";
         const libraries=await catalog();
         return await processPrepared({
           request:"将当前附件导入已确认的知识库目标。",
           source,content,sourceBytes,libraries,state,
           startedAt:pending.startedAt,allowPending:false,
-          channel:message.source,
+          channel:message.source,ingestedAt:message.receivedAt,
           confirmedTarget:{
             libraryKey:pending.libraryKey,
             target:structuredClone(pending.target)

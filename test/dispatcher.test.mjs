@@ -509,6 +509,40 @@ test("delivers a same-source pending knowledge file without rerunning the router
   );
 });
 
+test("keeps await-file as a channel pending state without a router conversation",async()=>{
+  const h=await harness({
+    capabilityNames:["daily-work","invoice","knowledge-ingest"],
+    decision:{
+      action:"route",capability:"knowledge-ingest",
+      confidence:"high",reasonCode:"direct_match"
+    },
+    handle:async (_name,message,context)=>{
+      await context.state.setKnowledgePending({
+        source:message.source,startedAt:message.receivedAt,model:"codex",
+        libraryKey:"work-knowledge",
+        target:{scope:"library_root",segments:[],origin:"user_explicit"}
+      });
+      return {
+        status:"awaiting_attachment",reply:"请发送一份文件。",artifacts:[]
+      };
+    }
+  });
+  const result=await h.dispatcher.handleRawEvent({
+    ...raw,message_type:"text",content:"把下一份文件保存到工作资料"
+  });
+  assert.equal(result.status,"awaiting_attachment");
+  assert.equal(
+    await h.state.getRouterConversation(Date.parse("2026-07-19T02:00:00.000Z")),
+    null
+  );
+  assert.notEqual(
+    await h.state.getKnowledgePending(
+      "feishu",Date.parse("2026-07-19T02:00:00.000Z")
+    ),
+    null
+  );
+});
+
 test("explicit cancellation clears a knowledge pending-file request",async()=>{
   const h=await harness({
     capabilityNames:["daily-work","invoice","knowledge-ingest"],

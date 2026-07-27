@@ -11,6 +11,13 @@ import {KnowledgeWriter} from "../src/capabilities/knowledge-ingest/knowledge-wr
 const FIRST_TEXT="原始交流内容。";
 const FIRST_SHA="8a080d37fb08374496545f410ff755f79b6e1688766f4bae92fd32e1bc787a32";
 const FIRST_ID="04a88556baab09de2f52639490f59d5afecd3a18b72ba2c4c50f71d758d58d9d";
+const SECTIONS={
+  keyFacts:["客户需要一份交流方案。"],
+  structureAndMainContent:"文档说明了交流目标和主要内容。",
+  reusableContent:["交流前确认目标。"],
+  sourceNotes:"内容来自完整读取的原始资料。",
+  contentIndex:"原始资料共一段。"
+};
 
 async function harness() {
   const root=await mkdtemp(join(tmpdir(),"llw-knowledge-vault-"));
@@ -31,7 +38,8 @@ function source(content=FIRST_TEXT,overrides={}) {
   return {
     version:1,sourceKind:"text",detectedFormat:"text",displayName:"message.txt",
     sizeBytes:Buffer.byteLength(content),sha256,jobSourceName:"source.txt",
-    safeSourceReference:"",content,...overrides
+    safeSourceReference:"",extractionIntegrity:"complete",
+    extractionLimitations:[],content,...overrides
   };
 }
 
@@ -39,7 +47,8 @@ function commitInput(overrides={}) {
   return {
     libraryKey:"work-knowledge",folderSegments:["亚信工作","工作文档","交流方案"],
     title:"交流方案",summary:"用于测试的交流方案摘要。",tags:["项目","沟通"],
-    source:source(),skillVersion:"1.2.0",preserveSource:true,...overrides
+    knowledgeSections:SECTIONS,source:source(),skillVersion:"1.3.0",
+    ingestedAt:"2026-07-27T01:02:03.000Z",...overrides
   };
 }
 
@@ -52,7 +61,7 @@ test("atomically creates one deterministic direct-text knowledge item",async()=>
       relativePath:"work-library/亚信工作/工作文档/交流方案/交流方案",
       files:["work-library/亚信工作/工作文档/交流方案/交流方案/knowledge.md"]
     });
-    const expected=`---\nllw_schema: "knowledge-item/v1"\nknowledge_id: "${FIRST_ID}"\nlibrary_key: "work-knowledge"\ntitle: "交流方案"\ntags:\n  - "项目"\n  - "沟通"\nsource_kind: "text"\nsource_format: "text"\nsource_display_name: "message.txt"\nsource_sha256: "${FIRST_SHA}"\nsource_size_bytes: 21\nskill_version: "1.2.0"\npreserve_source: true\n---\n\n# 交流方案\n\n## 摘要\n\n用于测试的交流方案摘要。\n\n## 原始内容\n\n原始交流内容。\n`;
+    const expected=`---\nllw_schema: "knowledge-item/v1"\nknowledge_id: "${FIRST_ID}"\nlibrary_key: "work-knowledge"\ntitle: "交流方案"\ntags:\n  - "项目"\n  - "沟通"\nsource_kind: "text"\nsource_format: "text"\nsource_display_name: "message.txt"\nsource_sha256: "${FIRST_SHA}"\nsource_size_bytes: 21\nsource_extraction_integrity: "complete"\nsource_ingested_at: "2026-07-27T01:02:03.000Z"\nsource_preserved: false\nskill_version: "1.3.0"\n---\n\n# 交流方案\n\n## 摘要\n\n用于测试的交流方案摘要。\n\n## 关键事实\n\n- 客户需要一份交流方案。\n\n## 结构与主要内容\n\n文档说明了交流目标和主要内容。\n\n## 可复用内容\n\n- 交流前确认目标。\n\n## 来源说明\n\n内容来自完整读取的原始资料。\n\n## 结构化原文或内容索引\n\n原始资料共一段。\n\n### 本地读取器提取内容\n\n原始交流内容。\n`;
     const item=join(h.root,result.relativePath);
     assert.equal(await readFile(join(item,"knowledge.md"),"utf8"),expected);
     assert.deepEqual(await readdir(item),["knowledge.md"]);
@@ -151,7 +160,7 @@ test("returns existing for a stable source and never overwrites a title collisio
   } finally { await rm(h.root,{recursive:true,force:true}); }
 });
 
-test("keeps work and personal roots disjoint and preserves an optional Markdown source",async()=>{
+test("keeps work and personal roots disjoint and preserves every file source",async()=>{
   const h=await harness();
   const content="# 原始 Markdown\n\n正文。\n";
   const fileSource=source(content,{
@@ -161,7 +170,7 @@ test("keeps work and personal roots disjoint and preserves an optional Markdown 
     const result=await h.writer.commit(commitInput({
       libraryKey:"personal-knowledge",folderSegments:["生活","阅读"],
       title:"阅读笔记",summary:"一份生活资料。",tags:["生活"],
-      source:fileSource,preserveSource:true
+      source:fileSource
     }));
     assert.equal(result.relativePath.startsWith("personal-library/"),true);
     assert.deepEqual((await readdir(join(h.root,result.relativePath))).sort(),["knowledge.md","source.md"]);
@@ -180,11 +189,12 @@ test("preserves one verified Office source byte-for-byte without placing binary 
     displayName:"交流方案.docx",sizeBytes:sourceBytes.length,
     sha256:createHash("sha256").update(sourceBytes).digest("hex"),
     jobSourceName:"source.docx",safeSourceReference:"",
+    extractionIntegrity:"complete",extractionLimitations:[],
     content:"# Word 文档\n\n交流方案正文",sourceBytes
   };
   try {
     const result=await h.writer.commit(commitInput({
-      source:officeSource,title:"Office 交流方案",preserveSource:true
+      source:officeSource,title:"Office 交流方案"
     }));
     const item=join(h.root,result.relativePath);
     assert.deepEqual((await readdir(item)).sort(),["knowledge.md","source.docx"]);
@@ -205,14 +215,15 @@ test("records only a bounded hashed Feishu source reference and remains snapshot
     sha256:createHash("sha256").update(sourceBytes).digest("hex"),
     jobSourceName:"source.docx",
     safeSourceReference:`feishu:${"a".repeat(64)}`,
+    extractionIntegrity:"complete",extractionLimitations:[],
     content:"# Word 文档\n\n飞书快照正文",sourceBytes
   };
   try {
     const first=await h.writer.commit(commitInput({
-      source:snapshot,title:"飞书交流方案",preserveSource:true
+      source:snapshot,title:"飞书交流方案"
     }));
     const duplicate=await h.writer.commit(commitInput({
-      source:snapshot,title:"另一个标题",preserveSource:true
+      source:snapshot,title:"另一个标题"
     }));
     assert.equal(first.status,"created");
     assert.equal(duplicate.status,"existing");

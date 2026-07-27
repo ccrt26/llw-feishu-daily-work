@@ -64,7 +64,30 @@ test("prepares one bounded DOCX, PPTX or XLSX with original bytes and extracted 
       assert.equal(Buffer.compare(result.sourceBytes,bytes),0);
       assert.match(result.content,new RegExp(expected));
       assert.equal(result.safeSourceReference,"");
+      assert.equal(result.extractionIntegrity,"complete");
+      assert.deepEqual(result.extractionLimitations,[]);
     }
+  } finally { await rm(root,{recursive:true,force:true}); }
+});
+
+test("marks Office content partial when important visual parts were not extracted",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"llw-office-source-partial-"));
+  try {
+    const file=await fixture(root,"pptx",{
+      unsafePart:"ppt/media/image1.png"
+    });
+    const result=await prepareKnowledgeOfficeFile({
+      file,displayName:"visual.pptx",extension:"pptx",
+      maxSourceBytes:20*1024*1024,maxExtractedBytes:262_144,
+      processorPath:new URL(
+        "../src/capabilities/knowledge-ingest/ooxml_processor.py",
+        import.meta.url
+      )
+    });
+    assert.equal(result.extractionIntegrity,"partial");
+    assert.deepEqual(result.extractionLimitations,[
+      "embedded_media_not_extracted"
+    ]);
   } finally { await rm(root,{recursive:true,force:true}); }
 });
 

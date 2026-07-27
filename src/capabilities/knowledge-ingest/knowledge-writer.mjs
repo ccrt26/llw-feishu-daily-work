@@ -6,7 +6,8 @@ import {isAbsolute,join,relative,resolve,sep} from "node:path";
 
 const TEXT_SOURCE_FIELDS=new Set([
   "version","sourceKind","detectedFormat","displayName","sizeBytes","sha256",
-  "jobSourceName","safeSourceReference","content"
+  "jobSourceName","safeSourceReference","extractionIntegrity",
+  "extractionLimitations","content"
 ]);
 const OFFICE_SOURCE_FIELDS=new Set([...TEXT_SOURCE_FIELDS,"sourceBytes"]);
 const OFFICE_FORMATS=new Set(["docx","pptx","xlsx"]);
@@ -45,9 +46,10 @@ export class KnowledgeWriter {
       const category=await ensureSegments(context.libraryReal,input.folderSegments);
       lock=await acquireLibraryLock(context.libraryReal);
       const existing=await findExisting(context.libraryReal,knowledgeId);
+      const preserveSource=sourceHasFile(input.source);
       if (existing) {
         const verified=await verifyItem(existing.path,{
-          knowledgeId,source:input.source,preserveSource:input.preserveSource
+          knowledgeId,source:input.source,preserveSource
         });
         return resultFor("existing",context,input.libraryKey,knowledgeId,existing.path,verified.files);
       }
@@ -57,7 +59,7 @@ export class KnowledgeWriter {
       await chmod(stage,0o700);
       const markdown=renderKnowledgeMarkdown({...input,knowledgeId});
       await writeSynced(join(stage,"knowledge.md"),markdown);
-      if (sourceHasFile(input.source)&&input.preserveSource) {
+      if (preserveSource) {
         await writeSynced(
           join(stage,input.source.jobSourceName),
           input.source.sourceBytes||input.source.content
@@ -65,13 +67,13 @@ export class KnowledgeWriter {
       }
       await syncDirectory(stage);
       await verifyItem(stage,{knowledgeId,expectedMarkdown:markdown,source:input.source,
-        preserveSource:input.preserveSource});
+        preserveSource});
       await assertMissing(target);
       await rename(stage,target);
       stage="";
       await syncDirectory(category.path);
       const verified=await verifyItem(target,{knowledgeId,expectedMarkdown:markdown,
-        source:input.source,preserveSource:input.preserveSource});
+        source:input.source,preserveSource});
       return resultFor("created",context,input.libraryKey,knowledgeId,target,verified.files);
     } catch {
       throw new Error("knowledge_write_rejected");
@@ -139,7 +141,14 @@ export function knowledgeIdentifier(libraryKey,sourceSha256) {
 }
 
 function validateCommitInput(input) {
+  const fields=new Set([
+    "libraryKey","folderSegments","title","summary","tags","knowledgeSections",
+    "source","skillVersion","ingestedAt"
+  ]);
   if (!input||typeof input!=="object"||Array.isArray(input)||
+      Object.getPrototypeOf(input)!==Object.prototype||
+      Object.keys(input).length!==fields.size||
+      Object.keys(input).some(field=>!fields.has(field))||
       typeof input.libraryKey!=="string"||!Array.isArray(input.folderSegments)||
       typeof input.title!=="string"||!input.title.trim()||[...input.title].length>160||
       input.title.includes("\0")||typeof input.summary!=="string"||
@@ -148,10 +157,42 @@ function validateCommitInput(input) {
       new Set(input.tags).size!==input.tags.length||
       input.tags.some(tag=>typeof tag!=="string"||!tag||[...tag].length>64||tag.includes("\0"))||
       !/^\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?$/iu.test(input.skillVersion||"")||
-      typeof input.preserveSource!=="boolean") {
+      typeof input.ingestedAt!=="string"||
+      !Number.isFinite(Date.parse(input.ingestedAt))||
+      new Date(input.ingestedAt).toISOString()!==input.ingestedAt) {
     throw new Error("invalid_commit");
   }
+  validateKnowledgeSections(input.knowledgeSections);
   validateSegments(input.folderSegments,{allowRoot:true});
+}
+
+function validateKnowledgeSections(value) {
+  const fields=new Set([
+    "keyFacts","structureAndMainContent","reusableContent","sourceNotes",
+    "contentIndex"
+  ]);
+  if (!value||typeof value!=="object"||Array.isArray(value)||
+      Object.getPrototypeOf(value)!==Object.prototype||
+      Object.keys(value).length!==fields.size||
+      Object.keys(value).some(field=>!fields.has(field))||
+      !validTextList(value.keyFacts,{min:1,max:50,length:1000})||
+      !validText(value.structureAndMainContent,16000)||
+      !validTextList(value.reusableContent,{min:0,max:50,length:1000})||
+      !validText(value.sourceNotes,4000)||
+      !validText(value.contentIndex,16000)) {
+    throw new Error("invalid_sections");
+  }
+}
+
+function validTextList(value,{min,max,length}) {
+  return Array.isArray(value)&&value.length>=min&&value.length<=max&&
+    new Set(value).size===value.length&&
+    value.every(item=>validText(item,length));
+}
+
+function validText(value,max) {
+  return typeof value==="string"&&value===value.trim()&&value.length>0&&
+    [...value].length<=max&&!value.includes("\0");
 }
 
 function validateSource(source) {
@@ -169,6 +210,9 @@ function validateSource(source) {
       !/^[a-f0-9]{64}$/u.test(source.sha256)||
       !/^source\.(?:txt|md|docx|pptx|xlsx)$/u.test(source.jobSourceName)||
       !validSourceReference(source.sourceKind,source.safeSourceReference)||
+      source.extractionIntegrity!=="complete"||
+      !Array.isArray(source.extractionLimitations)||
+      source.extractionLimitations.length!==0||
       typeof source.content!=="string"||
       !source.content.trim()||source.content.includes("\0")) {
     throw new Error("invalid_source");
@@ -279,8 +323,10 @@ function normalizeTitle(value) {
 }
 
 function renderKnowledgeMarkdown({
-  libraryKey,title,summary,tags,source,skillVersion,preserveSource,knowledgeId
+  libraryKey,title,summary,tags,knowledgeSections,source,skillVersion,
+  ingestedAt,knowledgeId
 }) {
+  const preserveSource=sourceHasFile(source);
   const tagLines=tags.length
     ? tags.map(tag=>`  - ${JSON.stringify(tag)}`).join("\n")
     : "  []";
@@ -300,9 +346,11 @@ function renderKnowledgeMarkdown({
     `source_display_name: ${JSON.stringify(source.displayName)}`,
     `source_sha256: ${JSON.stringify(source.sha256)}`,
     `source_size_bytes: ${source.sizeBytes}`,
+    `source_extraction_integrity: ${JSON.stringify(source.extractionIntegrity)}`,
+    `source_ingested_at: ${JSON.stringify(ingestedAt)}`,
+    `source_preserved: ${preserveSource}`,
     ...sourceReference,
     `skill_version: ${JSON.stringify(skillVersion)}`,
-    `preserve_source: ${preserveSource}`,
     "---",
     "",
     `# ${title.normalize("NFC").trim()}`,
@@ -311,11 +359,36 @@ function renderKnowledgeMarkdown({
     "",
     summary.normalize("NFC").trim(),
     "",
-    "## 原始内容",
+    "## 关键事实",
+    "",
+    renderList(knowledgeSections.keyFacts),
+    "",
+    "## 结构与主要内容",
+    "",
+    knowledgeSections.structureAndMainContent,
+    "",
+    "## 可复用内容",
+    "",
+    renderList(knowledgeSections.reusableContent),
+    "",
+    "## 来源说明",
+    "",
+    knowledgeSections.sourceNotes,
+    "",
+    "## 结构化原文或内容索引",
+    "",
+    knowledgeSections.contentIndex,
+    "",
+    "### 本地读取器提取内容",
     "",
     source.content,
     ""
   ].join("\n");
+}
+
+function renderList(items) {
+  if (!items.length) return "- （无）";
+  return items.map(item=>`- ${item.replace(/\n/gu,"\n  ")}`).join("\n");
 }
 
 async function findExisting(root,knowledgeId) {

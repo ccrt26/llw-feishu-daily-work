@@ -86,6 +86,26 @@ export function formatKnowledgeAttachmentNeedsRequest() {
   );
 }
 
+export function formatKnowledgeExtractionPartial(limitations) {
+  const labels={
+    embedded_media_not_extracted:"图片或嵌入媒体",
+    charts_not_extracted:"图表",
+    annotations_not_extracted:"批注或注释",
+    headers_or_footers_not_extracted:"页眉或页脚",
+    speaker_notes_not_extracted:"演讲者备注",
+    drawings_not_extracted:"绘图对象",
+    pivot_tables_not_extracted:"数据透视表"
+  };
+  const parts=Array.isArray(limitations)
+    ?limitations.map(item=>labels[item]).filter(Boolean):[];
+  const detail=parts.length?`未完整读取：${[...new Set(parts)].join("、")}。`:
+    "存在无法完整读取的文档内容。";
+  return outcome(
+    "rejected",
+    `${detail}\n为避免把不完整理解写入知识库，本次未调用 AI、未创建目录、未写入；请提供不依赖这些内容的完整版本。`
+  );
+}
+
 export function formatKnowledgeReject(reasonCode) {
   return outcome("rejected",REJECTED[reasonCode]||
     "本次未写入：请求不符合当前知识入库规则。");

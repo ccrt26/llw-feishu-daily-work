@@ -52,10 +52,20 @@ export async function prepareKnowledgeOfficeFile({
       pythonPath,processor,extension,sourceBytes,maxExtractedBytes,timeoutMs
     });
     if (!parsed||typeof parsed!=="object"||Array.isArray(parsed)||
-        Object.keys(parsed).length!==2||parsed.format!==extension||
+        Object.keys(parsed).length!==4||parsed.format!==extension||
         typeof parsed.content!=="string"||!parsed.content.trim()||
         parsed.content.includes("\0")||
-        Buffer.byteLength(parsed.content,"utf8")>maxExtractedBytes) {
+        Buffer.byteLength(parsed.content,"utf8")>maxExtractedBytes||
+        !new Set(["complete","partial"]).has(parsed.extraction_integrity)||
+        !Array.isArray(parsed.extraction_limitations)||
+        parsed.extraction_limitations.length>16||
+        parsed.extraction_limitations.some(value=>
+          typeof value!=="string"||!/^[a-z0-9_]{1,64}$/u.test(value)
+        )||
+        (parsed.extraction_integrity==="complete"&&
+          parsed.extraction_limitations.length)||
+        (parsed.extraction_integrity==="partial"&&
+          !parsed.extraction_limitations.length)) {
       throw new Error("invalid");
     }
     return {
@@ -67,6 +77,8 @@ export async function prepareKnowledgeOfficeFile({
       sha256:createHash("sha256").update(sourceBytes).digest("hex"),
       jobSourceName:`source.${extension}`,
       safeSourceReference:"",
+      extractionIntegrity:parsed.extraction_integrity,
+      extractionLimitations:[...parsed.extraction_limitations],
       content:parsed.content,
       sourceBytes
     };

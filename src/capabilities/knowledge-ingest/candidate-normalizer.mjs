@@ -21,26 +21,46 @@ const REASONS=new Set([
 ]);
 const INTEGRITIES=new Set(["complete","partial","unreadable"]);
 
-export function normalizeKnowledgeCandidate(candidate,{libraries,source}) {
+export function normalizeKnowledgeCandidate(candidate,{
+  libraries,source,confirmedTarget=null
+}) {
   try {
     exactKnown(candidate,CANDIDATE_FIELDS);
     if (!ACTIONS.has(candidate.action)) throw new Error("invalid");
     const catalog=normalizeLibraries(libraries);
+    let normalized;
     if (candidate.action==="commit") {
-      return normalizeCommit(candidate,catalog,source);
+      normalized=normalizeCommit(candidate,catalog,source);
+    } else if (candidate.action==="await_file") {
+      normalized=normalizeAwaitFile(candidate,catalog,source);
+    } else if (candidate.action==="create_folder") {
+      normalized=normalizeCreateFolder(candidate,catalog,source);
+    } else if (candidate.action==="ask_user") {
+      normalized=normalizeAsk(candidate,catalog,source);
+    } else {
+      normalized=normalizeReject(candidate,source);
     }
-    if (candidate.action==="await_file") {
-      return normalizeAwaitFile(candidate,catalog,source);
+    if (confirmedTarget&&
+        new Set(["commit","create_folder"]).has(normalized.action)) {
+      assertConfirmedTarget(normalized,confirmedTarget,catalog);
     }
-    if (candidate.action==="create_folder") {
-      return normalizeCreateFolder(candidate,catalog,source);
-    }
-    if (candidate.action==="ask_user") {
-      return normalizeAsk(candidate,catalog,source);
-    }
-    return normalizeReject(candidate,source);
+    return normalized;
   } catch {
     throw new Error("knowledge_candidate_invalid");
+  }
+}
+
+function assertConfirmedTarget(decisionValue,confirmedTarget,catalog) {
+  exact(confirmedTarget,new Set(["libraryKey","target"]));
+  const library=resolveLibrary(confirmedTarget.libraryKey,catalog,{required:true});
+  const target=normalizeTarget(
+    {target:confirmedTarget.target},library,{action:"commit"}
+  );
+  if (decisionValue.libraryKey!==library.libraryKey||
+      decisionValue.target.scope!==target.scope||
+      decisionValue.target.origin!==target.origin||
+      !same(decisionValue.target.segments,target.segments)) {
+    throw new Error("invalid");
   }
 }
 

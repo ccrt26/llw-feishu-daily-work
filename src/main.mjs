@@ -67,7 +67,7 @@ export const PRIVATE_SKILL_ALLOWLIST=[
     semanticTasks:["invoice.visual"],modelSupport:["codex"],enabled:true
   },
   {
-    name:"llw-knowledge-ingest",capability:"knowledge-ingest",versions:["1.2.1"],
+    name:"llw-knowledge-ingest",capability:"knowledge-ingest",versions:["1.3.0"],
     semanticTasks:["knowledge.ingest"],modelSupport:["codex"],enabled:true
   },
   {

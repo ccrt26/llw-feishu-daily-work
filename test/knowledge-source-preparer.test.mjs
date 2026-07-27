@@ -19,7 +19,9 @@ test("prepares one exact bounded text source with program-owned metadata",()=>{
     sizeBytes:Buffer.byteLength(text),
     sha256:createHash("sha256").update(text).digest("hex"),
     jobSourceName:"source.txt",
-    safeSourceReference:""
+    safeSourceReference:"",
+    extractionIntegrity:"complete",
+    extractionLimitations:[]
   });
 });
 
@@ -57,6 +59,7 @@ test("prepares one verified UTF-8 TXT or Markdown file without rereading it",asy
           displayName:name,sizeBytes:Buffer.byteLength(content),
           sha256:createHash("sha256").update(content).digest("hex"),
           jobSourceName:`source.${extension}`,safeSourceReference:"",
+          extractionIntegrity:"complete",extractionLimitations:[],
           content
         }
       );

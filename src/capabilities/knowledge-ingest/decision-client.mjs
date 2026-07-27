@@ -71,7 +71,8 @@ export async function invokeKnowledgeDecision({
       try {
         const normalized=normalizeKnowledgeCandidate(parsed,{
           libraries:input.allowedLibraries,
-          source:input.source
+          source:input.source,
+          confirmedTarget:input.confirmedTarget||null
         });
         return validateKnowledgeDecision(normalized,{
           libraries:input.allowedLibraries

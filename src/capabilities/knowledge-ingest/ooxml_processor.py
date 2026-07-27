@@ -83,6 +83,35 @@ def validate_archive(archive, extension):
     return names
 
 
+def extraction_limitations(names, extension):
+    checks = {
+        "docx": (
+            (r"word/media/", "embedded_media_not_extracted"),
+            (r"word/charts?/", "charts_not_extracted"),
+            (r"word/(?:comments|footnotes|endnotes)\.xml", "annotations_not_extracted"),
+            (r"word/(?:header|footer)\d+\.xml", "headers_or_footers_not_extracted"),
+        ),
+        "pptx": (
+            (r"ppt/media/", "embedded_media_not_extracted"),
+            (r"ppt/charts?/", "charts_not_extracted"),
+            (r"ppt/notesSlides/", "speaker_notes_not_extracted"),
+            (r"ppt/comments?/", "annotations_not_extracted"),
+        ),
+        "xlsx": (
+            (r"xl/media/", "embedded_media_not_extracted"),
+            (r"xl/charts?/", "charts_not_extracted"),
+            (r"xl/drawings?/", "drawings_not_extracted"),
+            (r"xl/comments?/", "annotations_not_extracted"),
+            (r"xl/pivotTables?/", "pivot_tables_not_extracted"),
+        ),
+    }[extension]
+    limitations = []
+    for pattern, code in checks:
+        if any(re.match(pattern, name, re.IGNORECASE) for name in names):
+            limitations.append(code)
+    return sorted(set(limitations))
+
+
 def docx_text(archive):
     root = parse_xml(archive.read("word/document.xml"))
     lines = []
@@ -203,6 +232,7 @@ def main():
         return 1
     with zipfile.ZipFile(io.BytesIO(source), "r") as archive:
         names = validate_archive(archive, extension)
+        limitations = extraction_limitations(names, extension)
         content = {
             "docx": lambda: docx_text(archive),
             "pptx": lambda: pptx_text(archive, names),
@@ -211,7 +241,17 @@ def main():
     encoded = content.encode("utf-8")
     if not content.strip() or len(encoded) > max_output:
         return 1
-    sys.stdout.write(json.dumps({"format": extension, "content": content}, ensure_ascii=False))
+    sys.stdout.write(
+        json.dumps(
+            {
+                "format": extension,
+                "content": content,
+                "extraction_integrity": "partial" if limitations else "complete",
+                "extraction_limitations": limitations,
+            },
+            ensure_ascii=False,
+        )
+    )
     return 0
 
 

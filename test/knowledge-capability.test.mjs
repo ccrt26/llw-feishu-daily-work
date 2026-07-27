@@ -37,7 +37,8 @@ function prepared(text) {
     version:1,sourceKind:"text",detectedFormat:"text",displayName:"message.txt",
     sizeBytes:Buffer.byteLength(text),
     sha256:createHash("sha256").update(text).digest("hex"),
-    jobSourceName:"source.txt",safeSourceReference:""
+    jobSourceName:"source.txt",safeSourceReference:"",
+    extractionIntegrity:"complete",extractionLimitations:[]
   };
 }
 
@@ -174,7 +175,7 @@ test("commits one direct text source with AI-safe catalog context and fixed rece
     title:"客户交流方案",summary:"一份经过来源约束的交流方案。",tags:["交流"],
     knowledgeSections:baseDecision.knowledgeSections,
     source:{...prepared(input.text),content:input.text},
-    skillVersion:"1.3.0"
+    skillVersion:"1.3.0",ingestedAt:input.receivedAt
   });
   assert.deepEqual(h.state.calls,[["clear","feishu"]]);
 });
@@ -242,6 +243,7 @@ test("prepares each Office attachment once and keeps binary bytes out of the AI 
       sizeBytes:sourceBytes.length,
       sha256:createHash("sha256").update(sourceBytes).digest("hex"),
       jobSourceName:`source.${extension}`,safeSourceReference:"",
+      extractionIntegrity:"complete",extractionLimitations:[],
       content,sourceBytes
     };
     const h=harness({
@@ -266,12 +268,49 @@ test("prepares each Office attachment once and keeps binary bytes out of the AI 
     assert.deepEqual(h.calls.decide[0].source,{
       version:1,sourceKind:"file",detectedFormat:extension,displayName,
       sizeBytes:sourceBytes.length,sha256:fileSource.sha256,
-      jobSourceName:`source.${extension}`,safeSourceReference:""
+      jobSourceName:`source.${extension}`,safeSourceReference:"",
+      extractionIntegrity:"complete",extractionLimitations:[]
     });
     assert.equal(JSON.stringify(h.calls.decide[0]).includes("sourceBytes"),false);
     assert.equal(Buffer.compare(h.calls.commit[0].source.sourceBytes,sourceBytes),0);
     assert.deepEqual(h.calls.cleanup,[`/tmp/synthetic-${extension}`]);
   }
+});
+
+test("stops a partial Office extraction before catalog, AI or writer work",async()=>{
+  const sourceBytes=Buffer.from([0x50,0x4b,0x03,0x04,0x01]);
+  const h=harness({
+    download:async()=>({
+      tempDir:"/tmp/synthetic-partial",
+      file:"/tmp/synthetic-partial/attachment.pptx"
+    }),
+    filePreparer:async input=>({
+      version:1,sourceKind:"file",detectedFormat:"pptx",
+      displayName:input.displayName,sizeBytes:sourceBytes.length,
+      sha256:createHash("sha256").update(sourceBytes).digest("hex"),
+      jobSourceName:"source.pptx",safeSourceReference:"",
+      extractionIntegrity:"partial",
+      extractionLimitations:["charts_not_extracted"],
+      content:"# PowerPoint 演示文稿\n\n文字已提取",sourceBytes
+    })
+  });
+  await h.state.state.setKnowledgePending(pendingTarget());
+  h.state.calls.length=0;
+  const result=await h.capability.handle({
+    ...message(),text:undefined,attachments:[{
+      type:"file",sourceAttachmentId:"file_partial",
+      displayName:"visual.pptx",extension:"pptx"
+    }]
+  },{state:h.state.state,model:"codex"});
+  assert.deepEqual(result,{
+    status:"rejected",
+    reply:"未完整读取：图表。\n为避免把不完整理解写入知识库，本次未调用 AI、未创建目录、未写入；请提供不依赖这些内容的完整版本。",
+    artifacts:[]
+  });
+  assert.equal(h.calls.catalog,0);
+  assert.equal(h.calls.decide.length+h.calls.commit.length,0);
+  assert.deepEqual(h.calls.cleanup,["/tmp/synthetic-partial"]);
+  assert.notEqual(h.state.pending,null);
 });
 
 test("exports one explicit Feishu document link once and records only a hashed source reference",async()=>{
@@ -289,6 +328,7 @@ test("exports one explicit Feishu document link once and records only a hashed s
       displayName:input.displayName,sizeBytes:sourceBytes.length,
       sha256:createHash("sha256").update(sourceBytes).digest("hex"),
       jobSourceName:"source.docx",safeSourceReference:"",
+      extractionIntegrity:"complete",extractionLimitations:[],
       content,sourceBytes
     })
   });

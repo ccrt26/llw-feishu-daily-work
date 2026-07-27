@@ -223,3 +223,26 @@ test("rejects ambiguity, unsafe paths, incomplete commits and unknown fields",()
     );
   }
 });
+
+test("binds an attachment decision to the program-owned pending target",()=>{
+  const confirmedTarget={
+    libraryKey:"personal-knowledge",
+    target:{scope:"library_root",segments:[],origin:"user_explicit"}
+  };
+  const matching=commit({
+    library_key:"日常生活",
+    target:{scope:"library_root",segments:[],origin:"user_explicit"}
+  });
+  assert.equal(
+    normalizeKnowledgeCandidate(matching,{
+      libraries,source,confirmedTarget
+    }).libraryKey,
+    "personal-knowledge"
+  );
+  assert.throws(
+    ()=>normalizeKnowledgeCandidate(commit(),{
+      libraries,source,confirmedTarget
+    }),
+    /knowledge_candidate_invalid/
+  );
+});

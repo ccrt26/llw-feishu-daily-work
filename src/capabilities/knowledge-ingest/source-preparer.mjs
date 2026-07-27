@@ -19,7 +19,9 @@ export function prepareKnowledgeText({text,maxSourceBytes}) {
     sizeBytes,
     sha256:createHash("sha256").update(text,"utf8").digest("hex"),
     jobSourceName:"source.txt",
-    safeSourceReference:""
+    safeSourceReference:"",
+    extractionIntegrity:"complete",
+    extractionLimitations:[]
   };
 }
 
@@ -65,6 +67,8 @@ export async function prepareKnowledgeFile({
       sha256:createHash("sha256").update(bytes).digest("hex"),
       jobSourceName:`source.${extension}`,
       safeSourceReference:"",
+      extractionIntegrity:"complete",
+      extractionLimitations:[],
       content
     };
   } catch {
