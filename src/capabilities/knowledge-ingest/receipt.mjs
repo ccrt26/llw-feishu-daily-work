@@ -45,9 +45,9 @@ export function formatKnowledgeFolder(result,library) {
 }
 
 export function formatKnowledgeQuestion(decision,library,libraries) {
-  if (decision.reason_code==="folder_confirmation_required") {
+  if (decision.reasonCode==="folder_confirmation_required") {
     validateLibrary(library);
-    const segments=decision.folder_plan.segments;
+    const segments=decision.target.segments;
     if (!Array.isArray(segments)||!segments.length) throw new Error("invalid_knowledge_receipt");
     return outcome("awaiting_clarification",[
       "需要确认后才能创建新目录。",
@@ -57,7 +57,7 @@ export function formatKnowledgeQuestion(decision,library,libraries) {
       "问题：是否确认按以上规则创建？"
     ].join("\n"));
   }
-  if (decision.reason_code==="library_required") {
+  if (decision.reasonCode==="library_required") {
     if (!Array.isArray(libraries)||!libraries.length) throw new Error("invalid_knowledge_receipt");
     return outcome(
       "awaiting_clarification",
@@ -74,7 +74,7 @@ export function formatKnowledgeQuestion(decision,library,libraries) {
 
 export function formatKnowledgePending() {
   return outcome(
-    "awaiting_clarification",
+    "awaiting_attachment",
     "已记住本次入库要求，请在 24 小时内发送一份 TXT、Markdown、DOCX、PPTX 或 XLSX 文件。\n文件到达前不会创建目录或写入知识库。"
   );
 }

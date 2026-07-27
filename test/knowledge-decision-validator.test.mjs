@@ -4,69 +4,82 @@ import {validateKnowledgeDecision} from "../src/capabilities/knowledge-ingest/de
 
 const libraries=[
   {
-    libraryKey:"work-knowledge",
-    displayName:"Synthetic Work",
+    libraryKey:"work-knowledge",displayName:"Synthetic Work",
     aliases:["Synthetic Work Library"],
-    existingFolders:[["Synthetic Client"],["Synthetic Client","Exchange Plan"]]
+    existingFolders:[["Synthetic Client","Exchange Plan"]]
   },
   {
-    libraryKey:"personal-knowledge",
-    displayName:"Synthetic Personal",
-    aliases:[],
-    existingFolders:[]
+    libraryKey:"personal-knowledge",displayName:"Synthetic Personal",
+    aliases:[],existingFolders:[]
   }
 ];
 
-function plan(mode="use_existing",segments=[],origin="user_explicit") {
-  return {mode,segments,origin};
-}
+const sections={
+  keyFacts:["A grounded fact."],
+  structureAndMainContent:"A grounded structure.",
+  reusableContent:["A reusable item."],
+  sourceNotes:"Extracted completely.",
+  contentIndex:"Section 1"
+};
 
 function commit(overrides={}) {
   return {
-    action:"commit",
-    confidence:"high",
-    reason_code:"ready",
-    question:"",
-    library_key:"work-knowledge",
-    folder_plan:plan("use_existing",["Synthetic Client","Exchange Plan"],"skill_suggested"),
+    action:"commit",reasonCode:"ready",question:"",
+    libraryKey:"work-knowledge",
+    target:{
+      scope:"existing_folder",segments:["Synthetic Client","Exchange Plan"],
+      origin:"skill_suggested"
+    },
     title:"Synthetic Exchange Plan",
     summary:"A grounded synthetic summary.",
-    tags:["synthetic","plan"],
-    note_file:"knowledge.md",
-    source_integrity:"complete",
-    preserve_source:true,
-    ...overrides
+    tags:["synthetic","plan"],knowledgeSections:sections,
+    sourceIntegrity:"complete",...overrides
   };
 }
 
-test("accepts high-confidence commit to one supplied existing folder",()=>{
+test("accepts only the normalized internal commit contract",()=>{
   assert.deepEqual(validateKnowledgeDecision(commit(),{libraries}),commit());
+  const root=commit({
+    libraryKey:"personal-knowledge",
+    target:{scope:"library_root",segments:[],origin:"user_explicit"}
+  });
+  assert.deepEqual(validateKnowledgeDecision(root,{libraries}),root);
   const explicitNew=commit({
-    folder_plan:plan("create_if_missing",["New Category"],"user_explicit")
+    target:{scope:"new_folder",segments:["New Category"],origin:"user_explicit"}
   });
   assert.deepEqual(validateKnowledgeDecision(explicitNew,{libraries}),explicitNew);
 });
 
-test("accepts the bounded create-folder, ask, and reject result shapes",()=>{
+test("accepts normalized await-file, create-folder, ask and reject shapes",()=>{
   const decisions=[
     {
-      action:"create_folder",confidence:"high",reason_code:"folder_ready",question:"",
-      library_key:"personal-knowledge",
-      folder_plan:plan("create_if_missing",["Reading"],"user_explicit"),
-      title:"",summary:"",tags:[],note_file:"",
-      source_integrity:"complete",preserve_source:false
+      action:"await_file",reasonCode:"source_incomplete",question:"",
+      libraryKey:"personal-knowledge",
+      target:{scope:"library_root",segments:[],origin:"user_explicit"},
+      title:"",summary:"",tags:[],knowledgeSections:null,
+      sourceIntegrity:"partial"
     },
     {
-      action:"ask_user",confidence:"high",reason_code:"folder_confirmation_required",
-      question:"Create the suggested category?",library_key:"work-knowledge",
-      folder_plan:plan("create_if_missing",["Suggested Category"],"skill_suggested"),
-      title:"",summary:"",tags:[],note_file:"",
-      source_integrity:"complete",preserve_source:true
+      action:"create_folder",reasonCode:"folder_ready",question:"",
+      libraryKey:"personal-knowledge",
+      target:{scope:"new_folder",segments:["Reading"],origin:"user_explicit"},
+      title:"",summary:"",tags:[],knowledgeSections:null,
+      sourceIntegrity:"complete"
     },
     {
-      action:"reject",confidence:"high",reason_code:"existing_change_forbidden",question:"",
-      library_key:"",folder_plan:plan(),title:"",summary:"",tags:[],note_file:"",
-      source_integrity:"complete",preserve_source:false
+      action:"ask_user",reasonCode:"folder_confirmation_required",
+      question:"Create the suggested category?",libraryKey:"work-knowledge",
+      target:{
+        scope:"new_folder",segments:["Suggested Category"],
+        origin:"skill_suggested"
+      },
+      title:"",summary:"",tags:[],knowledgeSections:null,
+      sourceIntegrity:"complete"
+    },
+    {
+      action:"reject",reasonCode:"existing_change_forbidden",question:"",
+      libraryKey:"",target:null,title:"",summary:"",tags:[],
+      knowledgeSections:null,sourceIntegrity:"complete"
     }
   ];
   for (const decision of decisions) {
@@ -74,49 +87,24 @@ test("accepts the bounded create-folder, ask, and reject result shapes",()=>{
   }
 });
 
-test("rejects fabricated folders, unsafe write confidence and absolute or path-like segments",()=>{
+test("keeps strict safety checks after normalization",()=>{
   const unsafe=[
-    commit({confidence:"medium"}),
-    commit({library_key:"unknown"}),
-    commit({folder_plan:plan("use_existing",["Fabricated"],"skill_suggested")}),
-    commit({folder_plan:plan("create_if_missing",["Suggested"],"skill_suggested")}),
-    commit({folder_plan:plan("use_existing",["/absolute"],"user_explicit")}),
-    commit({folder_plan:plan("use_existing",[".."],"user_explicit")}),
-    commit({folder_plan:plan("use_existing",["a/b"],"user_explicit")}),
-    commit({folder_plan:plan("use_existing",[".hidden"],"user_explicit")}),
-    commit({note_file:"other.md"}),
-    commit({source_integrity:"partial"}),
-    {...commit(),absolute_path:"/private/value"}
-  ];
-  for (const decision of unsafe) {
-    assert.throws(
-      ()=>validateKnowledgeDecision(decision,{libraries}),
-      /knowledge_decision_invalid/
-    );
-  }
-});
-
-test("rejects ambiguous, overlong, duplicate and conditionally inconsistent fields",()=>{
-  const unsafe=[
+    commit({libraryKey:"unknown"}),
+    commit({target:{
+      scope:"existing_folder",segments:["Fabricated"],origin:"skill_suggested"
+    }}),
+    commit({target:{
+      scope:"new_folder",segments:["Suggested"],origin:"skill_suggested"
+    }}),
+    commit({target:{
+      scope:"existing_folder",segments:[".."],origin:"user_explicit"
+    }}),
+    commit({sourceIntegrity:"partial"}),
     commit({title:""}),
     commit({summary:""}),
-    commit({title:"x".repeat(161)}),
-    commit({summary:"x".repeat(4001)}),
+    commit({knowledgeSections:null}),
     commit({tags:["duplicate","duplicate"]}),
-    commit({tags:Array.from({length:21},(_,index)=>`tag-${index}`)}),
-    commit({question:"unexpected"}),
-    commit({reason_code:"folder_ready"}),
-    {
-      action:"ask_user",confidence:"high",reason_code:"library_required",question:"",
-      library_key:"",folder_plan:plan(),title:"",summary:"",tags:[],note_file:"",
-      source_integrity:"complete",preserve_source:true
-    },
-    {
-      action:"create_folder",confidence:"high",reason_code:"folder_ready",question:"",
-      library_key:"work-knowledge",folder_plan:plan("create_if_missing",["New"],"skill_suggested"),
-      title:"",summary:"",tags:[],note_file:"",
-      source_integrity:"complete",preserve_source:false
-    }
+    {...commit(),absolutePath:"/private/value"}
   ];
   for (const decision of unsafe) {
     assert.throws(

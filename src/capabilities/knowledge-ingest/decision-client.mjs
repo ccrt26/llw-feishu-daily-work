@@ -3,6 +3,7 @@ import {
   chmod,copyFile,lstat,mkdir,mkdtemp,readFile,readdir,rm
 } from "node:fs/promises";
 import {basename,join} from "node:path";
+import {normalizeKnowledgeCandidate} from "./candidate-normalizer.mjs";
 import {validateKnowledgeDecision} from "./decision-validator.mjs";
 
 const REQUIRED_SKILL_NAME="llw-knowledge-ingest";
@@ -68,7 +69,13 @@ export async function invokeKnowledgeDecision({
         throw decisionFailure("knowledge_decision_output_failed");
       }
       try {
-        return validateKnowledgeDecision(parsed,{libraries:input.allowedLibraries});
+        const normalized=normalizeKnowledgeCandidate(parsed,{
+          libraries:input.allowedLibraries,
+          source:input.source
+        });
+        return validateKnowledgeDecision(normalized,{
+          libraries:input.allowedLibraries
+        });
       } catch {
         throw decisionFailure("knowledge_decision_validation_failed");
       }

@@ -138,31 +138,36 @@ export class StateStore {
     await this.persist();
   }
 
-  async getKnowledgePending(nowMs=Date.now()) {
-    const pending=this.data.capabilityState["knowledge-ingest"].pending;
+  async getKnowledgePending(source,nowMs=Date.now()) {
+    validateKnowledgeSource(source);
+    const slot=this.data.capabilityState["knowledge-ingest"].pendingBySource;
+    const pending=slot[source];
     if (pending===null) return null;
     validateKnowledgePending(pending);
     if (!Number.isFinite(nowMs)) throw new Error("invalid_knowledge_pending_time");
     const age=nowMs-Date.parse(pending.startedAt);
     if (age>=0&&age<24*60*60*1000) return structuredClone(pending);
-    this.data.capabilityState["knowledge-ingest"]={pending:null};
+    slot[source]=null;
     await this.persist();
     return null;
   }
 
   async setKnowledgePending(pending) {
     validateKnowledgePending(pending);
-    if (this.data.capabilityState["knowledge-ingest"].pending!==null) {
+    const slot=this.data.capabilityState["knowledge-ingest"].pendingBySource;
+    if (slot[pending.source]!==null) {
       throw new Error("knowledge_pending_exists");
     }
-    this.data.capabilityState["knowledge-ingest"]={pending:structuredClone(pending)};
+    slot[pending.source]=structuredClone(pending);
     await this.persist();
     return structuredClone(pending);
   }
 
-  async clearKnowledgePending() {
-    if (this.data.capabilityState["knowledge-ingest"].pending===null) return;
-    this.data.capabilityState["knowledge-ingest"]={pending:null};
+  async clearKnowledgePending(source) {
+    validateKnowledgeSource(source);
+    const slot=this.data.capabilityState["knowledge-ingest"].pendingBySource;
+    if (slot[source]===null) return;
+    slot[source]=null;
     await this.persist();
   }
 
@@ -325,7 +330,7 @@ function emptyState() {
       "daily-work":{conversation:null},
       invoice:{},
       router:{conversation:null},
-      "knowledge-ingest":{pending:null},
+      "knowledge-ingest":{pendingBySource:{feishu:null,wechat:null}},
       "task-session":{session:null}
     },
     outcomes: {}
@@ -339,7 +344,7 @@ function migratedState(conversation, outcomes) {
       "daily-work":{conversation},
       invoice:{},
       router:{conversation:null},
-      "knowledge-ingest":{pending:null},
+      "knowledge-ingest":{pendingBySource:{feishu:null,wechat:null}},
       "task-session":{session:null}
     },
     outcomes: structuredClone(outcomes)
@@ -362,32 +367,88 @@ function ensureTaskSessionSlot(data) {
 
 function ensureKnowledgePendingSlot(data) {
   if (!Object.hasOwn(data.capabilityState,"knowledge-ingest")) {
-    data.capabilityState["knowledge-ingest"]={pending:null};
+    data.capabilityState["knowledge-ingest"]={
+      pendingBySource:{feishu:null,wechat:null}
+    };
     return true;
   }
   const slot=data.capabilityState["knowledge-ingest"];
+  if (slot&&typeof slot==="object"&&!Array.isArray(slot)&&
+      Object.getPrototypeOf(slot)===Object.prototype&&
+      Object.keys(slot).length===1&&Object.hasOwn(slot,"pending")) {
+    data.capabilityState["knowledge-ingest"]={
+      pendingBySource:{feishu:null,wechat:null}
+    };
+    return true;
+  }
   if (!slot||typeof slot!=="object"||Array.isArray(slot)||
       Object.getPrototypeOf(slot)!==Object.prototype||
-      Object.keys(slot).length!==1||!Object.hasOwn(slot,"pending")) {
+      Object.keys(slot).length!==1||!Object.hasOwn(slot,"pendingBySource")) {
     throw new Error("invalid_knowledge_pending");
   }
-  if (slot.pending!==null) validateKnowledgePending(slot.pending);
+  const pendingBySource=slot.pendingBySource;
+  if (!pendingBySource||typeof pendingBySource!=="object"||
+      Array.isArray(pendingBySource)||
+      Object.getPrototypeOf(pendingBySource)!==Object.prototype||
+      Object.keys(pendingBySource).length!==2||
+      !Object.hasOwn(pendingBySource,"feishu")||
+      !Object.hasOwn(pendingBySource,"wechat")) {
+    throw new Error("invalid_knowledge_pending");
+  }
+  for (const source of ["feishu","wechat"]) {
+    if (pendingBySource[source]!==null) {
+      validateKnowledgePending(pendingBySource[source]);
+      if (pendingBySource[source].source!==source) {
+        throw new Error("invalid_knowledge_pending");
+      }
+    }
+  }
   return false;
 }
 
 function validateKnowledgePending(value) {
-  const fields=new Set(["request","startedAt","model"]);
+  const fields=new Set([
+    "source","startedAt","model","libraryKey","target"
+  ]);
   if (!value||typeof value!=="object"||Array.isArray(value)||
       Object.getPrototypeOf(value)!==Object.prototype||
       Object.keys(value).length!==fields.size||
       Object.keys(value).some(field=>!fields.has(field))||
-      typeof value.request!=="string"||!value.request.trim()||
-      value.request!==value.request.trim()||value.request.includes("\0")||
-      [...value.request].length>12_000||
-      Buffer.byteLength(value.request,"utf8")>32_768||
+      !new Set(["feishu","wechat"]).has(value.source)||
       typeof value.startedAt!=="string"||
       !Number.isFinite(Date.parse(value.startedAt))||
-      value.model!=="codex") {
+      value.model!=="codex"||
+      !/^[a-z][a-z0-9_-]{0,63}$/u.test(value.libraryKey||"")) {
+    throw new Error("invalid_knowledge_pending");
+  }
+  validateKnowledgeTarget(value.target);
+}
+
+function validateKnowledgeTarget(value) {
+  const fields=new Set(["scope","segments","origin"]);
+  if (!value||typeof value!=="object"||Array.isArray(value)||
+      Object.getPrototypeOf(value)!==Object.prototype||
+      Object.keys(value).length!==fields.size||
+      Object.keys(value).some(field=>!fields.has(field))||
+      !new Set(["library_root","existing_folder","new_folder"]).has(value.scope)||
+      !new Set(["user_explicit","skill_suggested"]).has(value.origin)||
+      !Array.isArray(value.segments)||value.segments.length>5||
+      value.segments.some(segment=>!validKnowledgeSegment(segment))||
+      (value.scope==="library_root"&&value.segments.length)||
+      (value.scope!=="library_root"&&!value.segments.length)) {
+    throw new Error("invalid_knowledge_pending");
+  }
+}
+
+function validKnowledgeSegment(value) {
+  return typeof value==="string"&&value===value.trim()&&
+    value===value.normalize("NFC")&&[...value].length>=1&&
+    [...value].length<=64&&value!=="."&&value!==".."&&
+    !value.startsWith(".")&&!/[\\/\u0000-\u001f\u007f]/u.test(value);
+}
+
+function validateKnowledgeSource(source) {
+  if (!new Set(["feishu","wechat"]).has(source)) {
     throw new Error("invalid_knowledge_pending");
   }
 }

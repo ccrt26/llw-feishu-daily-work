@@ -52,6 +52,21 @@ export class Dispatcher {
       const command=await handleModelCommand(message.text,{modelMode:this.modelMode,deepseekEnabled:this.deepseekEnabled});
       if (command) return this.persistAndSend(message,"model",command);
     }
+    if (isSupportedKnowledgeFile(message)) {
+      const pending=await this.state.getKnowledgePending(
+        message.source,Date.parse(message.receivedAt)
+      );
+      if (pending) {
+        const capability=this.capabilities.find(
+          item=>item.name==="knowledge-ingest"
+        );
+        if (!capability) throw new Error("knowledge_capability_unavailable");
+        const draft=await capability.handle(createBusinessMessage(message),{
+          state:this.state,model:pending.model,knowledgePending:pending
+        });
+        return this.persistAndSend(message,capability.name,draft);
+      }
+    }
     const routerConversation=await this.state.getRouterConversation(Date.parse(message.receivedAt));
     const taskConversation=routerConversation
       ?null:await this.taskSessionManager?.routerConversation?.();
@@ -120,6 +135,9 @@ export class Dispatcher {
   async applyDecision(message,conversation,decision,model,{dailyActive,readGlobalModel,preparedVisual}) {
     if (decision.action==="unsupported") {
       if (decision.reason==="cancelled") {
+        const knowledgePending=await this.state.getKnowledgePending(
+          message.source,Date.parse(message.receivedAt)
+        );
         if (conversation) {
           await this.state.closeRouterConversation("cancelled");
           if (isTaskSessionConversation(conversation)) {
@@ -129,9 +147,16 @@ export class Dispatcher {
           }
           if (conversation.capability==="daily-work") await this.state.clearConversation();
           if (conversation.capability==="knowledge-ingest") {
-            await this.state.clearKnowledgePending();
+            await this.state.clearKnowledgePending(message.source);
           }
           return {capabilityName:"router",draft:{status:"ignored",reply:null,artifacts:[]}};
+        }
+        if (knowledgePending) {
+          await this.state.clearKnowledgePending(message.source);
+          return {
+            capabilityName:"router",
+            draft:{status:"ignored",reply:null,artifacts:[]}
+          };
         }
         return {capabilityName:"router",draft:{status:"rejected",reply:"当前没有待取消任务。",artifacts:[]}};
       }
@@ -148,10 +173,13 @@ export class Dispatcher {
       await this.state.closeRouterConversation("superseded");
       if (conversation.capability==="daily-work") await this.state.clearConversation();
       if (conversation.capability==="knowledge-ingest") {
-        await this.state.clearKnowledgePending();
+        await this.state.clearKnowledgePending(message.source);
       }
     }
     else if (newTask&&dailyActive) await this.state.clearConversation();
+    if (newTask&&decision.capability!=="knowledge-ingest") {
+      await this.state.clearKnowledgePending(message.source);
+    }
     const context={state:this.state,model:taskModel};
     if (preparedVisual) context.preparedVisual=preparedVisual;
     let draft=await capability.handle(createBusinessMessage(message),context);
@@ -167,7 +195,7 @@ export class Dispatcher {
       await this.state.clearRouterConversation();
       if (conversation.capability==="daily-work") await this.state.clearConversation();
       if (conversation.capability==="knowledge-ingest") {
-        await this.state.clearKnowledgePending();
+        await this.state.clearKnowledgePending(message.source);
       }
       const lines=["当前可用能力：",...this.capabilities.map(item=>`- ${item.name}：${item.routingContract.purpose}`)];
       return {status:"awaiting_clarification",reply:lines.join("\n"),artifacts:[]};
@@ -281,9 +309,18 @@ function deepseekInvoiceUnsupported() { return {status:"rejected",reply:"当前�
 function deepseekImageUnsupported() { return {status:"rejected",reply:"当前模型为 DeepSeek，但图片需要 Codex 进行视觉路由。\n本次未下载图片、未调用模型、未调用业务Skill、未写入 Obsidian。\n请先发送：/llw-model codex\n然后重新提交图片。",artifacts:[]}; }
 function isSingleImage(message) { return message?.attachments?.length===1&&message.attachments[0]?.type==="image"; }
 function isSinglePdf(message) { return message?.attachments?.length===1&&message.attachments[0]?.type==="file"&&message.attachments[0]?.extension==="pdf"; }
+function isSupportedKnowledgeFile(message) {
+  return message?.attachments?.length===1&&
+    message.attachments[0]?.type==="file"&&
+    new Set(["txt","md","docx","pptx","xlsx"])
+      .has(message.attachments[0]?.extension);
+}
 function isBoundMalformed(raw,binding) { return raw&&typeof raw==="object"&&raw.sender_id===binding.senderId&&raw.chat_id===binding.chatId&&raw.chat_type==="p2p"&&typeof raw.message_id==="string"&&raw.message_id.length>0; }
 function validateDraft(draft) {
-  const statuses=new Set(["committed","existing","awaiting_clarification","rejected","failed","ignored"]);
+  const statuses=new Set([
+    "committed","existing","awaiting_attachment","awaiting_clarification",
+    "rejected","failed","ignored"
+  ]);
   if (!draft||!statuses.has(draft.status)||!Array.isArray(draft.artifacts)) throw new Error("invalid_outcome_draft");
   if (draft.status==="ignored") {
     if (draft.reply!==null||draft.artifacts.length||

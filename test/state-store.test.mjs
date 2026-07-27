@@ -455,67 +455,84 @@ test("persists invoice archive transactions and terminal status", async () => {
   assert.deepEqual(reopened.listInvoiceTransactions(),[{transactionId:"tx-1",targetRelativePath:"亚信工作/日常发票/餐饮发票/2026年07月/10.00.png",sourceHash:"a".repeat(64),status:"published",createdAt:store.listInvoiceTransactions()[0].createdAt}]);
 });
 
-test("persists one exact Codex-only knowledge pending request in state version 4",async()=>{
+test("persists bounded knowledge targets separately for Feishu and WeChat",async()=>{
   const {file}=await fresh();
   const store=await StateStore.open(file);
   const pending={
-    request:"把我接下来发送的一份文件保存到工作资料库",
+    source:"feishu",
     startedAt:"2026-07-26T06:00:00.000Z",
-    model:"codex"
+    model:"codex",libraryKey:"work-knowledge",
+    target:{scope:"library_root",segments:[],origin:"user_explicit"}
   };
-  assert.deepEqual(store.getCapabilityState("knowledge-ingest"),{pending:null});
+  assert.deepEqual(store.getCapabilityState("knowledge-ingest"),{
+    pendingBySource:{feishu:null,wechat:null}
+  });
   await store.setKnowledgePending(pending);
+  await store.setKnowledgePending({...pending,source:"wechat"});
   assert.deepEqual(
-    await store.getKnowledgePending(Date.parse("2026-07-27T05:59:59.999Z")),
+    await store.getKnowledgePending(
+      "feishu",Date.parse("2026-07-27T05:59:59.999Z")
+    ),
     pending
   );
   const persisted=JSON.parse(await readFile(file,"utf8"));
   assert.equal(persisted.version,4);
-  assert.deepEqual(persisted.capabilityState["knowledge-ingest"],{pending});
-  assert.deepEqual(Object.keys(persisted.capabilityState["knowledge-ingest"]),["pending"]);
+  assert.deepEqual(persisted.capabilityState["knowledge-ingest"],{
+    pendingBySource:{feishu:pending,wechat:{...pending,source:"wechat"}}
+  });
   assert.equal(JSON.stringify(persisted).includes("sourceAttachmentId"),false);
   assert.equal(JSON.stringify(persisted).includes("/private/tmp"),false);
+  assert.equal(JSON.stringify(persisted).includes("把我接下来"),false);
 });
 
-test("expires, explicitly clears and never replaces one open knowledge pending request",async()=>{
+test("expires, clears and never replaces one pending target per source",async()=>{
   const {file}=await fresh();
   const store=await StateStore.open(file);
   const pending={
-    request:"保存下一份文件",
+    source:"feishu",
     startedAt:"2026-07-26T06:00:00.000Z",
-    model:"codex"
+    model:"codex",libraryKey:"work-knowledge",
+    target:{scope:"library_root",segments:[],origin:"user_explicit"}
   };
   await store.setKnowledgePending(pending);
   await assert.rejects(
-    store.setKnowledgePending({...pending,request:"替换请求"}),
+    store.setKnowledgePending({...pending,target:{
+      scope:"new_folder",segments:["替换"],origin:"user_explicit"
+    }}),
     /knowledge_pending_exists/
   );
   assert.equal(
-    await store.getKnowledgePending(Date.parse("2026-07-27T06:00:00.000Z")),
+    await store.getKnowledgePending(
+      "feishu",Date.parse("2026-07-27T06:00:00.000Z")
+    ),
     null
   );
-  assert.deepEqual(store.getCapabilityState("knowledge-ingest"),{pending:null});
+  assert.deepEqual(store.getCapabilityState("knowledge-ingest"),{
+    pendingBySource:{feishu:null,wechat:null}
+  });
   await store.setKnowledgePending(pending);
-  await store.clearKnowledgePending();
-  await store.clearKnowledgePending();
-  assert.equal(await store.getKnowledgePending(),null);
+  await store.clearKnowledgePending("feishu");
+  await store.clearKnowledgePending("feishu");
+  assert.equal(await store.getKnowledgePending("feishu"),null);
 });
 
 test("rejects knowledge pending fields, paths, identifiers, bytes and non-Codex models",async()=>{
   const {file}=await fresh();
   const store=await StateStore.open(file);
   const base={
-    request:"保存下一份文件",
+    source:"feishu",
     startedAt:"2026-07-26T06:00:00.000Z",
-    model:"codex"
+    model:"codex",libraryKey:"work-knowledge",
+    target:{scope:"library_root",segments:[],origin:"user_explicit"}
   };
   for (const value of [
     {...base,model:"deepseek"},
+    {...base,source:"email"},
     {...base,sourceAttachmentId:"file_secret"},
     {...base,tempPath:"/private/tmp/job"},
     {...base,bytes:Buffer.from("secret").toString("base64")},
-    {...base,request:""},
-    {...base,request:"x".repeat(12_001)},
+    {...base,libraryKey:"../../private"},
+    {...base,target:{...base.target,segments:[".."]}},
     {...base,startedAt:"not-a-date"}
   ]) {
     await assert.rejects(
@@ -523,7 +540,9 @@ test("rejects knowledge pending fields, paths, identifiers, bytes and non-Codex 
       /invalid_knowledge_pending/
     );
   }
-  assert.deepEqual(store.getCapabilityState("knowledge-ingest"),{pending:null});
+  assert.deepEqual(store.getCapabilityState("knowledge-ingest"),{
+    pendingBySource:{feishu:null,wechat:null}
+  });
 });
 
 test("adds the strict knowledge pending slot when loading an existing version-4 state",async()=>{
@@ -538,9 +557,34 @@ test("adds the strict knowledge pending slot when loading an existing version-4 
   }));
   const store=await StateStore.open(file);
   assert.equal(store.version(),4);
-  assert.deepEqual(store.getCapabilityState("knowledge-ingest"),{pending:null});
+  assert.deepEqual(store.getCapabilityState("knowledge-ingest"),{
+    pendingBySource:{feishu:null,wechat:null}
+  });
   assert.deepEqual(
     JSON.parse(await readFile(file,"utf8")).capabilityState["knowledge-ingest"],
-    {pending:null}
+    {pendingBySource:{feishu:null,wechat:null}}
   );
+});
+
+test("drops the old unbound knowledge request during safe state migration",async()=>{
+  const {file}=await fresh();
+  await writeFile(file,JSON.stringify({
+    version:4,
+    capabilityState:{
+      "daily-work":{conversation:null},invoice:{},router:{conversation:null},
+      "task-session":{session:null},
+      "knowledge-ingest":{
+        pending:{
+          request:"旧的原始用户消息",startedAt:"2026-07-26T06:00:00.000Z",
+          model:"codex"
+        }
+      }
+    },
+    outcomes:{}
+  }));
+  const store=await StateStore.open(file);
+  assert.deepEqual(store.getCapabilityState("knowledge-ingest"),{
+    pendingBySource:{feishu:null,wechat:null}
+  });
+  assert.equal((await readFile(file,"utf8")).includes("旧的原始用户消息"),false);
 });

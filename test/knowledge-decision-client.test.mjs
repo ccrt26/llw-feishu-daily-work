@@ -19,14 +19,41 @@ const libraries=[
 ];
 
 const decision={
-  action:"commit",confidence:"high",reason_code:"ready",question:"",
-  library_key:"work-knowledge",
-  folder_plan:{
-    mode:"use_existing",segments:["Synthetic Client","Exchange Plan"],origin:"skill_suggested"
+  action:"commit",confidence:"high",reason_code:"ready",
+  library_key:"Synthetic Work Library",
+  target:{
+    scope:"existing_folder",segments:["Synthetic Client","Exchange Plan"],
+    origin:"skill_suggested"
   },
   title:"Synthetic Exchange Plan",summary:"A grounded synthetic summary.",
-  tags:["synthetic"],note_file:"knowledge.md",
-  source_integrity:"complete",preserve_source:true
+  tags:["synthetic"],
+  knowledge_sections:{
+    key_facts:["A grounded fact."],
+    structure_and_main_content:"A grounded structure.",
+    reusable_content:["A reusable item."],
+    source_notes:"Extracted completely.",
+    content_index:"Section 1"
+  },
+  source_integrity:"complete"
+};
+
+const normalizedDecision={
+  action:"commit",reasonCode:"ready",question:"",
+  libraryKey:"work-knowledge",
+  target:{
+    scope:"existing_folder",segments:["Synthetic Client","Exchange Plan"],
+    origin:"skill_suggested"
+  },
+  title:"Synthetic Exchange Plan",summary:"A grounded synthetic summary.",
+  tags:["synthetic"],
+  knowledgeSections:{
+    keyFacts:["A grounded fact."],
+    structureAndMainContent:"A grounded structure.",
+    reusableContent:["A reusable item."],
+    sourceNotes:"Extracted completely.",
+    contentIndex:"Section 1"
+  },
+  sourceIntegrity:"complete"
 };
 
 async function harness() {
@@ -77,7 +104,7 @@ test("runs Codex read-only with only the selected Skill and AI-safe context",asy
         FAKE_RESPONSE:JSON.stringify(decision)
       }
     });
-    assert.deepEqual(result,decision);
+    assert.deepEqual(result,normalizedDecision);
     const args=JSON.parse(await readFile(argsFile,"utf8"));
     assert.deepEqual(args.slice(0,5),[
       "exec","--ephemeral","--sandbox","read-only","--skip-git-repo-check"
@@ -114,7 +141,7 @@ test("ignores macOS AppleDouble metadata when copying the selected Skill",async(
       input:{request,source,sourceContent:request,allowedLibraries:libraries,taskSummary:null},
       environment:{...process.env,FAKE_RESPONSE:JSON.stringify(decision)}
     });
-    assert.deepEqual(result,decision);
+    assert.deepEqual(result,normalizedDecision);
     assert.deepEqual(await readdir(h.tempRoot),[]);
   } finally { await rm(h.root,{recursive:true,force:true}); }
 });
@@ -173,7 +200,7 @@ test("retries one transient Codex exit within the bounded policy",async()=>{
         FAKE_RESPONSE:JSON.stringify(decision)
       }
     });
-    assert.deepEqual(result,decision);
+    assert.deepEqual(result,normalizedDecision);
     assert.equal(await readFile(attempts,"utf8"),"2");
     assert.deepEqual(await readdir(h.tempRoot),[]);
   } finally { await rm(h.root,{recursive:true,force:true}); }

@@ -15,14 +15,21 @@ const libraries=[
 ];
 
 const baseDecision={
-  action:"commit",confidence:"high",reason_code:"ready",question:"",
-  library_key:"work-knowledge",
-  folder_plan:{
-    mode:"use_existing",segments:["亚信工作","工作文档","交流方案"],
+  action:"commit",reasonCode:"ready",question:"",
+  libraryKey:"work-knowledge",
+  target:{
+    scope:"existing_folder",segments:["亚信工作","工作文档","交流方案"],
     origin:"skill_suggested"
   },
   title:"客户交流方案",summary:"一份经过来源约束的交流方案。",tags:["交流"],
-  note_file:"knowledge.md",source_integrity:"complete",preserve_source:true
+  knowledgeSections:{
+    keyFacts:["客户需要交流方案。"],
+    structureAndMainContent:"资料说明了客户交流方案。",
+    reusableContent:["交流前确认目标。"],
+    sourceNotes:"根据完整来源整理。",
+    contentIndex:"正文"
+  },
+  sourceIntegrity:"complete"
 };
 
 function prepared(text) {
@@ -44,16 +51,29 @@ function message(text="请把这段客户交流方案保存到工作资料") {
 }
 
 function stateHarness() {
-  let pending=null;
+  const pendingBySource={feishu:null,wechat:null};
   const calls=[];
   return {
     calls,
-    get pending() { return pending; },
+    get pending() { return pendingBySource.feishu; },
     state:{
-      async setKnowledgePending(value) { calls.push(["set",structuredClone(value)]); pending=structuredClone(value); },
-      async clearKnowledgePending() { calls.push(["clear"]); pending=null; },
-      async getKnowledgePending() { return pending; }
+      async setKnowledgePending(value) {
+        calls.push(["set",structuredClone(value)]);
+        pendingBySource[value.source]=structuredClone(value);
+      },
+      async clearKnowledgePending(source) {
+        calls.push(["clear",source]); pendingBySource[source]=null;
+      },
+      async getKnowledgePending(source) { return pendingBySource[source]; }
     }
+  };
+}
+
+function pendingTarget(source="feishu") {
+  return {
+    source,startedAt:"2026-07-26T05:00:00.000Z",model:"codex",
+    libraryKey:"work-knowledge",
+    target:{scope:"library_root",segments:[],origin:"user_explicit"}
   };
 }
 
@@ -125,7 +145,7 @@ function harness({
       calls.failure.push(structuredClone(details));
       onFailureStage?.(details);
     },
-    skillVersion:"1.2.0"
+    skillVersion:"1.3.0"
   });
   return {capability,calls,state};
 }
@@ -152,10 +172,11 @@ test("commits one direct text source with AI-safe catalog context and fixed rece
     libraryKey:"work-knowledge",
     folderSegments:["亚信工作","工作文档","交流方案"],
     title:"客户交流方案",summary:"一份经过来源约束的交流方案。",tags:["交流"],
+    knowledgeSections:baseDecision.knowledgeSections,
     source:{...prepared(input.text),content:input.text},
-    skillVersion:"1.2.0",preserveSource:true
+    skillVersion:"1.3.0"
   });
-  assert.deepEqual(h.state.calls,[["clear"]]);
+  assert.deepEqual(h.state.calls,[["clear","feishu"]]);
 });
 
 test("reuses one bounded pending request for one TXT or Markdown download and cleans once",async()=>{
@@ -172,10 +193,7 @@ test("reuses one bounded pending request for one TXT or Markdown download and cl
       }),
       filePreparer:async()=>fileSource
     });
-    const request=`把下一份 ${extension.toUpperCase()} 保存到工作资料`;
-    await h.state.state.setKnowledgePending({
-      request,startedAt:"2026-07-26T05:00:00.000Z",model:"codex"
-    });
+    await h.state.state.setKnowledgePending(pendingTarget());
     h.state.calls.length=0;
     const attachmentMessage={
       ...message(),text:undefined,
@@ -198,14 +216,18 @@ test("reuses one bounded pending request for one TXT or Markdown download and cl
       displayName,extension
     }]);
     assert.deepEqual(h.calls.decide[0],{
-      model:"codex",request,
+      model:"codex",request:"将当前附件导入已确认的知识库目标。",
       source:Object.fromEntries(Object.entries(fileSource).filter(([key])=>key!=="content")),
-      sourceContent:content,allowedLibraries:libraries,taskSummary:null
+      sourceContent:content,allowedLibraries:libraries,taskSummary:null,
+      confirmedTarget:{
+        libraryKey:"work-knowledge",
+        target:{scope:"library_root",segments:[],origin:"user_explicit"}
+      }
     });
     assert.equal(h.calls.commit.length,1);
     assert.equal(h.calls.commit[0].source.content,content);
     assert.deepEqual(h.calls.cleanup,[`/tmp/synthetic-${extension}`]);
-    assert.deepEqual(h.state.calls,[["clear"]]);
+    assert.deepEqual(h.state.calls,[["clear","feishu"]]);
     assert.equal(h.state.pending,null);
   }
 });
@@ -229,10 +251,7 @@ test("prepares each Office attachment once and keeps binary bytes out of the AI 
       }),
       filePreparer:async()=>fileSource
     });
-    const request=`把下一份 ${extension.toUpperCase()} 保存到工作资料`;
-    await h.state.state.setKnowledgePending({
-      request,startedAt:"2026-07-26T05:00:00.000Z",model:"codex"
-    });
+    await h.state.state.setKnowledgePending(pendingTarget());
     h.state.calls.length=0;
     const result=await h.capability.handle({
       ...message(),text:undefined,attachments:[{
@@ -305,9 +324,7 @@ test("does not download unsupported or unrequested attachments and always cleans
   assert.equal(noPending.calls.download.length,0);
 
   const unsupported=harness();
-  await unsupported.state.state.setKnowledgePending({
-    request:"保存下一份",startedAt:"2026-07-26T05:00:00.000Z",model:"codex"
-  });
+  await unsupported.state.state.setKnowledgePending(pendingTarget());
   const pdf={...txt,attachments:[{...txt.attachments[0],displayName:"note.pdf",extension:"pdf"}]};
   assert.equal((await unsupported.capability.handle(pdf,{
     state:unsupported.state.state,model:"codex"
@@ -315,9 +332,7 @@ test("does not download unsupported or unrequested attachments and always cleans
   assert.equal(unsupported.calls.download.length,0);
 
   const failed=harness({filePreparer:async()=>{throw new Error("private file failure");}});
-  await failed.state.state.setKnowledgePending({
-    request:"保存下一份",startedAt:"2026-07-26T05:00:00.000Z",model:"codex"
-  });
+  await failed.state.state.setKnowledgePending(pendingTarget());
   failed.state.calls.length=0;
   assert.equal((await failed.capability.handle(txt,{
     state:failed.state.state,model:"codex"
@@ -329,12 +344,12 @@ test("does not download unsupported or unrequested attachments and always cleans
 
 test("creates one explicit empty folder or reports its existing idempotent result",async()=>{
   const createDecision={
-    ...baseDecision,action:"create_folder",reason_code:"folder_ready",
-    folder_plan:{
-      mode:"create_if_missing",segments:["亚信工作","工作文档","交流方案"],
+    ...baseDecision,action:"create_folder",reasonCode:"folder_ready",
+    target:{
+      scope:"new_folder",segments:["亚信工作","工作文档","交流方案"],
       origin:"user_explicit"
     },
-    title:"",summary:"",tags:[],note_file:"",preserve_source:false
+    title:"",summary:"",tags:[],knowledgeSections:null
   };
   const created=harness({decision:createDecision});
   assert.deepEqual(
@@ -365,13 +380,13 @@ test("creates one explicit empty folder or reports its existing idempotent resul
 
 test("asks once before a Skill-suggested new folder and performs zero writes",async()=>{
   const decision={
-    ...baseDecision,action:"ask_user",reason_code:"folder_confirmation_required",
+    ...baseDecision,action:"ask_user",reasonCode:"folder_confirmation_required",
     question:"是否确认按这个规则创建？",
-    folder_plan:{
-      mode:"create_if_missing",segments:["亚信工作","工作文档","新交流方案"],
+    target:{
+      scope:"new_folder",segments:["亚信工作","工作文档","新交流方案"],
       origin:"skill_suggested"
     },
-    title:"",summary:"",tags:[],note_file:""
+    title:"",summary:"",tags:[],knowledgeSections:null
   };
   const h=harness({decision});
   const result=await h.capability.handle(message(),{state:h.state.state,model:"codex"});
@@ -385,33 +400,38 @@ test("asks once before a Skill-suggested new folder and performs zero writes",as
 
 test("stores a bounded 24-hour next-file intent without paths or attachment data",async()=>{
   const decision={
-    ...baseDecision,action:"ask_user",reason_code:"source_incomplete",
-    question:"请发送一份文件。",
-    library_key:"",
-    folder_plan:{mode:"use_existing",segments:[],origin:"user_explicit"},
-    title:"",summary:"",tags:[],note_file:"",source_integrity:"partial"
+    ...baseDecision,action:"await_file",reasonCode:"source_incomplete",
+    question:"",libraryKey:"work-knowledge",
+    target:{
+      scope:"library_root",segments:[],origin:"user_explicit"
+    },
+    title:"",summary:"",tags:[],knowledgeSections:null,
+    sourceIntegrity:"partial"
   };
   const h=harness({decision});
   const input=message("把我接下来发送的一份文件保存到工作资料");
   const result=await h.capability.handle(input,{state:h.state.state,model:"codex"});
   assert.deepEqual(result,{
-    status:"awaiting_clarification",
+    status:"awaiting_attachment",
     reply:"已记住本次入库要求，请在 24 小时内发送一份 TXT、Markdown、DOCX、PPTX 或 XLSX 文件。\n文件到达前不会创建目录或写入知识库。",
     artifacts:[]
   });
   assert.deepEqual(h.state.pending,{
-    request:input.text,startedAt:input.receivedAt,model:"codex"
+    source:"feishu",startedAt:input.receivedAt,model:"codex",
+    libraryKey:"work-knowledge",
+    target:{scope:"library_root",segments:[],origin:"user_explicit"}
   });
-  assert.deepEqual(Object.keys(h.state.pending),["request","startedAt","model"]);
+  assert.deepEqual(Object.keys(h.state.pending),[
+    "source","startedAt","model","libraryKey","target"
+  ]);
   assert.equal(h.calls.commit.length+h.calls.create.length,0);
 });
 
 test("uses fixed reject and technical-failure receipts and clears only terminal safe results",async()=>{
   const rejected=harness({decision:{
-    ...baseDecision,action:"reject",confidence:"high",
-    reason_code:"existing_change_forbidden",library_key:"",
-    folder_plan:{mode:"use_existing",segments:[],origin:"user_explicit"},
-    title:"",summary:"",tags:[],note_file:""
+    ...baseDecision,action:"reject",
+    reasonCode:"existing_change_forbidden",libraryKey:"",target:null,
+    title:"",summary:"",tags:[],knowledgeSections:null
   }});
   assert.deepEqual(
     await rejected.capability.handle(message("覆盖原来的知识"),{
@@ -423,7 +443,7 @@ test("uses fixed reject and technical-failure receipts and clears only terminal 
       artifacts:[]
     }
   );
-  assert.deepEqual(rejected.state.calls,[["clear"]]);
+  assert.deepEqual(rejected.state.calls,[["clear","feishu"]]);
 
   const failed=harness({decideError:new Error("private absolute /secret/path")});
   const result=await failed.capability.handle(message(),{
@@ -460,7 +480,7 @@ test("reports exactly one bounded stage while preserving the fixed failure recei
       name:"validation",
       options:{decision:{
         ...baseDecision,
-        folder_plan:{...baseDecision.folder_plan,segments:["fabricated"]}
+        target:{...baseDecision.target,segments:["fabricated"]}
       }},
       expected:"knowledge_decision_validation_failed"
     },
@@ -532,7 +552,7 @@ test("enforces Codex-only and rejects unsafe model output with zero writer calls
 
   const unsafe=harness({decision:{
     ...baseDecision,
-    folder_plan:{...baseDecision.folder_plan,segments:["伪造目录"]}
+    target:{...baseDecision.target,segments:["伪造目录"]}
   }});
   assert.deepEqual(
     await unsafe.capability.handle(message(),{
