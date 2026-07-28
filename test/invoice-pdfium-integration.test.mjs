@@ -3,29 +3,18 @@ import assert from "node:assert/strict";
 import {access,mkdtemp,rm} from "node:fs/promises";
 import {spawn} from "node:child_process";
 import {tmpdir} from "node:os";
-import {join,resolve} from "node:path";
+import {join} from "node:path";
 import {prepareInvoicePdf} from "../src/capabilities/invoice/pdf-preparer.mjs";
-import {installPdfiumRuntime} from "../src/capabilities/invoice/pdfium-runtime.mjs";
+import {validatePdfiumRuntime} from "../src/capabilities/invoice/pdfium-runtime.mjs";
 
 const python="/Users/ccrt/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3";
-const sourceVendor=process.env.LLW_PDFIUM_VENDOR||"/private/tmp/llw-pdf-debug.Ryokuf/pdfium-vendor";
-const licenseRoot=process.env.LLW_PDFIUM_LICENSES||"/Users/ccrt/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/site-packages/pypdfium2-5.11.0.dist-info/licenses";
-const processorSource=resolve("src/capabilities/invoice/pdfium-processor.py");
-let suiteRoot,processor;
+const processor=process.env.LLW_PDF_PROCESSOR_PATH||
+  "/Users/ccrt/Library/Application Support/LLW Assistant/runtimes/pdfium-5.11.0/pdfium-processor.py";
 
 test.before(async()=>{
   await access(python);
-  await access(sourceVendor);
-  await access(licenseRoot);
-  suiteRoot=await mkdtemp(join(tmpdir(),"llw-real-pdfium-suite-"));
-  ({pdfProcessorPath:processor}=await installPdfiumRuntime({
-    sourceRoot:sourceVendor,
-    licenseRoot,
-    processorSource,
-    destinationRoot:join(suiteRoot,"runtime")
-  }));
+  await validatePdfiumRuntime(processor);
 });
-test.after(async()=>{ if (suiteRoot) await rm(suiteRoot,{recursive:true,force:true}); });
 
 async function makePdf({pages=1,text=true,encrypted=false}) {
   const job=await mkdtemp(join(tmpdir(),"llw-real-pdfium-"));

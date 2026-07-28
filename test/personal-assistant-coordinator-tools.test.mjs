@@ -12,10 +12,13 @@ const base={
 test("dispatches create_document through its one registered executor",async()=>{
   let generated=0,saved=0;
   const coordinator=new PersonalAssistantCoordinator({
-    prepareSource:async()=>({preparedSource:null,evidence:null}),
+    prepareSource:async()=>({
+      workspaceDir:"/private/tmp/llw-turn-document-test",
+      sources:[],cleanup:async()=>{}
+    }),
     assistant:{async decide(){return {kind:"tool",toolCall:{
       name:"create_document",arguments:{
-        format:"docx",title:"交流方案",content:"正文"
+        sourceIds:[],format:"docx",title:"交流方案",content:"正文"
       }
     }};}},
     writer:{},dailyWriter:{},invoiceWriter:{},
@@ -26,7 +29,7 @@ test("dispatches create_document through its one registered executor",async()=>{
         displayName:"交流方案.docx",mime:"application/docx",
         sha256:"a".repeat(64),size:100
       };
-    }},
+    },async verifyPublished(){return true;}},
     artifactGenerator:async()=>{},
     outcomeStore:{async get(){return null;},async save(){saved+=1;}},
     messenger:{async send(){}},personalRules:[],model:"codex",skillVersion:"4.0.1"

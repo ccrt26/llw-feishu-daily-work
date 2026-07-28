@@ -2,20 +2,29 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {PersonalAssistantCoordinator} from "../src/personal-assistant/coordinator.mjs";
 
+function preparedSource(format,displayName) {
+  return {
+    handle:{
+      sourceId:"source-001",displayName,mediaClass:"document",
+      format,relativePath:`source-001.${format}`,byteSize:100,
+      sha256:"a".repeat(64),availability:"ready"
+    },
+    absolutePath:`/private/tmp/llw-turn-read-only/source-001.${format}`
+  };
+}
+
 test("same-turn PDF instruction returns a summary with zero Writer calls",async()=>{
   let assistantCalls=0,writerCalls=0,saves=0,sends=0;
   const coordinator=new PersonalAssistantCoordinator({
     prepareSource:async()=>({
-      preparedSource:{},
-      evidence:{
-        kind:"pdf",displayName:"材料.pdf",byteSize:100,
-        sha256:"a".repeat(64),text:"PDF 正文",structure:[{page:1}],
-        integrity:"complete",limitations:[],jobRef:"source.pdf"
-      }
+      workspaceDir:"/private/tmp/llw-turn-read-only",
+      sources:[preparedSource("pdf","材料.pdf")],cleanup:async()=>{}
     }),
     assistant:{async decide(context){
       assistantCalls+=1;
       assert.equal(context.instructionText,"总结这份 PDF，不要保存");
+      assert.equal(context.sources[0].relativePath,"source-001.pdf");
+      assert.equal("content" in context.sources[0],false);
       return {kind:"reply",text:"这份 PDF 主要说明了测试内容。"};
     }},
     writer:{async commit(){ writerCalls+=1; }},
@@ -37,20 +46,17 @@ test("same-turn PDF instruction returns a summary with zero Writer calls",async(
   assert.equal(sends,1);
 });
 
-test("partial Office evidence is exposed as partial, never as fully understood",async()=>{
+test("original Office source is exposed as a read-only handle, never pre-parsed evidence",async()=>{
   const coordinator=new PersonalAssistantCoordinator({
     prepareSource:async()=>({
-      preparedSource:{},
-      evidence:{
-        kind:"pptx",displayName:"材料.pptx",byteSize:100,
-        sha256:"a".repeat(64),text:"已提取文字",structure:[],
-        integrity:"partial",limitations:["charts_not_extracted"],
-        jobRef:"source.pptx"
-      }
+      workspaceDir:"/private/tmp/llw-turn-read-only",
+      sources:[preparedSource("pptx","材料.pptx")],cleanup:async()=>{}
     }),
     assistant:{async decide(context){
-      assert.equal(context.sourceEvidence.integrity,"partial");
-      return {kind:"reply",text:"仅根据已提取文字总结；图表未读取。"};
+      assert.equal(context.sources[0].format,"pptx");
+      assert.equal("sourceEvidence" in context,false);
+      assert.equal("integrity" in context.sources[0],false);
+      return {kind:"reply",text:"已直接检查原始 PPTX；未可靠读取的图表会明确说明。"};
     }},
     writer:{},outcomeStore:{async get(){return null;},async save(){}},
     messenger:{async send(){}},personalRules:[],model:"codex",skillVersion:"4.0.1"
@@ -61,5 +67,5 @@ test("partial Office evidence is exposed as partial, never as fully understood",
     instructionText:"根据已读文字总结",attachments:[{}],
     replyTarget:{source:"wechat",sourceMessageId:"m1",conversationId:"c",contextToken:"t"}
   });
-  assert.match(result.reply,/图表未读取/);
+  assert.match(result.reply,/原始 PPTX/);
 });
