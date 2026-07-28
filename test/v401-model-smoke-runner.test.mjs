@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {mkdtemp,rm,writeFile} from "node:fs/promises";
+import {mkdtemp,readFile,rm,writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {runV401ModelSmoke} from "../tools/run-v401-model-smoke.mjs";
@@ -14,22 +14,45 @@ test("reports only bounded decision kinds for the representative model smoke",as
     deepseekKeychainService:"service",deepseekKeychainAccount:"account"
   }),{mode:0o600});
   try {
+    let codexCalls=0,deepseekCalls=0;
     const report=await runV401ModelSmoke({
       configFile,skillRoot:root,
       codexInvoke:async({context,workspaceDir,workspaceRoot})=>{
-        assert.equal(workspaceDir,root);
+        codexCalls+=1;
+        assert.notEqual(workspaceDir,root);
         assert.equal(workspaceRoot,undefined);
         assert.ok(Array.isArray(context.sources));
         assert.equal("sourceEvidence" in context,false);
-        return context.instructionText.includes("以后")
-          ?{
-          type:"ask",question:"确认保存这条长期规则吗？",
-          waitingType:"waiting_confirmation",preparedTool:null,
-          preparedRule:"清晰且符合归档规则的餐饮发票默认归档。"
+        if (context.sources.length===1) {
+          assert.equal(
+            (await readFile(`${workspaceDir}/source-001.docx`))
+              .subarray(0,2).toString(),
+            "PK"
+          );
+          return {
+            type:"tool_call",toolName:"save_knowledge",
+            arguments:{
+              libraryKey:"personal-knowledge",
+              folderSegments:["测试资料"],title:"合成原始文档",
+              summary:"合成测试摘要。",tags:["测试"],
+              sourceIds:["source-001"],
+              knowledgeSections:{
+                keyFacts:["合成测试事实。"],
+                structureAndMainContent:"合成测试正文。",
+                reusableContent:[],sourceNotes:"来自原始 DOCX。",
+                contentIndex:"一个来源。"
+              }
+            }
+          };
         }
-          :{type:"reply",text:"测试概括。"};
+        assert.deepEqual(
+          context.sources.map(source=>source.sourceId),
+          ["source-001","source-002"]
+        );
+        return {type:"reply",text:"两份合成材料的比较结果。"};
       },
       deepseekInvoke:async({context})=>{
+        deepseekCalls+=1;
         assert.deepEqual(context.sources,[]);
         assert.equal("sourceEvidence" in context,false);
         return {
@@ -48,10 +71,23 @@ test("reports only bounded decision kinds for the representative model smoke",as
     });
     assert.deepEqual(report,{
       rawInputsIncluded:false,rawOutputsIncluded:false,
-      codex:{kind:"reply"},
-      codexRule:{kind:"ask",hasPreparedRule:true},
-      deepseek:{kind:"tool",toolName:"record_daily_work"}
+      calls:{codex:2,deepseek:1,writer:0},
+      tokens:{input:null,output:null,available:false},
+      codexDocx:{
+        kind:"tool",toolName:"save_knowledge",
+        selectedSourceIds:["source-001"],writerCalls:0
+      },
+      codexMulti:{
+        kind:"reply",sourceCount:2,writerCalls:0,zeroWrite:true
+      },
+      deepseek:{
+        kind:"tool",toolName:"record_daily_work",
+        sourceCount:0,writerCalls:0
+      },
+      zeroWriteCases:1
     });
+    assert.equal(codexCalls,2);
+    assert.equal(deepseekCalls,1);
     assert.equal(JSON.stringify(report).includes("方案评审"),false);
   } finally { await rm(root,{recursive:true,force:true}); }
 });

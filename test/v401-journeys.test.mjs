@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {execFile} from "node:child_process";
-import {chmod,mkdir,mkdtemp,readFile,rm,writeFile} from "node:fs/promises";
+import {
+  chmod,copyFile,mkdir,mkdtemp,readFile,rm,writeFile
+} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {dirname,join} from "node:path";
 import {promisify} from "node:util";
@@ -28,6 +30,7 @@ import {
   createAssistantSourcePreparer
 } from "../src/personal-assistant/source-preparer.mjs";
 import {StateStore} from "../src/state-store.mjs";
+import {FileOutputWorkspace} from "../src/workspace/file-output-workspace.mjs";
 
 const run=promisify(execFile);
 const KNOWLEDGE_SECTIONS={
@@ -138,10 +141,19 @@ test("reply recovery reuses Outcome without rerunning assistant or Writer",async
   assert.equal(sent.length,1);
 });
 
-test("WeChat waiting_file DOCX travels through real preparation, State, Writer, Outcome and Reply",async()=>{
+test("WeChat waiting_file gathers two DOCX and one PDF through real preparation, Writer, Outcome and Reply",async()=>{
   const root=await mkdtemp(join(tmpdir(),"llw-v401-wechat-docx-"));
   try {
-    const sourceFile=await createDocx(root,"交流方案正文：先确认交流目标。");
+    const sourceFiles=new Map([
+      ["wxr_1",await createDocx(root,"交流方案正文：先确认交流目标。","source-a")],
+      ["wxr_2",await createDocx(root,"补充材料：明确对象和后续动作。","source-b")],
+      ["wxr_3",join(root,"source-c.pdf")]
+    ]);
+    await writeFile(
+      sourceFiles.get("wxr_3"),
+      Buffer.from("%PDF-1.7\n合成补充材料"),
+      {mode:0o600}
+    );
     const vaultRoot=join(root,"vault");
     const libraryRoot=join(vaultRoot,"personal-library");
     await mkdir(join(vaultRoot,".obsidian"),{recursive:true,mode:0o700});
@@ -163,7 +175,7 @@ test("WeChat waiting_file DOCX travels through real preparation, State, Writer, 
         arguments:{
           libraryKey:"personal-knowledge",folderSegments:["测试资料"],
           title:"交流方案",summary:"交流准备资料。",tags:["测试"],
-          sourceIds:["source-001"],
+          sourceIds:["source-001","source-002","source-003"],
           knowledgeSections:KNOWLEDGE_SECTIONS
         }
       }
@@ -175,9 +187,9 @@ test("WeChat waiting_file DOCX travels through real preparation, State, Writer, 
             "把我接下来发的文件整理后保存到日常生活");
           assert.deepEqual(
             context.sources.map(source=>source.sourceId),
-            ["source-001"]
+            ["source-001","source-002","source-003"]
           );
-          assert.equal("content" in context.sources[0],false);
+          assert.equal(context.sources.every(source=>!("content" in source)),true);
         }
         return decisions.shift();
       },
@@ -185,7 +197,9 @@ test("WeChat waiting_file DOCX travels through real preparation, State, Writer, 
     });
     const prepareSource=createAssistantSourcePreparer({
       tempRoot:join(root,"intake"),
-      download:async()=>({file:sourceFile,tempDir:root}),
+      download:async({attachment})=>({
+        file:sourceFiles.get(attachment.sourceAttachmentId),tempDir:root
+      }),
       cleanup:async()=>{}
     });
     const coordinator=new PersonalAssistantCoordinator({
@@ -225,12 +239,22 @@ test("WeChat waiting_file DOCX travels through real preparation, State, Writer, 
       "waiting_file"
     );
     const second=await coordinator.handle(createWechatIncomingMessage({
-      messageId:"wx-file-2",userId:"owner",conversationId:"owner",
-      createTimeMs:1785196860000,type:"file",contextToken:"ctx",
-      attachment:{
-        type:"file",sourceAttachmentId:"wxr_1",
-        displayName:"交流方案.docx",extension:"docx"
-      }
+      messageId:"wx-files-2",userId:"owner",conversationId:"owner",
+      createTimeMs:1785196860000,type:"files",contextToken:"ctx",
+      attachments:[
+        {
+          type:"file",sourceAttachmentId:"wxr_1",
+          displayName:"交流方案.docx",extension:"docx"
+        },
+        {
+          type:"file",sourceAttachmentId:"wxr_2",
+          displayName:"补充材料.docx",extension:"docx"
+        },
+        {
+          type:"file",sourceAttachmentId:"wxr_3",
+          displayName:"附录.pdf",extension:"pdf"
+        }
+      ]
     }));
     assert.equal(second.status,"committed");
     assert.equal(sent.length,2);
@@ -242,9 +266,9 @@ test("WeChat waiting_file DOCX travels through real preparation, State, Writer, 
     );
     assert.match(
       await readFile(join(vaultRoot,second.artifacts[0]),"utf8"),
-      /llw_schema: "knowledge-item\/v2"[\s\S]*source-001\.docx/u
+      /llw_schema: "knowledge-item\/v2"[\s\S]*source-001\.docx[\s\S]*source-002\.docx[\s\S]*source-003\.pdf/u
     );
-    assert.ok(state.getOutcome("wechat:wx-file-2"));
+    assert.ok(state.getOutcome("wechat:wx-files-2"));
   } finally {
     await rm(root,{recursive:true,force:true});
   }
@@ -331,23 +355,235 @@ test("no-text Feishu dining invoice reaches the real archive Writer and one repl
   }
 });
 
-test("split same-turn Feishu PDF request is coalesced before preparation and reaches one Reply with zero Writers",async()=>{
+test("same-event instruction plus three originals reaches one create_document job and verified reply file",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"llw-v401-document-journey-"));
+  try {
+    const files=new Map([
+      ["wx-doc-a",await createDocx(root,"甲材料：交流目标。","document-a")],
+      ["wx-doc-b",await createDocx(root,"乙材料：参与对象。","document-b")],
+      ["wx-doc-c",join(root,"document-c.pdf")]
+    ]);
+    await writeFile(
+      files.get("wx-doc-c"),Buffer.from("%PDF-1.7\n丙材料：后续动作。"),
+      {mode:0o600}
+    );
+    const outcomes=new Map(),sent=[];
+    let assistantCalls=0,generatorCalls=0;
+    const workspace=new FileOutputWorkspace({
+      tempRoot:join(root,"document-jobs"),
+      outputRoot:join(root,"document-output"),
+      maxOutputBytes:20*1024*1024,outputRetentionDays:7
+    });
+    const coordinator=new PersonalAssistantCoordinator({
+      prepareSource:createAssistantSourcePreparer({
+        tempRoot:join(root,"intake"),
+        download:async({attachment})=>({
+          file:files.get(attachment.sourceAttachmentId),tempDir:root
+        }),
+        cleanup:async()=>{}
+      }),
+      assistant:new PersonalAssistantClient({
+        codex:async context=>{
+          assistantCalls+=1;
+          assert.equal(context.instructionText,
+            "综合这三份材料，生成一份交流方案 Word");
+          assert.deepEqual(
+            context.sources.map(source=>source.sourceId),
+            ["source-001","source-002","source-003"]
+          );
+          return {
+            type:"tool_call",toolName:"create_document",
+            arguments:{
+              sourceIds:["source-001","source-002","source-003"],
+              format:"docx",title:"综合交流方案",
+              content:"# 综合交流方案\n\n目标、对象与后续动作。"
+            }
+          };
+        },
+        deepseek:async()=>{throw new Error("unexpected");}
+      }),
+      documentWorkspace:workspace,
+      artifactGenerator:async({jobRoot,outputFile,sourceFiles})=>{
+        generatorCalls+=1;
+        assert.deepEqual(sourceFiles,[
+          "sources/source-001.docx",
+          "sources/source-002.docx",
+          "sources/source-003.pdf"
+        ]);
+        await copyFile(join(jobRoot,sourceFiles[0]),outputFile);
+      },
+      outcomeStore:{
+        async get(key){return outcomes.get(key)||null;},
+        async save(outcome,key){outcomes.set(key,structuredClone(outcome));},
+        async markReplied(){}
+      },
+      messenger:{async send(value){sent.push(structuredClone(value));}},
+      personalRules:[],model:"codex",skillVersion:"4.0.1"
+    });
+    const outcome=await coordinator.handle(createWechatIncomingMessage({
+      messageId:"wx-document-1",userId:"owner",conversationId:"owner",
+      createTimeMs:1785196800000,type:"files",contextToken:"ctx",
+      instructionText:"综合这三份材料，生成一份交流方案 Word",
+      attachments:[
+        {
+          type:"file",sourceAttachmentId:"wx-doc-a",
+          displayName:"甲.docx",extension:"docx"
+        },
+        {
+          type:"file",sourceAttachmentId:"wx-doc-b",
+          displayName:"乙.docx",extension:"docx"
+        },
+        {
+          type:"file",sourceAttachmentId:"wx-doc-c",
+          displayName:"丙.pdf",extension:"pdf"
+        }
+      ]
+    }));
+    assert.equal(outcome.status,"committed");
+    assert.equal(assistantCalls,1);
+    assert.equal(generatorCalls,1);
+    assert.equal(outcome.replyFiles.length,1);
+    assert.equal(await workspace.verifyPublished(outcome.replyFiles[0]),true);
+    assert.equal(sent.length,1);
+  } finally {
+    await rm(root,{recursive:true,force:true});
+  }
+});
+
+test("two same-turn dining invoices reach one batch tool and two real archive writes",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"llw-v401-invoice-batch-"));
+  try {
+    const files=new Map([
+      ["wx-invoice-a",join(root,"invoice-a.png")],
+      ["wx-invoice-b",join(root,"invoice-b.png")]
+    ]);
+    await writeFile(
+      files.get("wx-invoice-a"),
+      Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0x01]),
+      {mode:0o600}
+    );
+    await writeFile(
+      files.get("wx-invoice-b"),
+      Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0x02]),
+      {mode:0o600}
+    );
+    const vaultRoot=join(root,"vault");
+    await mkdir(join(vaultRoot,".obsidian"),{recursive:true,mode:0o700});
+    await mkdir(join(vaultRoot,".llw-system"),{recursive:true,mode:0o700});
+    await mkdir(
+      join(vaultRoot,"亚信工作","日常发票","餐饮发票"),
+      {recursive:true,mode:0o700}
+    );
+    await writeFile(
+      join(vaultRoot,".llw-system","SYSTEM_MAP.md"),
+      "# synthetic\n",{mode:0o600}
+    );
+    const state=await StateStore.open(join(root,"state.json"));
+    const extraction=invoiceNumber=>({
+      invoice:{
+        invoice_number:invoiceNumber,issue_date:"2026-07-28",
+        buyer_name:"亚信科技（成都）有限公司",
+        buyer_tax_id:"91510100732356360H",
+        seller_name:"合成测试餐厅",item_name:"餐饮服务",
+        total_with_tax:"100.00"
+      },
+      field_quality:{
+        invoice_number:"clear",issue_date:"clear",buyer_name:"clear",
+        buyer_tax_id:"clear",seller_name:"clear",item_name:"clear",
+        total_with_tax:"clear"
+      },
+      category:"dining",document_verification:"single_invoice"
+    });
+    let assistantCalls=0;
+    const sent=[];
+    const coordinator=new PersonalAssistantCoordinator({
+      prepareSource:createAssistantSourcePreparer({
+        tempRoot:join(root,"intake"),
+        download:async({attachment})=>({
+          file:files.get(attachment.sourceAttachmentId),tempDir:root
+        }),
+        cleanup:async()=>{}
+      }),
+      assistant:new PersonalAssistantClient({
+        codex:async context=>{
+          assistantCalls+=1;
+          assert.deepEqual(
+            context.sources.map(source=>source.sourceId),
+            ["source-001","source-002"]
+          );
+          return {
+            type:"tool_call",toolName:"archive_dining_invoice",
+            arguments:{items:[
+              {sourceId:"source-001",extraction:extraction("SYNTHETIC-A")},
+              {sourceId:"source-002",extraction:extraction("SYNTHETIC-B")}
+            ]}
+          };
+        },
+        deepseek:async()=>{throw new Error("unexpected");}
+      }),
+      invoiceWriter:new InvoiceArchiveWriter({vaultRoot,state}),
+      outcomeStore:{
+        get:key=>state.getOutcome(key),
+        save:(outcome,key)=>state.saveOutcome(key,outcome),
+        markReplied:key=>state.markReplied(key)
+      },
+      messenger:{async send(value){sent.push(structuredClone(value));}},
+      personalRules:[],model:"codex",skillVersion:"4.0.1"
+    });
+    const outcome=await coordinator.handle(createWechatIncomingMessage({
+      messageId:"wx-invoices-1",userId:"owner",conversationId:"owner",
+      createTimeMs:1785196800000,type:"files",contextToken:"ctx",
+      instructionText:"归档这两张餐饮发票",
+      attachments:[
+        {
+          type:"image",sourceAttachmentId:"wx-invoice-a",
+          displayName:"发票甲.png",extension:"png"
+        },
+        {
+          type:"image",sourceAttachmentId:"wx-invoice-b",
+          displayName:"发票乙.png",extension:"png"
+        }
+      ]
+    }));
+    assert.equal(outcome.status,"committed");
+    assert.equal(assistantCalls,1);
+    assert.equal(outcome.artifacts.length,2);
+    assert.equal(
+      state.listInvoiceTransactions()
+        .filter(item=>item.status==="published").length,
+      2
+    );
+    assert.equal(sent.length,1);
+  } finally {
+    await rm(root,{recursive:true,force:true});
+  }
+});
+
+test("split same-turn Feishu two-PDF request is coalesced before preparation and reaches one Reply with zero Writers",async()=>{
   const root=await mkdtemp(join(tmpdir(),"llw-v401-pdf-journey-"));
   try {
-    const pdf=join(root,"source.pdf");
-    await writeFile(pdf,Buffer.from("%PDF-1.7\nsynthetic"),{mode:0o600});
+    const pdf1=join(root,"source-1.pdf");
+    const pdf2=join(root,"source-2.pdf");
+    await writeFile(pdf1,Buffer.from("%PDF-1.7\nsynthetic one"),{mode:0o600});
+    await writeFile(pdf2,Buffer.from("%PDF-1.7\nsynthetic two"),{mode:0o600});
     let writerCalls=0;
     const sent=[],outcomes=new Map();
     const coordinator=new PersonalAssistantCoordinator({
       prepareSource:createAssistantSourcePreparer({
         tempRoot:join(root,"intake"),
-        download:async()=>({file:pdf,tempDir:root}),
+        download:async({attachment})=>({
+          file:attachment.sourceAttachmentId==="file_pdf_1"?pdf1:pdf2,
+          tempDir:root
+        }),
         cleanup:async()=>{}
       }),
       assistant:new PersonalAssistantClient({
         codex:async context=>{
           assert.equal(context.instructionText,"总结，不保存");
-          assert.equal(context.sources[0].format,"pdf");
+          assert.deepEqual(
+            context.sources.map(source=>source.format),
+            ["pdf","pdf"]
+          );
           return {type:"reply",text:"这是一份合成 PDF 摘要。"};
         },
         deepseek:async()=>{throw new Error("unexpected");}
@@ -384,8 +620,14 @@ test("split same-turn Feishu PDF request is coalesced before preparation and rea
     await dispatcher.acceptIncomingMessage(createFeishuIncomingMessage({
       messageId:"pdf-read-1",senderId:"owner",chatId:"private-chat",
       messageType:"file",
-      content:'<file key="file_synthetic" name="材料.pdf"/>',
+      content:'<file key="file_pdf_1" name="材料一.pdf"/>',
       createTimeMs:1785196800000
+    }));
+    await dispatcher.acceptIncomingMessage(createFeishuIncomingMessage({
+      messageId:"pdf-read-2",senderId:"owner",chatId:"private-chat",
+      messageType:"file",
+      content:'<file key="file_pdf_2" name="材料二.pdf"/>',
+      createTimeMs:1785196800500
     }));
     await dispatcher.acceptIncomingMessage(createFeishuIncomingMessage({
       messageId:"pdf-text-2",senderId:"owner",chatId:"private-chat",
@@ -399,6 +641,10 @@ test("split same-turn Feishu PDF request is coalesced before preparation and rea
     assert.deepEqual(outcome.artifacts,[]);
     assert.equal(sent.length,1);
     assert.equal(
+      outcomes.get("feishu:pdf-read-2").reasonCode,
+      "coalesced_into_turn"
+    );
+    assert.equal(
       outcomes.get("feishu:pdf-text-2").reasonCode,
       "coalesced_into_turn"
     );
@@ -407,8 +653,8 @@ test("split same-turn Feishu PDF request is coalesced before preparation and rea
   }
 });
 
-async function createDocx(root,text) {
-  const packageRoot=join(root,"docx-package");
+async function createDocx(root,text,name="source") {
+  const packageRoot=join(root,`${name}-package`);
   const parts={
     "[Content_Types].xml":`<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`,
     "word/document.xml":`<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:p><w:r><w:t>${text}</w:t></w:r></w:p><w:sectPr><w:footerReference w:type="default" r:id="rIdFooter"/></w:sectPr></w:body></w:document>`,
@@ -420,7 +666,7 @@ async function createDocx(root,text) {
     await mkdir(dirname(target),{recursive:true,mode:0o700});
     await writeFile(target,content,{mode:0o600});
   }
-  const output=join(root,"source.docx");
+  const output=join(root,`${name}.docx`);
   await run("/usr/bin/zip",["-q","-r",output,"."],{cwd:packageRoot});
   await chmod(output,0o600);
   return output;
