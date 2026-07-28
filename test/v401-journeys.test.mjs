@@ -23,6 +23,7 @@ import {
 import {createSourceEvidence} from "../src/personal-assistant/source-evidence.mjs";
 import {PersonalAssistantClient} from "../src/personal-assistant/client.mjs";
 import {PersonalAssistantCoordinator} from "../src/personal-assistant/coordinator.mjs";
+import {PersonalAssistantDispatcher} from "../src/personal-assistant/dispatcher.mjs";
 import {
   createAssistantSourcePreparer
 } from "../src/personal-assistant/source-preparer.mjs";
@@ -341,13 +342,13 @@ test("no-text Feishu dining invoice reaches the real archive Writer and one repl
   }
 });
 
-test("same-turn Feishu PDF read-only request reaches Reply with zero Writers",async()=>{
+test("split same-turn Feishu PDF request is coalesced before preparation and reaches one Reply with zero Writers",async()=>{
   const root=await mkdtemp(join(tmpdir(),"llw-v401-pdf-journey-"));
   try {
     const pdf=join(root,"source.pdf");
     await writeFile(pdf,Buffer.from("%PDF-1.7\nsynthetic"),{mode:0o600});
     let writerCalls=0;
-    const sent=[],saved=[];
+    const sent=[],outcomes=new Map();
     const coordinator=new PersonalAssistantCoordinator({
       prepareSource:createAssistantSourcePreparer({
         download:async()=>({file:pdf,tempDir:root}),
@@ -375,25 +376,51 @@ test("same-turn Feishu PDF read-only request reaches Reply with zero Writers",as
       invoiceWriter:{async archive(){writerCalls+=1;}},
       artifactGenerator:async()=>{writerCalls+=1;},
       outcomeStore:{
-        async get(){return null;},
-        async save(outcome){saved.push(structuredClone(outcome));},
+        async get(key){return outcomes.get(key)||null;},
+        async save(outcome,key){
+          outcomes.set(key,structuredClone(outcome));
+        },
         async markReplied(){}
       },
       messenger:{async send(value){sent.push(structuredClone(value));}},
       personalRules:["普通附件默认保存"],
       model:"codex",skillVersion:"4.0.1"
     });
-    const outcome=await coordinator.handle(createFeishuIncomingMessage({
+    const dispatcher=new PersonalAssistantDispatcher({
+      binding:{senderId:"owner",chatId:"private-chat"},
+      bindings:{
+        feishu:{userId:"owner",conversationId:"private-chat"}
+      },
+      state:{
+        hasOutcome:key=>outcomes.has(key),
+        async saveOutcome(key,outcome){
+          outcomes.set(key,structuredClone(outcome));
+        }
+      },
+      coordinator,modelMode:{},deepseekEnabled:false,
+      messenger:{async send(){}},coalesceWindowMs:25
+    });
+    await dispatcher.acceptIncomingMessage(createFeishuIncomingMessage({
       messageId:"pdf-read-1",senderId:"owner",chatId:"private-chat",
       messageType:"file",
       content:'<file key="file_synthetic" name="材料.pdf"/>',
-      instructionText:"总结，不保存",createTimeMs:1785196800000
+      createTimeMs:1785196800000
     }));
+    await dispatcher.acceptIncomingMessage(createFeishuIncomingMessage({
+      messageId:"pdf-text-2",senderId:"owner",chatId:"private-chat",
+      messageType:"text",content:"总结，不保存",
+      createTimeMs:1785196801000
+    }));
+    await dispatcher.flushAcceptedMessages();
+    const outcome=outcomes.get("feishu:pdf-read-1");
     assert.equal(outcome.status,"committed");
     assert.equal(writerCalls,0);
     assert.deepEqual(outcome.artifacts,[]);
-    assert.equal(saved.length,1);
     assert.equal(sent.length,1);
+    assert.equal(
+      outcomes.get("feishu:pdf-text-2").reasonCode,
+      "coalesced_into_attachment"
+    );
   } finally {
     await rm(root,{recursive:true,force:true});
   }

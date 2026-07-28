@@ -121,3 +121,117 @@ test("keeps a controlled provider failure code in Outcome and diagnostics",async
   assert.equal(saved[0].outcome.reasonCode,"assistant_model_failed");
   assert.deepEqual(failures,["assistant_model_failed"]);
 });
+
+test("coalesces an attachment-first split turn into one assistant task and one reply target",async()=>{
+  const handled=[],saved=[];
+  const dispatcher=new PersonalAssistantDispatcher({
+    binding:{senderId:"owner",chatId:"private"},
+    bindings:{feishu:{userId:"owner",conversationId:"private"}},
+    state:{
+      hasOutcome:()=>false,
+      async saveOutcome(key,outcome){saved.push({key,outcome});}
+    },
+    coordinator:{
+      async handle(message){
+        handled.push(structuredClone(message));
+        return {status:"committed"};
+      }
+    },
+    modelMode:{},deepseekEnabled:false,messenger:{async send(){}},
+    coalesceWindowMs:25
+  });
+  await dispatcher.acceptIncomingMessage(incoming({
+    sourceMessageId:"file-1",receivedAt:"2026-07-28T00:00:00.000Z",
+    instructionText:"",
+    attachments:[{
+      type:"file",sourceAttachmentId:"file_1",
+      displayName:"材料.pdf",extension:"pdf"
+    }],
+    replyTarget:{
+      source:"feishu",sourceMessageId:"file-1",conversationId:"private"
+    }
+  }));
+  await dispatcher.acceptIncomingMessage(incoming({
+    sourceMessageId:"text-2",receivedAt:"2026-07-28T00:00:01.000Z",
+    instructionText:"概括这份 PDF，不保存",
+    replyTarget:{
+      source:"feishu",sourceMessageId:"text-2",conversationId:"private"
+    }
+  }));
+  await dispatcher.flushAcceptedMessages();
+  assert.equal(handled.length,1);
+  assert.equal(handled[0].sourceMessageId,"file-1");
+  assert.equal(handled[0].instructionText,"概括这份 PDF，不保存");
+  assert.equal(handled[0].attachments[0].sourceAttachmentId,"file_1");
+  assert.equal(handled[0].replyTarget.sourceMessageId,"text-2");
+  assert.equal(saved.length,1);
+  assert.equal(saved[0].key,"feishu:text-2");
+  assert.equal(saved[0].outcome.reasonCode,"coalesced_into_attachment");
+  assert.equal(saved[0].outcome.noReplyRequired,true);
+});
+
+test("coalesces a text-first split turn and does not cross entry boundaries",async()=>{
+  const handled=[];
+  const dispatcher=new PersonalAssistantDispatcher({
+    binding:{senderId:"owner",chatId:"private"},
+    bindings:{
+      feishu:{userId:"owner",conversationId:"private"},
+      wechat:{userId:"wx-owner",conversationId:"wx-owner"}
+    },
+    state:{hasOutcome:()=>false,async saveOutcome(){}},
+    coordinator:{
+      async handle(message){
+        handled.push(structuredClone(message));
+        return {status:"committed"};
+      }
+    },
+    modelMode:{},deepseekEnabled:false,messenger:{async send(){}},
+    coalesceWindowMs:25
+  });
+  await dispatcher.acceptIncomingMessage(incoming({
+    sourceMessageId:"text-1",
+    instructionText:"整理后保存到日常生活"
+  }));
+  await dispatcher.acceptIncomingMessage(incoming({
+    source:"wechat",sourceMessageId:"wx-text-1",
+    userId:"wx-owner",conversationId:"wx-owner",
+    receivedAt:"2026-07-28T00:00:00.000Z",
+    instructionText:"只概括，不保存",attachments:[],
+    replyTarget:{
+      source:"wechat",sourceMessageId:"wx-text-1",
+      conversationId:"wx-owner",contextToken:"ctx"
+    }
+  }));
+  await dispatcher.acceptIncomingMessage(incoming({
+    sourceMessageId:"file-2",receivedAt:"2026-07-28T00:00:01.000Z",
+    instructionText:"",
+    attachments:[{
+      type:"file",sourceAttachmentId:"file_2",
+      displayName:"材料.docx",extension:"docx"
+    }],
+    replyTarget:{
+      source:"feishu",sourceMessageId:"file-2",conversationId:"private"
+    }
+  }));
+  await dispatcher.acceptIncomingMessage(incoming({
+    source:"wechat",sourceMessageId:"wx-file-2",
+    userId:"wx-owner",conversationId:"wx-owner",
+    receivedAt:"2026-07-28T00:00:01.000Z",instructionText:"",
+    attachments:[{
+      type:"file",sourceAttachmentId:"wxr_1",
+      displayName:"材料.pdf",extension:"pdf"
+    }],
+    replyTarget:{
+      source:"wechat",sourceMessageId:"wx-file-2",
+      conversationId:"wx-owner",contextToken:"ctx"
+    }
+  }));
+  await dispatcher.flushAcceptedMessages();
+  assert.equal(handled.length,2);
+  const feishu=handled.find(message=>message.source==="feishu");
+  const wechat=handled.find(message=>message.source==="wechat");
+  assert.equal(feishu.sourceMessageId,"file-2");
+  assert.equal(feishu.instructionText,"整理后保存到日常生活");
+  assert.equal(wechat.sourceMessageId,"wx-file-2");
+  assert.equal(wechat.instructionText,"只概括，不保存");
+});

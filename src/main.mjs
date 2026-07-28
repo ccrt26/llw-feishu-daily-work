@@ -292,7 +292,8 @@ async function runPersonalAssistantMain(config) {
   const dispatcher=new PersonalAssistantDispatcher({
     binding,bindings,state,coordinator,modelMode,
     deepseekEnabled:config.deepseekEnabled,messenger,
-    onFailure:createPersonalAssistantFailureLogger()
+    onFailure:createPersonalAssistantFailureLogger(),
+    coalesceWindowMs:2_000
   });
   await scavengeInvoiceTempRoot(invoiceConfig.tempRoot);
   await scavengeInvoiceTempRoot(knowledgeConfig.tempRoot);
@@ -331,13 +332,13 @@ async function runPersonalAssistantMain(config) {
     },
     feishuOptions:{
       cliPath:config.cliPath,profile:config.profile,
-      onEvent:event=>dispatcher.handleRawEvent(event),
+      onEvent:event=>dispatcher.acceptRawEvent(event),
       onError:()=>process.stderr.write(
         `${safeLog({stage:"listener",code:"event_handler_failed"})}\n`
       )
     },
     wechatOptions:{
-      onMessage:message=>dispatcher.handleIncomingMessage(message),
+      onMessage:message=>dispatcher.acceptIncomingMessage(message),
       onError:error=>process.stderr.write(
         `${safeLog({
           stage:"listener",code:error?.code||"wechat_listener_error"
@@ -356,7 +357,10 @@ async function runPersonalAssistantMain(config) {
     clearInterval(cleanupTimer);
     try { await wechatListener?.stop?.(); } catch {}
     try { await larkListener.stop(); }
-    finally { process.exit(0); }
+    finally {
+      await dispatcher.flushAcceptedMessages().catch(()=>{});
+      process.exit(0);
+    }
   };
   process.on("SIGINT",shutdown);
   process.on("SIGTERM",shutdown);
