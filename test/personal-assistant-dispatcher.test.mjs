@@ -122,6 +122,33 @@ test("keeps a controlled provider failure code in Outcome and diagnostics",async
   assert.deepEqual(failures,["assistant_model_failed"]);
 });
 
+test("reports only a bounded coordinator phase for unknown internal errors",async()=>{
+  const saved=[],failures=[];
+  const dispatcher=new PersonalAssistantDispatcher({
+    binding:{senderId:"owner",chatId:"private"},
+    bindings:{feishu:{userId:"owner",conversationId:"private"}},
+    state:{
+      hasOutcome:()=>false,
+      async saveOutcome(_key,outcome){saved.push(outcome);},
+      async markReplied(){}
+    },
+    coordinator:{async handle(){
+      const error=new Error("private_writer_detail");
+      error.failurePhase="save_knowledge_execution_failed";
+      throw error;
+    }},
+    modelMode:{},deepseekEnabled:false,
+    messenger:{async send(){}},
+    onFailure:code=>failures.push(code)
+  });
+  await dispatcher.handleIncomingMessage(incoming());
+  assert.equal(
+    saved[0].reasonCode,
+    "save_knowledge_execution_failed"
+  );
+  assert.deepEqual(failures,["save_knowledge_execution_failed"]);
+});
+
 test("coalesces an attachment-first split turn into one assistant task and one reply target",async()=>{
   const handled=[],saved=[];
   const dispatcher=new PersonalAssistantDispatcher({

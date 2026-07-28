@@ -79,29 +79,36 @@ export class PersonalAssistantCoordinator {
       await this.sendOutcome(key,outcome,message.replyTarget);
       return outcome;
     }
-    let prepared;
+    let prepared,failurePhase="source_preparation_failed";
     try {
       prepared=await this.prepareSource(turnMessage);
+      failurePhase="content_safety_rejected";
       assertContentSafe({
         instructionText:turnMessage.instructionText,
         sources:(prepared?.sources||[]).map(source=>source.handle??source),
         conversation:active,
         limits:{maxContextBytes:512*1024}
       });
+      failurePhase="personal_rules_load_failed";
+      const personalRules=this.personalRulesStore
+        ?await this.personalRulesStore.load()
+        :this.personalRules;
+      failurePhase="daily_candidates_load_failed";
+      const dailyCandidates=await this.loadDailyCandidates();
+      failurePhase="agent_turn_context_invalid";
       const context=buildAgentTurnContext({
         message:turnMessage,
         sources:prepared?.sources||[],
         conversation:active,
-        personalRules:this.personalRulesStore
-          ?await this.personalRulesStore.load()
-          :this.personalRules,
+        personalRules,
         model,
         toolDeclarations:getModelToolDeclarations(),
-        dailyCandidates:await this.loadDailyCandidates()
+        dailyCandidates
       });
       const imageFiles=(prepared?.sources||[])
         .filter(source=>(source.handle??source).mediaClass==="image")
         .map(source=>source.absolutePath);
+      failurePhase="assistant_model_failed";
       const decision=await this.assistant.decide(context,{
         workspaceDir:prepared?.workspaceDir,
         imageFiles
@@ -117,6 +124,7 @@ export class PersonalAssistantCoordinator {
           preparedRule:decision.preparedRule??null
         };
       } else if (decision.toolCall.name==="save_knowledge") {
+        failurePhase="save_knowledge_execution_failed";
         result=await executeSaveKnowledge({
           toolCall:decision.toolCall,
           sourceBindings:prepared.sources,
@@ -126,6 +134,7 @@ export class PersonalAssistantCoordinator {
           ingestedAt:turnMessage.receivedAt
         });
       } else if (decision.toolCall.name==="record_daily_work") {
+        failurePhase="record_daily_work_execution_failed";
         result=await executeRecordDailyWork({
           toolCall:decision.toolCall,
           messageId:turnMessage.sourceMessageId,
@@ -133,6 +142,7 @@ export class PersonalAssistantCoordinator {
           writer:this.dailyWriter
         });
       } else if (decision.toolCall.name==="archive_dining_invoice") {
+        failurePhase="archive_dining_invoice_execution_failed";
         result=await executeArchiveDiningInvoice({
           toolCall:decision.toolCall,
           sourceBindings:prepared.sources,
@@ -141,6 +151,7 @@ export class PersonalAssistantCoordinator {
           currentInstruction:turnMessage.instructionText
         });
       } else if (decision.toolCall.name==="create_document") {
+        failurePhase="create_document_execution_failed";
         result=await executeCreateDocument({
           toolCall:decision.toolCall,
           sourceBindings:prepared.sources,
@@ -158,6 +169,7 @@ export class PersonalAssistantCoordinator {
           artifacts:[]
         };
       }
+      failurePhase="conversation_state_failed";
       if (result.status==="awaiting_clarification") {
         await this.conversationStore?.set(message.source,{
           waitingType:result.waitingType,
@@ -178,20 +190,28 @@ export class PersonalAssistantCoordinator {
       } else {
         await this.conversationStore?.clear(message.source);
       }
+      const {failureCode,...publicResult}=result;
       const outcome={
-        ...result,
+        ...publicResult,
         ...(result.status==="partial"
           ?{reasonCode:"writer_partial"}
           :result.status==="failed"
-            ?{reasonCode:"tool_execution_failed"}
+            ?{reasonCode:failureCode??"tool_execution_failed"}
             :{}),
         replyFiles:result.replyFile?[structuredClone(result.replyFile)]:[],
         noReplyRequired:result.reply===null,
         replyTarget:structuredClone(message.replyTarget)
       };
+      failurePhase="outcome_persist_failed";
       await this.outcomeStore.save(outcome,key);
+      failurePhase="reply_delivery_failed";
       if (outcome.reply) await this.sendOutcome(key,outcome,message.replyTarget);
       return outcome;
+    } catch (error) {
+      if (error&&typeof error==="object") {
+        error.failurePhase=failurePhase;
+      }
+      throw error;
     } finally {
       await prepared?.cleanup?.().catch(()=>{});
     }

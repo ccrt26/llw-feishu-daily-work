@@ -275,9 +275,20 @@ const SAFE_FAILURE_CODES=new Set([
   "tool_call_invalid","tool_execution_failed","writer_partial",
   "reply_delivery_failed"
 ]);
+const SAFE_FAILURE_PHASES=new Set([
+  "source_preparation_failed","personal_rules_load_failed",
+  "daily_candidates_load_failed","save_knowledge_execution_failed",
+  "record_daily_work_execution_failed",
+  "archive_dining_invoice_execution_failed",
+  "create_document_execution_failed","conversation_state_failed",
+  "outcome_persist_failed","reply_delivery_failed"
+]);
 
 function boundedFailureCode(error) {
   if (SAFE_FAILURE_CODES.has(error?.message)) return error.message;
+  if (SAFE_FAILURE_PHASES.has(error?.failurePhase)) {
+    return error.failurePhase;
+  }
   if (error?.message==="assistant_source_invalid") {
     return "source_security_rejected";
   }

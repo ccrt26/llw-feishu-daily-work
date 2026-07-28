@@ -39,3 +39,26 @@ test("dispatches create_document through its one registered executor",async()=>{
   assert.equal(saved,1);
   assert.equal(result.replyFile.kind,"docx");
 });
+
+test("labels an unknown post-decision failure with its bounded phase",async()=>{
+  const coordinator=new PersonalAssistantCoordinator({
+    prepareSource:async()=>({
+      workspaceDir:"/private/tmp/llw-turn-stage-test",
+      sources:[],cleanup:async()=>{}
+    }),
+    assistant:{async decide(){return {kind:"reply",text:"只读回答"};}},
+    writer:{},dailyWriter:{},invoiceWriter:{},
+    outcomeStore:{async get(){return null;},async save(){}},
+    messenger:{async send(){}},
+    conversationStore:{
+      async get(){return null;},
+      async clear(){throw new Error("private_state_detail");}
+    },
+    personalRules:[],model:"codex",skillVersion:"4.0.1"
+  });
+  await assert.rejects(
+    coordinator.handle({...base,instructionText:"只读回答"}),
+    error=>error.message==="private_state_detail"&&
+      error.failurePhase==="conversation_state_failed"
+  );
+});

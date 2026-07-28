@@ -200,7 +200,10 @@ test("Writer publication failure never triggers a second assistant decision",asy
     id:"writer-1",instructionText:"保存这段内容"
   }));
   assert.equal(result.status,"failed");
+  assert.equal(result.reasonCode,"knowledge_writer_failed");
+  assert.equal("failureCode" in result,false);
   assert.equal(assistantCalls,1);
   assert.equal(writerCalls,1);
   assert.equal(saved.length,1);
+  assert.equal(saved[0].reasonCode,"knowledge_writer_failed");
 });

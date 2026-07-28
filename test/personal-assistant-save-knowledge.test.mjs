@@ -131,6 +131,7 @@ test("reports Writer failure without claiming success or retrying the Writer",as
   assert.deepEqual(result,{
     status:"failed",
     reply:"内容已理解，但本次保存失败；你不需要重新解释内容。",
-    artifacts:[]
+    artifacts:[],
+    failureCode:"knowledge_writer_failed"
   });
 });
