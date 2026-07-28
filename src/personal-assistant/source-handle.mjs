@@ -19,7 +19,7 @@ export function createSourceHandle(binding) {
       !boundedDisplayName(handle.displayName)||
       !expectedClass||
       handle.mediaClass!==expectedClass||
-      handle.relativePath!==`sources/${handle.sourceId}.${handle.format}`||
+      handle.relativePath!==`${handle.sourceId}.${handle.format}`||
       !Number.isSafeInteger(handle.byteSize)||
       handle.byteSize<1||
       handle.byteSize>MAX_SOURCE_BYTES||

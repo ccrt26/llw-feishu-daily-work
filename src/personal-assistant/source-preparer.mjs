@@ -1,137 +1,135 @@
 import {createHash} from "node:crypto";
-import {readFile} from "node:fs/promises";
-import {prepareKnowledgeText} from "../capabilities/knowledge-ingest/source-preparer.mjs";
-import {createSourceEvidence} from "./source-evidence.mjs";
+import {
+  chmod,copyFile,lstat,mkdir,mkdtemp,readFile,rm
+} from "node:fs/promises";
+import {join} from "node:path";
+import {createSourceHandle} from "./source-handle.mjs";
+import {inspectAssistantSource} from "./source-security-inspector.mjs";
 
-const OFFICE=new Set(["docx","pptx","xlsx"]);
-const PLAIN=new Set(["txt","md"]);
+const MAX_SOURCES=8;
+const MAX_FILE_BYTES=20*1024*1024;
+const MAX_TURN_BYTES=80*1024*1024;
 
 export function createAssistantSourcePreparer({
-  download,inspect,preparePdf,prepareOffice,prepareTextFile,
-  cleanup=async()=>{},maxSourceBytes=262_144,maxFileBytes=20*1024*1024
+  download,tempRoot,inspect=inspectAssistantSource,
+  cleanup=directory=>rm(directory,{recursive:true,force:true}),
+  maxSourcesPerTurn=MAX_SOURCES,
+  maxFileBytes=MAX_FILE_BYTES,
+  maxTurnSourceBytes=MAX_TURN_BYTES
 }) {
-  if (![download,inspect,preparePdf,prepareOffice,prepareTextFile,cleanup]
-      .every(value=>typeof value==="function")||
-      maxSourceBytes!==262_144||maxFileBytes!==20*1024*1024) {
+  if (typeof download!=="function"||typeof inspect!=="function"||
+      typeof cleanup!=="function"||typeof tempRoot!=="string"||!tempRoot||
+      !Number.isSafeInteger(maxSourcesPerTurn)||
+      maxSourcesPerTurn<1||maxSourcesPerTurn>MAX_SOURCES||
+      !Number.isSafeInteger(maxFileBytes)||
+      maxFileBytes<1||maxFileBytes>MAX_FILE_BYTES||
+      !Number.isSafeInteger(maxTurnSourceBytes)||
+      maxTurnSourceBytes<maxFileBytes||
+      maxTurnSourceBytes>MAX_TURN_BYTES) {
     throw new Error("assistant_source_preparer_invalid");
   }
-  return async message=>{
-    validateMessage(message);
-    if (message.attachments.length===0) {
-      const preparedSource={
-        ...prepareKnowledgeText({
-          text:message.instructionText,maxSourceBytes
-        }),
-        content:message.instructionText
-      };
-      return {
-        preparedSource,evidence:createSourceEvidence(preparedSource),
-        analysisInput:null,imageFiles:[],cleanup:async()=>{}
-      };
-    }
-    let downloaded;
+  return async function prepareTurnSources(message) {
+    validateMessage(message,maxSourcesPerTurn);
+    let workspaceDir=null;
     try {
-      const attachment=message.attachments[0];
-      downloaded=await download({message,attachment});
-      if (!downloaded||typeof downloaded.file!=="string"||
-          typeof downloaded.tempDir!=="string") {
+      await mkdir(tempRoot,{recursive:true,mode:0o700});
+      const rootInfo=await lstat(tempRoot);
+      if (!rootInfo.isDirectory()||rootInfo.isSymbolicLink()||
+          rootInfo.uid!==process.getuid()) {
         throw new Error("assistant_source_invalid");
       }
-      let preparedSource,analysisInput=null,imageFiles=[];
-      if (PLAIN.has(attachment.extension)) {
-        preparedSource=await prepareTextFile({
-          file:downloaded.file,displayName:attachment.displayName,
-          extension:attachment.extension,maxSourceBytes
-        });
-      } else if (OFFICE.has(attachment.extension)) {
-        preparedSource=await prepareOffice({
-          file:downloaded.file,displayName:attachment.displayName,
-          extension:attachment.extension,maxSourceBytes:maxFileBytes,
-          maxExtractedBytes:maxSourceBytes
-        });
-      } else {
-        const inspected=await inspect(downloaded.file);
-        if (inspected?.kind==="pdf"&&attachment.extension==="pdf") {
-          analysisInput=await preparePdf({file:downloaded.file});
-          imageFiles=[...analysisInput.pageImages];
-          preparedSource=await visualSource({
-            file:downloaded.file,attachment,format:"pdf",
-            jobSourceName:"source.pdf",
-            content:analysisInput.extractedText.trim()||
-              "PDF 全页已渲染，未提取到可用文本层。",
-            structure:analysisInput.pageImages.map((_,index)=>({
-              page:index+1
-            }))
+      await chmod(tempRoot,0o700);
+      workspaceDir=await mkdtemp(join(tempRoot,"llw-turn-"));
+      await chmod(workspaceDir,0o700);
+      const sources=[];
+      let totalBytes=0;
+      for (let index=0;index<message.attachments.length;index+=1) {
+        const attachment=message.attachments[index];
+        let downloaded=null;
+        try {
+          downloaded=await download({message,attachment});
+          if (!downloaded||typeof downloaded.file!=="string"||
+              typeof downloaded.tempDir!=="string") {
+            throw new Error("assistant_source_invalid");
+          }
+          const inspected=await inspect(downloaded.file,{
+            claimedExtension:attachment.extension,
+            maxFileBytes
           });
-        } else if (inspected?.kind==="supported_image"&&
-            attachment.type==="image") {
-          analysisInput={
-            originalFile:downloaded.file,
-            detectedFormat:inspected.format,
-            archiveExtension:inspected.extension,
-            pageImages:[downloaded.file],
-            extractedText:"",
-            documentFacts:{pageCount:1,textAvailable:false}
-          };
-          imageFiles=[downloaded.file];
-          preparedSource=await visualSource({
-            file:downloaded.file,attachment,format:"image",
-            jobSourceName:`source.${inspected.extension}`,
-            content:"图片已由受支持的视觉模型读取；本地无文字提取层。",
-            structure:[{page:1}]
+          totalBytes+=inspected.byteSize;
+          if (totalBytes>maxTurnSourceBytes) {
+            throw new Error("assistant_source_too_large");
+          }
+          const sourceId=`source-${String(index+1).padStart(3,"0")}`;
+          const relativePath=`${sourceId}.${inspected.archiveExtension}`;
+          const absolutePath=join(workspaceDir,relativePath);
+          await copyFile(downloaded.file,absolutePath);
+          await chmod(absolutePath,0o600);
+          await verifyPlacedSource(absolutePath,inspected);
+          const handle=createSourceHandle({
+            sourceId,
+            displayName:attachment.displayName,
+            mediaClass:inspected.mediaClass,
+            format:inspected.format,
+            relativePath,
+            byteSize:inspected.byteSize,
+            sha256:inspected.sha256,
+            availability:"ready"
           });
-        } else {
-          throw new Error("assistant_source_unsupported");
+          sources.push(Object.freeze({
+            handle,absolutePath,
+            archiveExtension:inspected.archiveExtension
+          }));
+        } finally {
+          if (downloaded?.tempDir) {
+            const directory=downloaded.tempDir;
+            downloaded=null;
+            await cleanup(directory).catch(()=>{});
+          }
         }
       }
-      const tempDir=downloaded.tempDir;
-      const result={
-        preparedSource,
-        evidence:createSourceEvidence(preparedSource),
-        analysisInput,
-        imageFiles,
-        cleanup:once(()=>cleanup(tempDir))
-      };
-      downloaded=null;
+      const completedWorkspaceDir=workspaceDir;
+      const result=Object.freeze({
+        workspaceDir:completedWorkspaceDir,
+        sources:Object.freeze(sources),
+        cleanup:once(()=>cleanup(completedWorkspaceDir))
+      });
+      workspaceDir=null;
       return result;
     } catch (error) {
-      if (downloaded?.tempDir) await cleanup(downloaded.tempDir).catch(()=>{});
-      if (error?.message?.startsWith("assistant_source_")) throw error;
+      if (workspaceDir) await cleanup(workspaceDir).catch(()=>{});
+      if (error?.message==="assistant_source_too_large") throw error;
       throw new Error("assistant_source_invalid");
     }
   };
 }
 
-async function visualSource({
-  file,attachment,format,jobSourceName,content,structure
-}) {
-  const sourceBytes=await readFile(file);
-  if (!sourceBytes.length||sourceBytes.length>20*1024*1024) {
+async function verifyPlacedSource(file,inspected) {
+  const info=await lstat(file);
+  if (!info.isFile()||info.isSymbolicLink()||
+      info.size!==inspected.byteSize||(info.mode&0o077)!==0) {
     throw new Error("assistant_source_invalid");
   }
-  return {
-    version:1,sourceKind:"file",detectedFormat:format,
-    displayName:attachment.displayName,sizeBytes:sourceBytes.length,
-    sha256:createHash("sha256").update(sourceBytes).digest("hex"),
-    jobSourceName,safeSourceReference:"",
-    extractionIntegrity:"complete",extractionLimitations:[],
-    content,structure,sourceBytes
-  };
+  const bytes=await readFile(file);
+  const sha256=createHash("sha256").update(bytes).digest("hex");
+  if (sha256!==inspected.sha256) throw new Error("assistant_source_invalid");
 }
 
-function validateMessage(message) {
+function validateMessage(message,maxSources) {
   if (!message||typeof message!=="object"||Array.isArray(message)||
       typeof message.instructionText!=="string"||
-      !Array.isArray(message.attachments)||message.attachments.length>1||
+      !Array.isArray(message.attachments)||
+      message.attachments.length>maxSources||
       (!message.instructionText.trim()&&!message.attachments.length)) {
     throw new Error("assistant_source_invalid");
   }
-  if (message.attachments.length===1) {
-    const value=message.attachments[0];
-    if (!value||typeof value!=="object"||Array.isArray(value)||
-        !new Set(["image","file"]).has(value.type)||
-        typeof value.displayName!=="string"||!value.displayName||
-        typeof value.extension!=="string") {
+  for (const attachment of message.attachments) {
+    if (!attachment||typeof attachment!=="object"||
+        Array.isArray(attachment)||
+        !new Set(["image","file"]).has(attachment.type)||
+        typeof attachment.displayName!=="string"||
+        !attachment.displayName||
+        typeof attachment.extension!=="string") {
       throw new Error("assistant_source_invalid");
     }
   }
