@@ -64,10 +64,13 @@ export async function startWechatListener({
       for (const raw of response.msgs) {
         const id=messageId(raw);
         if (!id||seen.has(id)) continue;
-        const message=toIncoming(raw,binding,state.resources);
-        if (!message) continue;
+        const intake=toIncoming(raw,binding,state.resources);
+        if (!intake.message) {
+          if (intake.code) await report(onError,intake.code,"wechat_intake");
+          continue;
+        }
         try {
-          await onMessage(message);
+          await onMessage(intake.message);
           remember(seen,id);
         } catch {
           failed=true;
@@ -95,16 +98,17 @@ export async function startWechatListener({
 }
 
 function toIncoming(raw,binding,resources) {
-  if (!raw||typeof raw!=="object"||Array.isArray(raw)||raw.message_type!==1||raw.message_state!==2) return null;
-  if (raw.group_id!==undefined&&raw.group_id!==null&&raw.group_id!=="") return null;
-  if (raw.from_user_id!==binding.userId||binding.conversationId!==binding.userId||!nonempty(raw.context_token)) return null;
-  if (!Number.isFinite(raw.create_time_ms)||raw.create_time_ms<=0||!Array.isArray(raw.item_list)||raw.item_list.length!==1) return null;
+  if (!raw||typeof raw!=="object"||Array.isArray(raw)||raw.message_type!==1||raw.message_state!==2) return {};
+  if (raw.group_id!==undefined&&raw.group_id!==null&&raw.group_id!=="") return {};
+  if (raw.from_user_id!==binding.userId||binding.conversationId!==binding.userId||!nonempty(raw.context_token)) return {};
+  if (!Number.isFinite(raw.create_time_ms)||raw.create_time_ms<=0||!Array.isArray(raw.item_list)||raw.item_list.length<1) return {};
+  if (raw.item_list.length>1) return {code:"wechat_item_batch_unsupported"};
   const id=messageId(raw);
-  if (!id) return null;
+  if (!id) return {};
   const item=raw.item_list[0];
-  if (!item||typeof item!=="object"||Array.isArray(item)) return null;
+  if (!item||typeof item!=="object"||Array.isArray(item)) return {};
   if (item.type===1&&nonempty(item.text_item?.text)) {
-    return createWechatIncomingMessage({
+    return {message:createWechatIncomingMessage({
       messageId:id,
       userId:raw.from_user_id,
       conversationId:binding.conversationId,
@@ -112,27 +116,29 @@ function toIncoming(raw,binding,resources) {
       type:"text",
       text:item.text_item.text,
       contextToken:raw.context_token
-    });
+    })};
   }
-  if (![2,4].includes(item.type)||!(resources instanceof Map)) return null;
+  if (![2,4].includes(item.type)||!(resources instanceof Map)) return {};
   const type=item.type===2?"image":"file";
   const detail=type==="image"?item.image_item:item.file_item;
   const media=detail?.media;
   const url=media?.full_url;
   const aesKey=detail?.aeskey||media?.aes_key;
-  if (!nonempty(url)||!nonempty(aesKey)) return null;
+  if (!nonempty(url)||!nonempty(aesKey)) {
+    return {code:"wechat_file_metadata_incomplete"};
+  }
   const rawName=type==="image"?"微信图片":detail?.file_name;
-  if (!nonempty(rawName)) return null;
+  if (!nonempty(rawName)) return {};
   const displayName=rawName.split(/[\\/]/).at(-1).slice(0,255);
   const extension=type==="image"?"":extname(displayName).slice(1).toLowerCase();
   if (!displayName||extension.length>20||
       type==="file"&&!new Set([
         "pdf","txt","md","docx","pptx","xlsx"
-      ]).has(extension)) return null;
+      ]).has(extension)) return {};
   const resourceId=`wxr_${randomUUID().replaceAll("-","")}`;
   while (resources.size>=MAX_RESOURCES) resources.delete(resources.keys().next().value);
   resources.set(resourceId,{url,aesKey,type,displayName,extension});
-  return createWechatIncomingMessage({
+  return {message:createWechatIncomingMessage({
     messageId:id,
     userId:raw.from_user_id,
     conversationId:binding.conversationId,
@@ -140,7 +146,7 @@ function toIncoming(raw,binding,resources) {
     type,
     attachment:{type,sourceAttachmentId:resourceId,displayName,extension},
     contextToken:raw.context_token
-  });
+  })};
 }
 
 function messageId(value) {
@@ -154,8 +160,8 @@ function remember(seen,id) {
   while (seen.size>MAX_SEEN) seen.delete(seen.values().next().value);
 }
 
-async function report(onError,code) {
-  try { await onError({stage:"wechat_poll",code}); } catch {}
+async function report(onError,code,stage="wechat_poll") {
+  try { await onError({stage,code}); } catch {}
 }
 
 function delay(milliseconds) {

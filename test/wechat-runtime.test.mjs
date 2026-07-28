@@ -82,7 +82,10 @@ test("delivers only one bound p2p finished user text and atomically advances its
     }
   }]);
   assert.deepEqual(channelState.writes,["cursor-2"]);
-  assert.deepEqual(errors,[{stage:"wechat_poll",code:"wechat_auth_expired"}]);
+  assert.deepEqual(errors,[
+    {stage:"wechat_intake",code:"wechat_item_batch_unsupported"},
+    {stage:"wechat_poll",code:"wechat_auth_expired"}
+  ]);
   assert.equal(JSON.stringify([received,errors]).includes("secret expired"),false);
 });
 
@@ -309,6 +312,50 @@ test("keeps one image, PDF or Office media reference only in the current in-memo
     assert.match(id,/^wxr_[a-f0-9]{32}$/);
     assert.equal(channelState.resources.get(id).url,mediaUrl);
   }
+});
+
+test("reports a safe reason when a bound WeChat file event cannot enter the assistant",async () => {
+  const channelState=state();
+  const received=[],errors=[];
+  const mediaUrl="https://media.weixin.qq.com/encrypted";
+  const aesKey="MDEyMzQ1Njc4OWFiY2RlZg==";
+  const marker="must-not-appear-in-diagnostics.docx";
+  const replies=[
+    {ret:0,get_updates_buf:"cursor-2",msgs:[
+      {
+        ...baseMessage,
+        message_id:3001,
+        item_list:[
+          {type:4,file_item:{file_name:marker,media:{full_url:mediaUrl,aes_key:aesKey}}},
+          {type:4,file_item:{file_name:"second.docx",media:{full_url:mediaUrl,aes_key:aesKey}}}
+        ]
+      },
+      {
+        ...baseMessage,
+        message_id:3002,
+        item_list:[{type:4,file_item:{file_name:marker,media:{}}}]
+      }
+    ]},
+    {ret:1,errcode:-14}
+  ];
+  const listener=await startWechatListener({
+    api:{getUpdates:async()=>replies.shift()},
+    state:channelState,
+    binding:{userId:owner,conversationId:owner},
+    onMessage:async message=>received.push(message),
+    onError:error=>errors.push(error),
+    retryDelayMs:0
+  });
+  await listener.done;
+
+  assert.deepEqual(received,[]);
+  assert.deepEqual(errors,[
+    {stage:"wechat_intake",code:"wechat_item_batch_unsupported"},
+    {stage:"wechat_intake",code:"wechat_file_metadata_incomplete"},
+    {stage:"wechat_poll",code:"wechat_auth_expired"}
+  ]);
+  assert.equal(JSON.stringify(errors).includes(marker),false);
+  assert.deepEqual(channelState.writes,["cursor-2"]);
 });
 
 test("stop ends only the WeChat loop without rejecting its done promise",async () => {
