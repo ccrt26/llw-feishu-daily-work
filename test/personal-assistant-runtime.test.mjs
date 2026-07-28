@@ -30,7 +30,8 @@ test("combines waiting_file only with the later attachment from the same entry",
     prepareSource:async value=>{
       prepared.push(value.instructionText);
       return {
-        preparedSource:{},evidence:null,imageFiles:[],
+        workspaceDir:"/private/tmp/llw-turn-runtime",
+        sources:[],
         cleanup:async()=>{}
       };
     },
@@ -122,7 +123,8 @@ test("persists a proposed long-term rule only after exact same-entry confirmatio
     prepareSource:async()=>{
       prepares+=1;
       return {
-        preparedSource:{},evidence:null,imageFiles:[],cleanup:async()=>{}
+        workspaceDir:"/private/tmp/llw-turn-runtime",
+        sources:[],cleanup:async()=>{}
       };
     },
     assistant:{async decide(context){

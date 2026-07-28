@@ -6,6 +6,7 @@ import {executeRecordDailyWork} from "./tools/record-daily-work.mjs";
 import {executeArchiveDiningInvoice} from "./tools/archive-dining-invoice.mjs";
 import {executeCreateDocument} from "./tools/create-document.mjs";
 import {createHash} from "node:crypto";
+import {isConversationCancellation} from "./conversation.mjs";
 
 export class PersonalAssistantCoordinator {
   constructor({
@@ -44,7 +45,7 @@ export class PersonalAssistantCoordinator {
     const active=await this.conversationStore?.get(
       message.source,message.receivedAt
     )??null;
-    if (isCancellation(message.instructionText)) {
+    if (isConversationCancellation(message.instructionText)) {
       await this.conversationStore?.clear(message.source);
       const outcome={
         status:"ignored",reply:null,artifacts:[],noReplyRequired:true,
@@ -61,7 +62,7 @@ export class PersonalAssistantCoordinator {
       });
     }
     const turnMessage=active?.waitingType==="waiting_file"&&
-      message.attachments.length===1&&!message.instructionText.trim()
+      message.attachments.length>=1&&!message.instructionText.trim()
       ?{...message,instructionText:active.instructionText}
       :message;
     const model=active?.model||
@@ -83,13 +84,13 @@ export class PersonalAssistantCoordinator {
       prepared=await this.prepareSource(turnMessage);
       assertContentSafe({
         instructionText:turnMessage.instructionText,
-        evidence:prepared?.evidence??null,
+        sources:(prepared?.sources||[]).map(source=>source.handle??source),
         conversation:active,
         limits:{maxContextBytes:512*1024}
       });
       const context=buildAgentTurnContext({
         message:turnMessage,
-        evidence:prepared?.evidence??null,
+        sources:prepared?.sources||[],
         conversation:active,
         personalRules:this.personalRulesStore
           ?await this.personalRulesStore.load()
@@ -98,8 +99,12 @@ export class PersonalAssistantCoordinator {
         toolDeclarations:getModelToolDeclarations(),
         dailyCandidates:await this.loadDailyCandidates()
       });
+      const imageFiles=(prepared?.sources||[])
+        .filter(source=>(source.handle??source).mediaClass==="image")
+        .map(source=>source.absolutePath);
       const decision=await this.assistant.decide(context,{
-        imageFiles:[...(prepared?.imageFiles||[])]
+        workspaceDir:prepared?.workspaceDir,
+        imageFiles
       });
       let result;
       if (decision.kind==="reply") {
@@ -229,11 +234,6 @@ export class PersonalAssistantCoordinator {
     await this.sendOutcome(key,outcome,message.replyTarget);
     return outcome;
   }
-}
-
-function isCancellation(value) {
-  return typeof value==="string"&&
-    /^(?:不用了[，,。\s]*)?(?:取消|算了|不用了)[。！!\s]*$/u.test(value.trim());
 }
 
 function isExactConfirmation(value) {

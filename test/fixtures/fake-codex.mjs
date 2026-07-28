@@ -21,6 +21,9 @@ if (process.env.FAKE_CODEX_MODE === "timeout") {
   await new Promise(()=>{});
 }
 if (process.env.FAKE_ARGS_FILE) await writeFile(process.env.FAKE_ARGS_FILE, JSON.stringify(args));
+if (process.env.FAKE_CWD_ONLY_FILE) {
+  await writeFile(process.env.FAKE_CWD_ONLY_FILE,process.cwd());
+}
 if (process.env.FAKE_CWD_FILE) {
   const skills=await readdir(join(process.cwd(),".agents","skills"));
   await writeFile(process.env.FAKE_CWD_FILE,JSON.stringify({cwd:process.cwd(),skills}));

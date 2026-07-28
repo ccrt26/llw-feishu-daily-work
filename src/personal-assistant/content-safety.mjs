@@ -8,7 +8,7 @@ const CARD_NUMBER_GROUP=/(?:\d[\s-]*)+/gu;
 const PATH_ACTION=/(?:保存到|写入|归档到|移动到|创建到)\s*(?:\/|~(?:\/|$)|[^\n]{0,160}(?:^|\/)\.\.(?:\/|$))/mu;
 
 export function assertContentSafe({
-  instructionText,evidence,conversation,limits
+  instructionText,sources=[],conversation,limits
 }) {
   try {
     if (typeof instructionText!=="string"||
@@ -16,7 +16,8 @@ export function assertContentSafe({
         limits.maxContextBytes<1024||limits.maxContextBytes>1024*1024) {
       reject();
     }
-    const context={instructionText,evidence,conversation};
+    if (!Array.isArray(sources)||sources.length>8) reject();
+    const context={instructionText,sources,conversation};
     if (Buffer.byteLength(JSON.stringify(context),"utf8")>limits.maxContextBytes||
         Buffer.byteLength(instructionText,"utf8")>32_768||
         PATH_ACTION.test(instructionText)) {

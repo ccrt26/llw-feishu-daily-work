@@ -18,7 +18,10 @@ export class PersonalAssistantClient {
         provider:model,
         raw:await provider(
           structuredClone(context),
-          {imageFiles:[...(options.imageFiles||[])]}
+          {
+            workspaceDir:options.workspaceDir,
+            imageFiles:[...(options.imageFiles||[])]
+          }
         )
       });
       if (decision.kind==="tool") {

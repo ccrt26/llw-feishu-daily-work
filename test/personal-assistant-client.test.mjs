@@ -24,10 +24,17 @@ test("calls exactly one selected provider and validates one tool",async() => {
     deepseek:async()=>{ throw new Error("unexpected_deepseek"); }
   });
   const decision=await client.decide({
-    model:"codex",instructionText:"保存",tools:[],sourceEvidence:null
-  },{imageFiles:["/private/tmp/page.png"]});
+    model:"codex",instructionText:"保存",tools:[],sources:[]
+  },{
+    workspaceDir:"/private/tmp/llw-turn-test",
+    imageFiles:["/private/tmp/llw-turn-test/page.png"]
+  });
   assert.equal(calls.length,1);
-  assert.deepEqual(calls[0].options.imageFiles,["/private/tmp/page.png"]);
+  assert.deepEqual(
+    calls[0].options.imageFiles,
+    ["/private/tmp/llw-turn-test/page.png"]
+  );
+  assert.equal(calls[0].options.workspaceDir,"/private/tmp/llw-turn-test");
   assert.equal(decision.kind,"tool");
   assert.equal(decision.toolCall.name,"save_knowledge");
 });

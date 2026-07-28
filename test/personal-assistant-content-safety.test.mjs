@@ -2,22 +2,17 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {assertContentSafe} from "../src/personal-assistant/content-safety.mjs";
 
-const evidence={
-  kind:"docx",
-  displayName:"资料.docx",
-  byteSize:4096,
-  sha256:"a".repeat(64),
-  text:"普通业务资料",
-  structure:[],
-  integrity:"partial",
-  limitations:["embedded_images_not_extracted"],
-  jobRef:"source.docx"
-};
+const sources=[{
+  sourceId:"source-001",displayName:"资料.docx",
+  mediaClass:"document",format:"docx",
+  relativePath:"source-001.docx",byteSize:4096,
+  sha256:"a".repeat(64),availability:"ready"
+}];
 
-test("accepts real Office evidence fields without comparing byte size to extracted text",() => {
+test("accepts safe source metadata without inspecting or requiring extracted text",() => {
   assert.doesNotThrow(()=>assertContentSafe({
     instructionText:"整理这份资料",
-    evidence,
+    sources,
     conversation:null,
     limits:{maxContextBytes:512*1024}
   }));
@@ -33,7 +28,7 @@ test("rejects credentials and payment secrets without echoing values",() => {
   ]) {
     assert.throws(
       ()=>assertContentSafe({
-        instructionText,evidence:null,conversation:null,
+        instructionText,sources:[],conversation:null,
         limits:{maxContextBytes:512*1024}
       }),
       error=>error.message==="content_safety_rejected"
@@ -47,7 +42,7 @@ test("accepts ordinary financial discussion and safe relative business labels",(
     "这张发票金额是 123.45 元",
     "保存到日常生活/学习资料"
   ]) assert.doesNotThrow(()=>assertContentSafe({
-    instructionText,evidence:null,conversation:null,
+    instructionText,sources:[],conversation:null,
     limits:{maxContextBytes:512*1024}
   }));
 });
@@ -59,7 +54,7 @@ test("rejects oversized context and explicit escaping paths",() => {
     "保存到 /Users/example/secret",
     "保存到 ~/secret"
   ]) assert.throws(()=>assertContentSafe({
-    instructionText,evidence:null,conversation:null,
+    instructionText,sources:[],conversation:null,
     limits:{maxContextBytes:32*1024}
   }),/content_safety_rejected/);
 });

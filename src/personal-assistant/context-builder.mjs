@@ -1,3 +1,5 @@
+import {projectSourceForModel} from "./source-handle.mjs";
+
 const PRIORITY=Object.freeze([
   "program_safety",
   "current_instruction",
@@ -7,11 +9,12 @@ const PRIORITY=Object.freeze([
 ]);
 
 export function buildAgentTurnContext({
-  message,evidence,conversation,personalRules,model,toolDeclarations,
+  message,sources,conversation,personalRules,model,toolDeclarations,
   dailyCandidates=[]
 }) {
   if (!message||typeof message.instructionText!=="string"||
       !canonicalIso(message.receivedAt)||
+      !Array.isArray(sources)||sources.length>8||
       !Array.isArray(personalRules)||personalRules.length>64||
       personalRules.some(rule=>typeof rule!=="string"||
         Buffer.byteLength(rule,"utf8")>1000)||
@@ -20,11 +23,21 @@ export function buildAgentTurnContext({
       !Array.isArray(dailyCandidates)||dailyCandidates.length>20) {
     throw new Error("agent_turn_context_invalid");
   }
+  let safeSources;
+  try {
+    safeSources=sources.map(projectSourceForModel);
+    if (new Set(safeSources.map(source=>source.sourceId)).size!==
+        safeSources.length) {
+      throw new Error("duplicate_source");
+    }
+  } catch {
+    throw new Error("agent_turn_context_invalid");
+  }
   return Object.freeze({
     instructionText:message.instructionText,
     entry:message.source,
     currentTime:message.receivedAt,
-    sourceEvidence:evidence===null?null:structuredClone(evidence),
+    sources:Object.freeze(safeSources.map(source=>Object.freeze(source))),
     conversation:conversation===null?null:structuredClone(conversation),
     confirmedPersonalRules:[...personalRules],
     model,

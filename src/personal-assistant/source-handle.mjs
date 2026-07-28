@@ -32,7 +32,7 @@ export function createSourceHandle(binding) {
 }
 
 export function projectSourceForModel(binding) {
-  return {...createSourceHandle(binding)};
+  return {...createSourceHandle(binding?.handle??binding)};
 }
 
 function boundedDisplayName(value) {
