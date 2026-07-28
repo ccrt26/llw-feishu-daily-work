@@ -4,11 +4,18 @@ import {
 } from "../core/security-gate.mjs";
 import {createFeishuIncomingMessage} from "../core/incoming-message.mjs";
 import {handleModelCommand} from "../core/model-command.mjs";
+import {isConversationCancellation} from "./conversation.mjs";
+import {SourceBurstCollector} from "./source-burst-collector.mjs";
 
 export class PersonalAssistantDispatcher {
   constructor({
     binding,bindings,state,coordinator,modelMode,deepseekEnabled,messenger,
-    onFailure=()=>{},coalesceWindowMs=0
+    onFailure=()=>{},coalesceWindowMs=0,
+    sourceBurstQuietMs=coalesceWindowMs,
+    sourceBurstMaxMs=sourceBurstQuietMs?15_000:0,
+    maxSourcesPerTurn=8,
+    now=Date.now,setTimer=globalThis.setTimeout,
+    clearTimer=globalThis.clearTimeout
   }) {
     this.binding=binding;
     this.bindings=bindings;
@@ -18,14 +25,21 @@ export class PersonalAssistantDispatcher {
     this.deepseekEnabled=deepseekEnabled;
     this.messenger=messenger;
     this.onFailure=typeof onFailure==="function"?onFailure:()=>{};
-    if (!Number.isSafeInteger(coalesceWindowMs)||
-        coalesceWindowMs<0||coalesceWindowMs>5_000) {
+    if (!Number.isSafeInteger(sourceBurstQuietMs)||
+        sourceBurstQuietMs<0||sourceBurstQuietMs>5_000||
+        (sourceBurstQuietMs===0&&sourceBurstMaxMs!==0)) {
       throw new Error("invalid_coalesce_window");
     }
-    this.coalesceWindowMs=coalesceWindowMs;
-    this.pendingBySource=new Map();
     this.acceptedTasks=new Set();
+    this.acceptedMessageKeys=new Set();
     this.queue=Promise.resolve();
+    this.sourceCollector=sourceBurstQuietMs
+      ?new SourceBurstCollector({
+        quietMs:sourceBurstQuietMs,maxMs:sourceBurstMaxMs,
+        maxSources:maxSourcesPerTurn,now,setTimer,clearTimer,
+        onReady:({message,aliases})=>this.scheduleAccepted(message,aliases)
+      })
+      :null;
   }
 
   handleRawEvent(raw) {
@@ -67,36 +81,73 @@ export class PersonalAssistantDispatcher {
     if (!message.instructionText.trim()&&!message.attachments.length) {
       return Promise.resolve({handled:false,reason:"empty_message"});
     }
-    if (this.state.hasOutcome(personalOutcomeKey(message))) {
+    const key=personalOutcomeKey(message);
+    if (this.state.hasOutcome(key)||this.acceptedMessageKeys.has(key)) {
       return Promise.resolve({handled:false,reason:"duplicate"});
     }
-    if (!this.coalesceWindowMs||!isSplitTurnPart(message)) {
+    if (!this.sourceCollector) {
       this.scheduleAccepted(message);
       return Promise.resolve({handled:true,status:"accepted"});
     }
-    const pending=this.pendingBySource.get(message.source);
-    if (!pending) {
-      this.holdAccepted(message);
+    if (isConversationCancellation(message.instructionText)) {
+      const cancelled=this.sourceCollector.cancel(message);
+      if (cancelled.messages.length) {
+        this.scheduleAliasOutcomes(cancelled.messages,"cancelled");
+      }
+      this.scheduleAccepted(message);
       return Promise.resolve({handled:true,status:"accepted"});
     }
-    if (canCoalesce(pending.message,message)) {
-      clearTimeout(pending.timer);
-      this.pendingBySource.delete(message.source);
-      const {combined,alias}=combineSplitTurn(pending.message,message);
-      this.scheduleAccepted(combined,alias);
-      return Promise.resolve({handled:true,status:"accepted"});
+    const collected=this.sourceCollector.accept(message);
+    if (collected.status==="rejected") {
+      this.scheduleRejectedSource(message);
+      return Promise.resolve({handled:true,status:"rejected"});
     }
-    this.flushAcceptedSlot(message.source,pending);
-    this.holdAccepted(message);
+    if (collected.reason==="duplicate") {
+      return Promise.resolve({handled:false,reason:"duplicate"});
+    }
     return Promise.resolve({handled:true,status:"accepted"});
   }
 
+  scheduleRejectedSource(message) {
+    const key=personalOutcomeKey(message);
+    const task=this.enqueue(()=>this.persistAndSendCommand(key,message,{
+      status:"rejected",
+      reply:"一次最多处理 8 个文件；超出的文件未加入本轮，请分开发送。",
+      reasonCode:"too_many_sources"
+    }));
+    this.trackTask(task,[key]);
+  }
+
+  scheduleAliasOutcomes(messages,reasonCode) {
+    const keys=messages.map(personalOutcomeKey);
+    const task=this.enqueue(async()=>{
+      for (let index=0;index<messages.length;index+=1) {
+        const key=keys[index];
+        if (this.state.hasOutcome(key)) continue;
+        await this.state.saveOutcome(key,{
+          capability:"personal-assistant",
+          status:"ignored",reply:null,artifacts:[],replyFiles:[],
+          noReplyRequired:true,reasonCode,
+          createdAt:new Date().toISOString()
+        });
+      }
+    });
+    this.trackTask(task,keys);
+  }
+
+  trackTask(task,keys=[]) {
+    for (const key of keys) this.acceptedMessageKeys.add(key);
+    this.acceptedTasks.add(task);
+    task.catch(()=>{
+      try { this.onFailure("personal_assistant_failed"); } catch {}
+    }).finally(()=>{
+      this.acceptedTasks.delete(task);
+      for (const key of keys) this.acceptedMessageKeys.delete(key);
+    });
+  }
+
   async flushAcceptedMessages() {
-    for (const [source,pending] of [...this.pendingBySource]) {
-      clearTimeout(pending.timer);
-      this.pendingBySource.delete(source);
-      this.scheduleAccepted(pending.message);
-    }
+    this.sourceCollector?.flushAll();
     while (this.acceptedTasks.size) {
       await Promise.allSettled([...this.acceptedTasks]);
     }
@@ -109,46 +160,30 @@ export class PersonalAssistantDispatcher {
     return next;
   }
 
-  holdAccepted(message) {
-    const pending={message,timer:null};
-    pending.timer=setTimeout(()=>{
-      if (this.pendingBySource.get(message.source)!==pending) return;
-      this.pendingBySource.delete(message.source);
-      this.scheduleAccepted(message);
-    },this.coalesceWindowMs);
-    pending.timer.unref?.();
-    this.pendingBySource.set(message.source,pending);
-  }
-
-  flushAcceptedSlot(source,pending) {
-    clearTimeout(pending.timer);
-    if (this.pendingBySource.get(source)===pending) {
-      this.pendingBySource.delete(source);
-    }
-    this.scheduleAccepted(pending.message);
-  }
-
-  scheduleAccepted(message,alias=null) {
+  scheduleAccepted(message,aliases=[]) {
+    const messages=[message,...aliases];
+    const keys=messages.map(personalOutcomeKey);
     const task=this.enqueue(async()=>{
       const result=await this.processIncomingMessage(message);
-      if (alias) await this.saveCoalescedAlias(alias);
+      if (aliases.length) {
+        await this.saveCoalescedAliases(aliases);
+      }
       return result;
     });
-    this.acceptedTasks.add(task);
-    task.catch(()=>{
-      try { this.onFailure("personal_assistant_failed"); } catch {}
-    }).finally(()=>this.acceptedTasks.delete(task));
+    this.trackTask(task,keys);
   }
 
-  async saveCoalescedAlias(message) {
-    const key=personalOutcomeKey(message);
-    if (this.state.hasOutcome(key)) return;
-    await this.state.saveOutcome(key,{
-      capability:"personal-assistant",
-      status:"ignored",reply:null,artifacts:[],replyFiles:[],
-      noReplyRequired:true,reasonCode:"coalesced_into_attachment",
-      createdAt:new Date().toISOString()
-    });
+  async saveCoalescedAliases(messages) {
+    for (const message of messages) {
+      const key=personalOutcomeKey(message);
+      if (this.state.hasOutcome(key)) continue;
+      await this.state.saveOutcome(key,{
+        capability:"personal-assistant",
+        status:"ignored",reply:null,artifacts:[],replyFiles:[],
+        noReplyRequired:true,reasonCode:"coalesced_into_turn",
+        createdAt:new Date().toISOString()
+      });
+    }
   }
 
   async processRawEvent(raw) {
@@ -248,40 +283,7 @@ function boundedFailureCode(error) {
 function validTurnShape(message) {
   return message&&typeof message==="object"&&!Array.isArray(message)&&
     typeof message.instructionText==="string"&&
-    Array.isArray(message.attachments)&&message.attachments.length<=1;
-}
-
-function isSplitTurnPart(message) {
-  return message.attachments.length===1&&!message.instructionText.trim()||
-    message.attachments.length===0&&!!message.instructionText.trim();
-}
-
-function canCoalesce(first,second) {
-  if (first.source!==second.source||
-      first.userId!==second.userId||
-      first.conversationId!==second.conversationId) return false;
-  const firstTime=Date.parse(first.receivedAt);
-  const secondTime=Date.parse(second.receivedAt);
-  if (!Number.isFinite(firstTime)||!Number.isFinite(secondTime)||
-      Math.abs(secondTime-firstTime)>10_000) return false;
-  return first.attachments.length+second.attachments.length===1&&
-    (!!first.instructionText.trim()!==!!second.instructionText.trim());
-}
-
-function combineSplitTurn(first,second) {
-  const attachment=first.attachments.length?first:second;
-  const instruction=first.attachments.length?second:first;
-  const latest=Date.parse(first.receivedAt)>Date.parse(second.receivedAt)
-    ?first:second;
-  return {
-    combined:{
-      ...attachment,
-      instructionText:instruction.instructionText,
-      receivedAt:latest.receivedAt,
-      replyTarget:structuredClone(latest.replyTarget)
-    },
-    alias:instruction
-  };
+    Array.isArray(message.attachments)&&message.attachments.length<=8;
 }
 
 export function personalOutcomeKey(message) {

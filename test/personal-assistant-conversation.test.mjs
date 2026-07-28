@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  applyConversationDecision,getActiveConversation,clearConversation
+  applyConversationDecision,getActiveConversation,clearConversation,
+  isConversationCancellation
 } from "../src/personal-assistant/conversation.mjs";
 
 const now="2026-07-28T00:00:00.000Z";
@@ -35,4 +36,6 @@ test("never consumes a pending file across channels and expires after 24 hours",
 test("explicit cancellation clears state without an AI decision",() => {
   const state={feishu:{waitingType:"waiting_answer"},wechat:null};
   assert.deepEqual(clearConversation(state,"feishu"),{feishu:null,wechat:null});
+  assert.equal(isConversationCancellation("不用了，取消"),true);
+  assert.equal(isConversationCancellation("取消昨天的记录"),false);
 });

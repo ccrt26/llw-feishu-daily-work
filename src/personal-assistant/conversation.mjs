@@ -81,6 +81,12 @@ export function clearConversation(state,source) {
   };
 }
 
+export function isConversationCancellation(value) {
+  return typeof value==="string"&&
+    /^(?:不用了[，,。\s]*)?(?:取消|算了|不用了)[。！!\s]*$/u
+      .test(value.trim());
+}
+
 function validateState(state) {
   if (!state||typeof state!=="object"||Array.isArray(state)||
       Object.keys(state).some(key=>!new Set(["feishu","wechat"]).has(key))) {

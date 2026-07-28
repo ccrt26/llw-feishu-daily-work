@@ -166,7 +166,7 @@ test("coalesces an attachment-first split turn into one assistant task and one r
   assert.equal(handled[0].replyTarget.sourceMessageId,"text-2");
   assert.equal(saved.length,1);
   assert.equal(saved[0].key,"feishu:text-2");
-  assert.equal(saved[0].outcome.reasonCode,"coalesced_into_attachment");
+  assert.equal(saved[0].outcome.reasonCode,"coalesced_into_turn");
   assert.equal(saved[0].outcome.noReplyRequired,true);
 });
 
@@ -230,8 +230,43 @@ test("coalesces a text-first split turn and does not cross entry boundaries",asy
   assert.equal(handled.length,2);
   const feishu=handled.find(message=>message.source==="feishu");
   const wechat=handled.find(message=>message.source==="wechat");
-  assert.equal(feishu.sourceMessageId,"file-2");
+  assert.equal(feishu.sourceMessageId,"text-1");
   assert.equal(feishu.instructionText,"整理后保存到日常生活");
-  assert.equal(wechat.sourceMessageId,"wx-file-2");
+  assert.equal(wechat.sourceMessageId,"wx-text-1");
   assert.equal(wechat.instructionText,"只概括，不保存");
+});
+
+test("cancels a held source burst without sending it to the assistant",async()=>{
+  const saved=[],handled=[];
+  const dispatcher=new PersonalAssistantDispatcher({
+    binding:{senderId:"owner",chatId:"private"},
+    bindings:{feishu:{userId:"owner",conversationId:"private"}},
+    state:{
+      hasOutcome:()=>false,
+      async saveOutcome(key,outcome){saved.push({key,outcome});}
+    },
+    coordinator:{
+      async handle(message){
+        handled.push(message.sourceMessageId);
+        return {status:"ignored"};
+      }
+    },
+    modelMode:{},deepseekEnabled:false,messenger:{async send(){}},
+    coalesceWindowMs:25
+  });
+  await dispatcher.acceptIncomingMessage(incoming({
+    sourceMessageId:"file-held",instructionText:"",
+    attachments:[{
+      type:"file",sourceAttachmentId:"file-held",
+      displayName:"材料.docx",extension:"docx"
+    }]
+  }));
+  await dispatcher.acceptIncomingMessage(incoming({
+    sourceMessageId:"cancel",instructionText:"不用了，取消"
+  }));
+  await dispatcher.flushAcceptedMessages();
+  assert.deepEqual(handled,["cancel"]);
+  assert.equal(saved.length,1);
+  assert.equal(saved[0].key,"feishu:file-held");
+  assert.equal(saved[0].outcome.reasonCode,"cancelled");
 });
