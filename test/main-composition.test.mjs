@@ -48,6 +48,17 @@ test("version 6 enters one personal-assistant composition before legacy routing"
   }]);
 });
 
+test("production model selection executes the real V6 wiring",async()=>{
+  const {createPersonalAssistantModelSelector}=await import("../src/main.mjs");
+  let reads=0;
+  const selectModel=createPersonalAssistantModelSelector({
+    modelMode:{async read(){reads+=1;return "codex";}},
+    deepseekEnabled:true
+  });
+  assert.equal(await selectModel(),"codex");
+  assert.equal(reads,1);
+});
+
 test("personal-assistant failures use the existing bounded analyze log",async()=>{
   const {createPersonalAssistantFailureLogger}=await import("../src/main.mjs");
   const lines=[];

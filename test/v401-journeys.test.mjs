@@ -31,6 +31,9 @@ import {
 } from "../src/personal-assistant/source-preparer.mjs";
 import {StateStore} from "../src/state-store.mjs";
 import {FileOutputWorkspace} from "../src/workspace/file-output-workspace.mjs";
+import {
+  createPersonalAssistantModelSelector
+} from "../src/main.mjs";
 
 const run=promisify(execFile);
 const KNOWLEDGE_SECTIONS={
@@ -66,8 +69,18 @@ test("Feishu text travels through real preparation, one assistant, tool, Writer,
     },
     deepseek:async()=>{ throw new Error("unexpected"); }
   });
-  const saved=[];
+  const saved=[],outcomes=new Map();
   const sent=[];
+  const state={
+    hasOutcome:key=>outcomes.has(key),
+    getOutcome:key=>outcomes.get(key)??null,
+    async saveOutcome(key,outcome){
+      outcomes.set(key,{...structuredClone(outcome),replied:false});
+    },
+    async markReplied(key){
+      outcomes.get(key).replied=true;
+    }
+  };
   const coordinator=new PersonalAssistantCoordinator({
     prepareSource:async message=>{
       order.push("prepare");
@@ -91,15 +104,34 @@ test("Feishu text travels through real preparation, one assistant, tool, Writer,
       }
     },
     outcomeStore:{
-      async get() { return null; },
-      async save(outcome) { order.push("outcome"); saved.push(outcome); }
+      get:key=>state.getOutcome(key),
+      async save(outcome,key) {
+        order.push("outcome");
+        saved.push(outcome);
+        await state.saveOutcome(key,outcome);
+      },
+      markReplied:key=>state.markReplied(key)
     },
     messenger:{
       async send(target,reply) { order.push("reply"); sent.push({target,reply}); }
     },
     personalRules:[],
+    selectModel:createPersonalAssistantModelSelector({
+      modelMode:{async read(){return "codex";}},
+      deepseekEnabled:true
+    }),
     model:"codex",
     skillVersion:"4.0.1"
+  });
+  const dispatcher=new PersonalAssistantDispatcher({
+    binding:{senderId:"owner",chatId:"private-chat"},
+    bindings:{
+      feishu:{userId:"owner",conversationId:"private-chat"}
+    },
+    state,coordinator,
+    modelMode:{async read(){return "codex";}},
+    deepseekEnabled:true,
+    messenger:{async send(){}}
   });
   const message=createFeishuIncomingMessage({
     messageId:"m-v401",senderId:"owner",chatId:"private-chat",
@@ -107,8 +139,10 @@ test("Feishu text travels through real preparation, one assistant, tool, Writer,
     content:"把交流目标、对象和后续动作保存到日常生活/学习资料",
     createTimeMs:1785196800000
   });
-  const outcome=await coordinator.handle(message);
+  const handled=await dispatcher.handleIncomingMessage(message);
+  const outcome=state.getOutcome("feishu:m-v401");
   assert.deepEqual(order,["prepare","assistant","writer","outcome","reply"]);
+  assert.deepEqual(handled,{handled:true,status:"committed"});
   assert.equal(assistantCalls,1);
   assert.equal(writerCalls,1);
   assert.equal(saved.length,1);

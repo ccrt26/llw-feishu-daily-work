@@ -39,6 +39,7 @@ import {createWechatMessenger} from "./adapters/wechat-reply.mjs";
 import {createChannelMessenger} from "./adapters/channel-messenger.mjs";
 import {Dispatcher} from "./core/dispatcher.mjs";
 import {ModelMode} from "./core/model-mode.mjs";
+import {effectiveModel} from "./core/model-command.mjs";
 import {safeLog} from "./core/redaction.mjs";
 import {createPreparedVisualRunner} from "./core/prepared-visual.mjs";
 import {loadPrivateSkillManifest} from "./core/private-skill-manifest.mjs";
@@ -266,9 +267,9 @@ async function runPersonalAssistantMain(config) {
     loadDailyCandidates:()=>dailyCatalog.list({limit:20}).catch(()=>[]),
     personalRules:[],
     personalRulesStore,
-    selectModel:async()=>effectiveModel(
-      await modelMode.read(),config.deepseekEnabled
-    ),
+    selectModel:createPersonalAssistantModelSelector({
+      modelMode,deepseekEnabled:config.deepseekEnabled
+    }),
     model:"codex",
     skillVersion:"4.0.1"
   });
@@ -842,6 +843,18 @@ export function createPersonalAssistantFailureLogger(
     throw new Error("personal_assistant_failure_logger_invalid");
   }
   return code=>write(`${safeLog({stage:"analyze",code})}\n`);
+}
+
+export function createPersonalAssistantModelSelector({
+  modelMode,deepseekEnabled
+}) {
+  if (typeof modelMode?.read!=="function"||
+      typeof deepseekEnabled!=="boolean") {
+    throw new Error("personal_assistant_model_selector_invalid");
+  }
+  return async()=>effectiveModel(
+    await modelMode.read(),deepseekEnabled
+  );
 }
 
 function bounded(value,maxBytes) {
