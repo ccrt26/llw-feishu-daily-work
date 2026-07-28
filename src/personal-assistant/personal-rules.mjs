@@ -131,7 +131,9 @@ async function requireOptionalPrivateFile(path) {
   try {
     const metadata=await lstat(path);
     if (!metadata.isFile()||metadata.isSymbolicLink()||
-        metadata.uid!==process.getuid()||(metadata.mode&0o777)!==0o600) {
+        metadata.uid!==process.getuid()||
+        (metadata.mode&0o600)!==0o600||
+        (metadata.mode&0o077)!==0) {
       invalid();
     }
     return metadata;

@@ -33,6 +33,11 @@ test("creates one human-readable private rule file and reloads it idempotently",
       await (await PersonalRulesStore.open(file)).load(),
       ["餐饮发票默认归档。"]
     );
+    await chmod(file,0o700);
+    assert.deepEqual(
+      await (await PersonalRulesStore.open(file)).load(),
+      ["餐饮发票默认归档。"]
+    );
   } finally {
     await rm(root,{recursive:true,force:true});
   }
