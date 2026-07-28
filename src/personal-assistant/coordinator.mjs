@@ -119,7 +119,8 @@ export class PersonalAssistantCoordinator {
       } else if (decision.toolCall.name==="save_knowledge") {
         result=await executeSaveKnowledge({
           toolCall:decision.toolCall,
-          preparedSource:prepared.preparedSource,
+          sourceBindings:prepared.sources,
+          instructionText:turnMessage.instructionText,
           writer:this.writer,
           skillVersion:this.skillVersion,
           ingestedAt:turnMessage.receivedAt

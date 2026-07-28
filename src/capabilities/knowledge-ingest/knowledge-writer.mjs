@@ -1,8 +1,8 @@
 import {createHash,randomUUID} from "node:crypto";
 import {
-  chmod,lstat,mkdir,mkdtemp,open,readFile,readdir,realpath,rename,rm
+  chmod,copyFile,lstat,mkdir,mkdtemp,open,readFile,readdir,realpath,rename,rm
 } from "node:fs/promises";
-import {isAbsolute,join,relative,resolve,sep} from "node:path";
+import {basename,dirname,isAbsolute,join,relative,resolve,sep} from "node:path";
 
 const TEXT_SOURCE_FIELDS=new Set([
   "version","sourceKind","detectedFormat","displayName","sizeBytes","sha256",
@@ -40,6 +40,9 @@ export class KnowledgeWriter {
   }
 
   async commit(input) {
+    if (Array.isArray(input?.sources)) {
+      return this.#commitSourceSet(input);
+    }
     let stage="",lock;
     try {
       validateCommitInput(input);
@@ -78,6 +81,71 @@ export class KnowledgeWriter {
       const verified=await verifyItem(target,{knowledgeId,expectedMarkdown:markdown,
         source:input.source,preserveSource});
       return resultFor("created",context,input.libraryKey,knowledgeId,target,verified.files);
+    } catch {
+      throw new Error("knowledge_write_rejected");
+    } finally {
+      if (stage) await rm(stage,{recursive:true,force:true}).catch(()=>{});
+      if (lock) await releaseLibraryLock(lock);
+    }
+  }
+
+  async #commitSourceSet(input) {
+    let stage="",lock;
+    try {
+      validateSourceSetCommitInput(input);
+      const context=await this.#openContext(input.libraryKey);
+      const sources=await verifySourceInputs(
+        input.sources,input.sourceSetDigest
+      );
+      const knowledgeId=knowledgeIdentifier(
+        input.libraryKey,input.sourceSetDigest
+      );
+      const category=await ensureSegments(
+        context.libraryReal,input.folderSegments
+      );
+      lock=await acquireLibraryLock(context.libraryReal);
+      const existing=await findExisting(context.libraryReal,knowledgeId);
+      if (existing) {
+        const verified=await verifySourceSetItem(existing.path,{
+          knowledgeId,sources
+        });
+        return resultFor(
+          "existing",context,input.libraryKey,knowledgeId,
+          existing.path,verified.files
+        );
+      }
+      const title=normalizeTitle(input.title);
+      const target=await chooseTarget(
+        category.path,title,input.sourceSetDigest,knowledgeId
+      );
+      stage=await mkdtemp(join(
+        category.path,`.llw-knowledge-stage-${randomUUID()}-`
+      ));
+      await chmod(stage,0o700);
+      const markdown=renderSourceSetMarkdown({...input,knowledgeId});
+      await writeSynced(join(stage,"knowledge.md"),markdown);
+      for (const source of sources) {
+        await verifyOneSourceInput(source);
+        const destination=join(stage,`${source.sourceId}.${source.format}`);
+        await copyFile(source.absolutePath,destination);
+        await chmod(destination,0o600);
+        await syncFile(destination);
+      }
+      await syncDirectory(stage);
+      await verifySourceSetItem(stage,{
+        knowledgeId,expectedMarkdown:markdown,sources
+      });
+      await assertMissing(target);
+      await rename(stage,target);
+      stage="";
+      await syncDirectory(category.path);
+      const verified=await verifySourceSetItem(target,{
+        knowledgeId,expectedMarkdown:markdown,sources
+      });
+      return resultFor(
+        "created",context,input.libraryKey,knowledgeId,
+        target,verified.files
+      );
     } catch {
       throw new Error("knowledge_write_rejected");
     } finally {
@@ -167,6 +235,119 @@ function validateCommitInput(input) {
   }
   validateKnowledgeSections(input.knowledgeSections);
   validateSegments(input.folderSegments,{allowRoot:true});
+}
+
+function validateSourceSetCommitInput(input) {
+  const fields=new Set([
+    "libraryKey","folderSegments","title","summary","tags",
+    "knowledgeSections","sources","sourceSetDigest","skillVersion",
+    "ingestedAt"
+  ]);
+  if (!input||typeof input!=="object"||Array.isArray(input)||
+      Object.getPrototypeOf(input)!==Object.prototype||
+      Object.keys(input).length!==fields.size||
+      Object.keys(input).some(field=>!fields.has(field))||
+      typeof input.libraryKey!=="string"||
+      !Array.isArray(input.folderSegments)||
+      typeof input.title!=="string"||!input.title.trim()||
+      [...input.title].length>160||input.title.includes("\0")||
+      typeof input.summary!=="string"||!input.summary.trim()||
+      [...input.summary].length>4000||input.summary.includes("\0")||
+      !Array.isArray(input.tags)||input.tags.length>20||
+      new Set(input.tags).size!==input.tags.length||
+      input.tags.some(tag=>typeof tag!=="string"||!tag||
+        [...tag].length>64||tag.includes("\0"))||
+      !Array.isArray(input.sources)||input.sources.length>8||
+      !/^[a-f0-9]{64}$/u.test(input.sourceSetDigest||"")||
+      !/^\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?$/iu.test(
+        input.skillVersion||""
+      )||
+      typeof input.ingestedAt!=="string"||
+      !Number.isFinite(Date.parse(input.ingestedAt))||
+      new Date(input.ingestedAt).toISOString()!==input.ingestedAt) {
+    throw new Error("invalid_commit");
+  }
+  validateKnowledgeSections(input.knowledgeSections);
+  validateSegments(input.folderSegments,{allowRoot:true});
+}
+
+async function verifySourceInputs(sources,sourceSetDigest) {
+  const verified=[],ids=new Set();
+  let workspaceReal=null,total=0;
+  for (const source of sources) {
+    validateSourceInputShape(source);
+    if (ids.has(source.sourceId)) throw new Error("duplicate_source");
+    ids.add(source.sourceId);
+    const current=await verifyOneSourceInput(source);
+    if (workspaceReal===null) workspaceReal=current.workspaceReal;
+    else if (workspaceReal!==current.workspaceReal) {
+      throw new Error("mixed_workspace");
+    }
+    total+=source.byteSize;
+    if (total>80*1024*1024) throw new Error("source_set_too_large");
+    verified.push({...source});
+  }
+  const expected=sources.length
+    ?createHash("sha256").update(
+      sources.map(source=>
+        `${source.sourceId}\0${source.sha256}`
+      ).join("\0")
+    ).digest("hex")
+    :sourceSetDigest;
+  if (expected!==sourceSetDigest) throw new Error("source_digest_invalid");
+  return verified;
+}
+
+function validateSourceInputShape(source) {
+  const fields=new Set([
+    "sourceId","displayName","format","absolutePath","byteSize","sha256"
+  ]);
+  if (!source||typeof source!=="object"||Array.isArray(source)||
+      Object.getPrototypeOf(source)!==Object.prototype||
+      Object.keys(source).length!==fields.size||
+      Object.keys(source).some(field=>!fields.has(field))||
+      !/^source-00[1-8]$/u.test(source.sourceId)||
+      typeof source.displayName!=="string"||!source.displayName||
+      [...source.displayName].length>255||
+      /[\\/\u0000-\u001f\u007f]/u.test(source.displayName)||
+      !new Set([
+        "txt","md","docx","pptx","xlsx","pdf",
+        "png","jpg","jpeg","webp"
+      ]).has(source.format)||
+      !isAbsolute(source.absolutePath)||
+      basename(source.absolutePath)!==
+        `${source.sourceId}.${source.format}`||
+      !Number.isSafeInteger(source.byteSize)||source.byteSize<1||
+      source.byteSize>20*1024*1024||
+      !/^[a-f0-9]{64}$/u.test(source.sha256)) {
+    throw new Error("invalid_source");
+  }
+}
+
+async function verifyOneSourceInput(source) {
+  validateSourceInputShape(source);
+  const info=await lstat(source.absolutePath);
+  if (!info.isFile()||info.isSymbolicLink()||
+      info.uid!==process.getuid()||info.size!==source.byteSize||
+      (info.mode&0o077)!==0) {
+    throw new Error("invalid_source");
+  }
+  const workspace=dirname(source.absolutePath);
+  const workspaceInfo=await lstat(workspace);
+  const workspaceReal=await realpath(workspace);
+  if (!workspaceInfo.isDirectory()||workspaceInfo.isSymbolicLink()||
+      workspaceInfo.uid!==process.getuid()||
+      (workspaceInfo.mode&0o077)!==0||
+      !/^llw-turn-[A-Za-z0-9_-]+$/u.test(basename(workspaceReal))||
+      dirname(await realpath(source.absolutePath))!==workspaceReal) {
+    throw new Error("invalid_workspace");
+  }
+  const bytes=await readFile(source.absolutePath);
+  if (bytes.length!==source.byteSize||
+      createHash("sha256").update(bytes).digest("hex")!==source.sha256) {
+    throw new Error("source_changed");
+  }
+  return {workspaceReal};
 }
 
 function validateKnowledgeSections(value) {
@@ -398,6 +579,75 @@ function renderKnowledgeMarkdown({
   ].join("\n");
 }
 
+function renderSourceSetMarkdown({
+  libraryKey,title,summary,tags,knowledgeSections,sources,sourceSetDigest,
+  skillVersion,ingestedAt,knowledgeId
+}) {
+  const tagLines=tags.length
+    ?tags.map(tag=>`  - ${JSON.stringify(tag)}`).join("\n")
+    :"  []";
+  const sourceLines=sources.length
+    ?sources.flatMap(source=>[
+      `  - source_id: ${JSON.stringify(source.sourceId)}`,
+      `    display_name: ${JSON.stringify(source.displayName)}`,
+      `    format: ${JSON.stringify(source.format)}`,
+      `    file: ${JSON.stringify(`${source.sourceId}.${source.format}`)}`,
+      `    sha256: ${JSON.stringify(source.sha256)}`,
+      `    size_bytes: ${source.byteSize}`
+    ])
+    :["  []"];
+  return [
+    "---",
+    'llw_schema: "knowledge-item/v2"',
+    `knowledge_id: ${JSON.stringify(knowledgeId)}`,
+    `library_key: ${JSON.stringify(libraryKey)}`,
+    `title: ${JSON.stringify(title.normalize("NFC").trim())}`,
+    "tags:",
+    tagLines,
+    `source_set_digest: ${JSON.stringify(sourceSetDigest)}`,
+    `source_ingested_at: ${JSON.stringify(ingestedAt)}`,
+    `skill_version: ${JSON.stringify(skillVersion)}`,
+    "sources:",
+    ...sourceLines,
+    "---",
+    "",
+    `# ${title.normalize("NFC").trim()}`,
+    "",
+    "## 摘要",
+    "",
+    summary.normalize("NFC").trim(),
+    "",
+    "## 关键事实",
+    "",
+    renderList(knowledgeSections.keyFacts),
+    "",
+    "## 结构与主要内容",
+    "",
+    knowledgeSections.structureAndMainContent,
+    "",
+    "## 可复用内容",
+    "",
+    renderList(knowledgeSections.reusableContent),
+    "",
+    "## 来源说明",
+    "",
+    knowledgeSections.sourceNotes,
+    "",
+    "## 结构化原文或内容索引",
+    "",
+    knowledgeSections.contentIndex,
+    "",
+    "## 原始来源索引",
+    "",
+    sources.length
+      ?sources.map(source=>
+        `- ${source.sourceId}: ${source.displayName}（${source.format}）`
+      ).join("\n")
+      :"- 本知识项来自本轮明确文字，没有附件原件。",
+    ""
+  ].join("\n");
+}
+
 function renderList(items) {
   if (!items.length) return "- （无）";
   return items.map(item=>`- ${item.replace(/\n/gu,"\n  ")}`).join("\n");
@@ -469,6 +719,54 @@ async function verifyItem(path,{knowledgeId,expectedMarkdown,source,preserveSour
   return {files:expected.sort()};
 }
 
+async function verifySourceSetItem(path,{
+  knowledgeId,expectedMarkdown,sources
+}) {
+  const directory=await lstat(path);
+  if (!directory.isDirectory()||directory.isSymbolicLink()||
+      directory.uid!==process.getuid()||(directory.mode&0o777)!==0o700) {
+    throw new Error("invalid_item");
+  }
+  const expected=[
+    "knowledge.md",
+    ...sources.map(source=>`${source.sourceId}.${source.format}`)
+  ].sort();
+  const logicalFiles=new Set(expected);
+  const appleDoubleFiles=new Set(expected.map(name=>`._${name}`));
+  const entries=(await readdir(path)).sort();
+  if (expected.some(name=>!entries.includes(name))||
+      entries.some(name=>
+        !logicalFiles.has(name)&&!appleDoubleFiles.has(name)
+      )) {
+    throw new Error("invalid_item_files");
+  }
+  for (const name of entries) {
+    const metadata=await lstat(join(path,name));
+    if (!metadata.isFile()||metadata.isSymbolicLink()||
+        metadata.uid!==process.getuid()||
+        !OWNER_ONLY_FILE_MODES.has(metadata.mode&0o777)) {
+      throw new Error("invalid_item_file");
+    }
+    if (appleDoubleFiles.has(name)) {
+      await verifyAppleDouble(join(path,name),metadata);
+    }
+  }
+  const markdown=await readFile(join(path,"knowledge.md"),"utf8");
+  if (!markdown.includes(`knowledge_id: "${knowledgeId}"`)||
+      (expectedMarkdown!==undefined&&markdown!==expectedMarkdown)) {
+    throw new Error("invalid_item_content");
+  }
+  for (const source of sources) {
+    const file=join(path,`${source.sourceId}.${source.format}`);
+    const bytes=await readFile(file);
+    if (bytes.length!==source.byteSize||
+        createHash("sha256").update(bytes).digest("hex")!==source.sha256) {
+      throw new Error("invalid_source_copy");
+    }
+  }
+  return {files:expected};
+}
+
 async function verifyAppleDouble(path,metadata) {
   if (metadata.size<4||metadata.size>64*1024) {
     throw new Error("invalid_appledouble");
@@ -489,6 +787,11 @@ async function writeSynced(path,content) {
     await handle.close();
   }
   await chmod(path,0o600);
+}
+
+async function syncFile(path) {
+  const handle=await open(path,"r+");
+  try { await handle.sync(); } finally { await handle.close(); }
 }
 
 async function syncDirectory(path) {

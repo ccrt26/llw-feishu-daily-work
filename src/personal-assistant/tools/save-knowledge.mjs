@@ -1,17 +1,42 @@
+import {createHash} from "node:crypto";
 import {validateToolCall} from "../tool-definitions.mjs";
+import {createSourceHandle} from "../source-handle.mjs";
 
 export async function executeSaveKnowledge({
-  toolCall,preparedSource,writer,skillVersion,ingestedAt
+  toolCall,sourceBindings,instructionText,writer,skillVersion,ingestedAt
 }) {
   const call=validateToolCall(toolCall);
   if (call.name!=="save_knowledge") throw new Error("tool_call_invalid");
-  if (!completeSource(preparedSource)) {
-    return {
-      status:"rejected",
-      reply:"这份文件有尚未完整读取的内容，本次没有保存。请改发完整 PDF，或处理文件中的复杂图片、图表、批注等内容后重试。",
-      artifacts:[]
-    };
+  const bindings=validateBindings(sourceBindings);
+  if (typeof instructionText!=="string"||typeof writer?.commit!=="function") {
+    throw new Error("tool_call_invalid");
   }
+  const selected=[];
+  for (const sourceId of call.arguments.sourceIds) {
+    const binding=bindings.get(sourceId);
+    if (!binding) {
+      return {
+        status:"rejected",
+        reply:"本次保存引用了不属于当前任务的文件，系统没有写入。请重新选择当前文件。",
+        artifacts:[]
+      };
+    }
+    selected.push({
+      sourceId,
+      displayName:binding.handle.displayName,
+      format:binding.handle.format,
+      absolutePath:binding.absolutePath,
+      byteSize:binding.handle.byteSize,
+      sha256:binding.handle.sha256
+    });
+  }
+  const sourceSetDigest=createHash("sha256")
+    .update(selected.length
+      ?selected.map(source=>
+        `${source.sourceId}\0${source.sha256}`
+      ).join("\0")
+      :`text\0${instructionText}`)
+    .digest("hex");
   const args=call.arguments;
   try {
     const result=await writer.commit({
@@ -21,7 +46,8 @@ export async function executeSaveKnowledge({
       summary:args.summary,
       tags:[...args.tags],
       knowledgeSections:structuredClone(args.knowledgeSections),
-      source:clonePreparedSource(preparedSource),
+      sources:selected,
+      sourceSetDigest,
       skillVersion,
       ingestedAt
     });
@@ -48,21 +74,21 @@ export async function executeSaveKnowledge({
   }
 }
 
-function completeSource(value) {
-  return value&&typeof value==="object"&&!Array.isArray(value)&&
-    value.extractionIntegrity==="complete"&&
-    Array.isArray(value.extractionLimitations)&&
-    value.extractionLimitations.length===0&&
-    typeof value.content==="string"&&value.content.trim()&&
-    /^[a-f0-9]{64}$/u.test(value.sha256);
-}
-
-function clonePreparedSource(value) {
-  const clone={...value};
-  if (Buffer.isBuffer(value.sourceBytes)) {
-    clone.sourceBytes=Buffer.from(value.sourceBytes);
+function validateBindings(sourceBindings) {
+  if (!Array.isArray(sourceBindings)||sourceBindings.length>8) {
+    throw new Error("tool_call_invalid");
   }
-  return clone;
+  const bindings=new Map();
+  for (const binding of sourceBindings) {
+    if (!binding||typeof binding!=="object"||
+        typeof binding.absolutePath!=="string"||!binding.absolutePath) {
+      throw new Error("tool_call_invalid");
+    }
+    const handle=createSourceHandle(binding.handle??binding);
+    if (bindings.has(handle.sourceId)) throw new Error("tool_call_invalid");
+    bindings.set(handle.sourceId,{...binding,handle});
+  }
+  return bindings;
 }
 
 function safeRelative(value) {

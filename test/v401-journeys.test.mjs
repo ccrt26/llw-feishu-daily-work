@@ -44,6 +44,7 @@ test("Feishu text travels through real preparation, one assistant, tool, Writer,
   const toolArguments={
     libraryKey:"personal-knowledge",folderSegments:["学习资料"],
     title:"交流准备",summary:"交流前的准备资料。",tags:["交流"],
+    sourceIds:[],
     knowledgeSections:{
       keyFacts:["先确认交流目标。"],
       structureAndMainContent:"资料说明目标、对象和后续动作。",
@@ -56,7 +57,7 @@ test("Feishu text travels through real preparation, one assistant, tool, Writer,
     codex:async context=>{
       assistantCalls+=1;
       order.push("assistant");
-      assert.equal(context.sourceEvidence.integrity,"complete");
+      assert.deepEqual(context.sources,[]);
       assert.equal(context.instructionText.includes("保存到日常生活"),true);
       return {type:"tool_call",toolName:"save_knowledge",arguments:toolArguments};
     },
@@ -67,20 +68,18 @@ test("Feishu text travels through real preparation, one assistant, tool, Writer,
   const coordinator=new PersonalAssistantCoordinator({
     prepareSource:async message=>{
       order.push("prepare");
-      const prepared={
-        ...prepareKnowledgeText({
-          text:message.instructionText,maxSourceBytes:262_144
-        }),
-        content:message.instructionText
+      return {
+        workspaceDir:"/private/tmp/llw-turn-text",
+        sources:[],cleanup:async()=>{}
       };
-      return {preparedSource:prepared,evidence:createSourceEvidence(prepared)};
     },
     assistant,
     writer:{
       async commit(input) {
         writerCalls+=1;
         order.push("writer");
-        assert.equal(input.source.extractionIntegrity,"complete");
+        assert.deepEqual(input.sources,[]);
+        assert.match(input.sourceSetDigest,/^[a-f0-9]{64}$/u);
         return {
           status:"created",knowledgeId:"k1",libraryKey:"personal-knowledge",
           relativePath:"日常生活/学习资料/交流准备",
@@ -164,6 +163,7 @@ test("WeChat waiting_file DOCX travels through real preparation, State, Writer, 
         arguments:{
           libraryKey:"personal-knowledge",folderSegments:["测试资料"],
           title:"交流方案",summary:"交流准备资料。",tags:["测试"],
+          sourceIds:["source-001"],
           knowledgeSections:KNOWLEDGE_SECTIONS
         }
       }
@@ -173,27 +173,19 @@ test("WeChat waiting_file DOCX travels through real preparation, State, Writer, 
         if (decisions.length===1) {
           assert.equal(context.instructionText,
             "把我接下来发的文件整理后保存到日常生活");
-          assert.equal(context.sourceEvidence.kind,"docx");
-          assert.equal(context.sourceEvidence.integrity,"complete");
-          assert.match(context.sourceEvidence.text,/交流方案正文/u);
-          assert.match(context.sourceEvidence.text,/第 1 页/u);
+          assert.deepEqual(
+            context.sources.map(source=>source.sourceId),
+            ["source-001"]
+          );
+          assert.equal("content" in context.sources[0],false);
         }
         return decisions.shift();
       },
       deepseek:async()=>{throw new Error("unexpected");}
     });
     const prepareSource=createAssistantSourcePreparer({
+      tempRoot:join(root,"intake"),
       download:async()=>({file:sourceFile,tempDir:root}),
-      inspect:async()=>{throw new Error("unexpected");},
-      preparePdf:async()=>{throw new Error("unexpected");},
-      prepareOffice:input=>prepareKnowledgeOfficeFile({
-        ...input,
-        processorPath:new URL(
-          "../src/capabilities/knowledge-ingest/ooxml_processor.py",
-          import.meta.url
-        )
-      }),
-      prepareTextFile:prepareKnowledgeFile,
       cleanup:async()=>{}
     });
     const coordinator=new PersonalAssistantCoordinator({
@@ -250,7 +242,7 @@ test("WeChat waiting_file DOCX travels through real preparation, State, Writer, 
     );
     assert.match(
       await readFile(join(vaultRoot,second.artifacts[0]),"utf8"),
-      /source_format: "docx"[\s\S]*交流方案正文/u
+      /llw_schema: "knowledge-item\/v2"[\s\S]*source-001\.docx/u
     );
     assert.ok(state.getOutcome("wechat:wx-file-2"));
   } finally {

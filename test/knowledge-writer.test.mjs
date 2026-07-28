@@ -357,3 +357,97 @@ test("preserves one complete prepared PDF source without weakening hashes",async
     );
   } finally { await rm(h.root,{recursive:true,force:true}); }
 });
+
+test("atomically preserves two AI-selected original sources in one knowledge item",async()=>{
+  const h=await harness();
+  const workspace=await mkdtemp(join(tmpdir(),"llw-turn-writer-"));
+  try {
+    const first=await original(workspace,"source-001","docx","DOCX original");
+    const second=await original(workspace,"source-002","pdf","%PDF-1.7 original");
+    const input=sourceSetInput([first,second]);
+    const created=await h.writer.commit(input);
+    const item=join(h.root,created.relativePath);
+    assert.equal(created.status,"created");
+    assert.deepEqual((await readdir(item)).sort(),[
+      "knowledge.md","source-001.docx","source-002.pdf"
+    ]);
+    assert.deepEqual(await readFile(join(item,"source-001.docx")),
+      await readFile(first.absolutePath));
+    assert.deepEqual(await readFile(join(item,"source-002.pdf")),
+      await readFile(second.absolutePath));
+    const markdown=await readFile(join(item,"knowledge.md"),"utf8");
+    assert.match(markdown,/llw_schema: "knowledge-item\/v2"/);
+    assert.match(markdown,/source-001\.docx/);
+    assert.match(markdown,/source-002\.pdf/);
+
+    const duplicate=await h.writer.commit({
+      ...input,title:"模型后来换了标题"
+    });
+    assert.equal(duplicate.status,"existing");
+    assert.equal(duplicate.relativePath,created.relativePath);
+
+    const third=await original(workspace,"source-003","pdf","different");
+    const different=await h.writer.commit(sourceSetInput([first,third]));
+    assert.equal(different.status,"created");
+    assert.notEqual(different.relativePath,created.relativePath);
+    assert.equal(await readFile(join(item,"source-001.docx"),"utf8"),
+      "DOCX original");
+  } finally {
+    await rm(workspace,{recursive:true,force:true});
+    await rm(h.root,{recursive:true,force:true});
+  }
+});
+
+test("rejects source paths outside the turn workspace, symlinks and changed hashes",async()=>{
+  const h=await harness();
+  const workspace=await mkdtemp(join(tmpdir(),"llw-turn-writer-"));
+  const outside=await mkdtemp(join(tmpdir(),"llw-outside-writer-"));
+  try {
+    const valid=await original(workspace,"source-001","docx","original");
+    const outsideSource=await original(
+      outside,"source-001","docx","outside"
+    );
+    const linked={...valid,absolutePath:join(workspace,"source-002.docx"),
+      sourceId:"source-002"};
+    await symlink(valid.absolutePath,linked.absolutePath);
+    for (const sources of [
+      [outsideSource],
+      [linked],
+      [{...valid,sha256:"f".repeat(64)}]
+    ]) {
+      await assert.rejects(
+        h.writer.commit(sourceSetInput(sources)),
+        /knowledge_write_rejected/
+      );
+    }
+    assert.deepEqual(await readdir(h.work),[]);
+  } finally {
+    await rm(workspace,{recursive:true,force:true});
+    await rm(outside,{recursive:true,force:true});
+    await rm(h.root,{recursive:true,force:true});
+  }
+});
+
+async function original(workspace,sourceId,format,content) {
+  const absolutePath=join(workspace,`${sourceId}.${format}`);
+  await writeFile(absolutePath,content,{mode:0o600});
+  const bytes=await readFile(absolutePath);
+  return {
+    sourceId,displayName:`材料.${format}`,format,absolutePath,
+    byteSize:bytes.length,
+    sha256:createHash("sha256").update(bytes).digest("hex")
+  };
+}
+
+function sourceSetInput(sources) {
+  const sourceSetDigest=createHash("sha256").update(
+    sources.map(source=>`${source.sourceId}\0${source.sha256}`).join("\0")
+  ).digest("hex");
+  return {
+    libraryKey:"work-knowledge",
+    folderSegments:["亚信工作","工作文档","交流方案"],
+    title:"多来源交流方案",summary:"用于测试多来源保存。",tags:["项目"],
+    knowledgeSections:SECTIONS,sources,sourceSetDigest,
+    skillVersion:"4.0.1",ingestedAt:"2026-07-28T00:00:00.000Z"
+  };
+}
