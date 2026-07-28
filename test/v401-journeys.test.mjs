@@ -26,6 +26,7 @@ import {createSourceEvidence} from "../src/personal-assistant/source-evidence.mj
 import {PersonalAssistantClient} from "../src/personal-assistant/client.mjs";
 import {PersonalAssistantCoordinator} from "../src/personal-assistant/coordinator.mjs";
 import {PersonalAssistantDispatcher} from "../src/personal-assistant/dispatcher.mjs";
+import {PersonalRulesStore} from "../src/personal-assistant/personal-rules.mjs";
 import {
   createAssistantSourcePreparer
 } from "../src/personal-assistant/source-preparer.mjs";
@@ -355,6 +356,13 @@ test("no-text Feishu dining invoice reaches the real archive Writer and one repl
       "# synthetic\n",{mode:0o600}
     );
     const state=await StateStore.open(join(root,"state.json"));
+    const privateRoot=join(root,".llw-private");
+    await mkdir(privateRoot,{mode:0o700});
+    const personalRulesStore=await PersonalRulesStore.open(
+      join(privateRoot,"personal-rules.json")
+    );
+    const approvedRule="清晰且符合归档规则的餐饮发票默认归档。";
+    await personalRulesStore.confirm(approvedRule);
     const extraction={
       invoice:{
         invoice_number:"SYNTHETIC-1",issue_date:"2026-07-28",
@@ -374,6 +382,7 @@ test("no-text Feishu dining invoice reaches the real archive Writer and one repl
       codex:async context=>{
         assert.equal(context.instructionText,"");
         assert.equal(context.sources[0].mediaClass,"image");
+        assert.deepEqual(context.confirmedPersonalRules,[approvedRule]);
         return {
           type:"tool_call",toolName:"archive_dining_invoice",
           arguments:{items:[{sourceId:"source-001",extraction}]}
@@ -396,7 +405,7 @@ test("no-text Feishu dining invoice reaches the real archive Writer and one repl
         markReplied:key=>state.markReplied(key)
       },
       messenger:{async send(value){sent.push(structuredClone(value));}},
-      personalRules:["清晰且符合归档规则的餐饮发票默认归档。"],
+      personalRules:[],personalRulesStore,
       model:"codex",skillVersion:"4.0.1"
     });
     const outcome=await coordinator.handle(createFeishuIncomingMessage({

@@ -75,6 +75,47 @@ test("accepts an attachment with empty instructionText",async()=>{
   assert.equal(calls,1);
 });
 
+test("rejects a declared audio or video file before AI and Writer with a specific reply",async()=>{
+  const saved=[],sent=[];
+  let coordinatorCalls=0;
+  const dispatcher=new PersonalAssistantDispatcher({
+    binding:{senderId:"owner",chatId:"private"},
+    bindings:{feishu:{userId:"owner",conversationId:"private"}},
+    state:{
+      hasOutcome:()=>false,
+      async saveOutcome(key,outcome){saved.push({key,outcome});},
+      async markReplied(key){saved.push({marked:key});}
+    },
+    coordinator:{async handle(){
+      coordinatorCalls+=1;
+      return {status:"committed"};
+    }},
+    modelMode:{},deepseekEnabled:false,
+    messenger:{async send(value){sent.push(value);}},
+    coalesceWindowMs:25
+  });
+  assert.deepEqual(
+    await dispatcher.acceptIncomingMessage(incoming({
+      sourceMessageId:"audio-1",instructionText:"",
+      attachments:[{
+        type:"file",sourceAttachmentId:"file_audio",
+        displayName:"LLW_V401_UNSUPPORTED_AUDIO.aiff",extension:"aiff"
+      }]
+    })),
+    {handled:true,status:"rejected"}
+  );
+  await dispatcher.flushAcceptedMessages();
+  assert.equal(coordinatorCalls,0);
+  assert.equal(saved[0].key,"feishu:audio-1");
+  assert.equal(saved[0].outcome.status,"rejected");
+  assert.equal(saved[0].outcome.reasonCode,"unsupported_media");
+  assert.match(saved[0].outcome.reply,/尚未支持音频或视频/u);
+  assert.match(saved[0].outcome.reply,/没有调用 AI 或 Writer/u);
+  assert.equal(saved[0].outcome.artifacts.length,0);
+  assert.equal(sent.length,1);
+  assert.deepEqual(saved[1],{marked:"feishu:audio-1"});
+});
+
 test("persists and reports only a bounded failure code before replying",async()=>{
   const saved=[],sent=[],failures=[];
   const dispatcher=new PersonalAssistantDispatcher({

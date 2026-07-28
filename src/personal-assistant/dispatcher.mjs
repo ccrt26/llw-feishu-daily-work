@@ -95,6 +95,10 @@ export class PersonalAssistantDispatcher {
     if (this.state.hasOutcome(key)||this.acceptedMessageKeys.has(key)) {
       return Promise.resolve({handled:false,reason:"duplicate"});
     }
+    if (hasUnsupportedMedia(message)) {
+      this.scheduleUnsupportedMedia(message);
+      return Promise.resolve({handled:true,status:"rejected"});
+    }
     if (!this.sourceCollector) {
       this.scheduleAccepted(message);
       return Promise.resolve({handled:true,status:"accepted"});
@@ -116,6 +120,14 @@ export class PersonalAssistantDispatcher {
       return Promise.resolve({handled:false,reason:"duplicate"});
     }
     return Promise.resolve({handled:true,status:"accepted"});
+  }
+
+  scheduleUnsupportedMedia(message) {
+    const key=personalOutcomeKey(message);
+    const task=this.enqueue(()=>this.persistAndSendCommand(
+      key,message,unsupportedMediaCommand()
+    ));
+    this.trackTask(task,[key]);
   }
 
   scheduleRejectedSource(message) {
@@ -223,6 +235,10 @@ export class PersonalAssistantDispatcher {
     const key=personalOutcomeKey(message);
     if (this.state.hasOutcome(key)) {
       return {handled:false,reason:"duplicate"};
+    }
+    if (hasUnsupportedMedia(message)) {
+      await this.persistAndSendCommand(key,message,unsupportedMediaCommand());
+      return {handled:true,status:"rejected"};
     }
     if (!message.attachments.length) {
       const command=await handleModelCommand(message.instructionText,{
@@ -346,6 +362,34 @@ function validTurnShape(message) {
   return message&&typeof message==="object"&&!Array.isArray(message)&&
     typeof message.instructionText==="string"&&
     Array.isArray(message.attachments)&&message.attachments.length<=8;
+}
+
+const UNSUPPORTED_MEDIA_EXTENSIONS=new Set([
+  "aac","aif","aiff","avi","flac","m4a","m4v","mkv",
+  "mov","mp3","mp4","ogg","opus","wav","webm"
+]);
+
+function hasUnsupportedMedia(message) {
+  return message.attachments.some(attachment=>{
+    if (attachment?.type!=="file") return false;
+    const declared=typeof attachment.extension==="string"
+      ?attachment.extension
+      :"";
+    const name=typeof attachment.displayName==="string"
+      ?attachment.displayName
+      :"";
+    const extension=(declared||name.split(".").pop()||"")
+      .trim().toLowerCase().replace(/^\./u,"");
+    return UNSUPPORTED_MEDIA_EXTENSIONS.has(extension);
+  });
+}
+
+function unsupportedMediaCommand() {
+  return {
+    status:"rejected",
+    reply:"当前版本尚未支持音频或视频文件，本次没有调用 AI 或 Writer，也没有写入。",
+    reasonCode:"unsupported_media"
+  };
 }
 
 export function personalOutcomeKey(message) {
