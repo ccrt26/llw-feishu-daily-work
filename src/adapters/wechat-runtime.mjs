@@ -1,4 +1,4 @@
-import {randomUUID} from "node:crypto";
+import {createHash,randomUUID} from "node:crypto";
 import {extname} from "node:path";
 import {createWechatIncomingMessage} from "../core/incoming-message.mjs";
 
@@ -16,7 +16,7 @@ export async function startWechatListener({
   }
   let stopped=false;
   let controller;
-  const seen=new Set();
+  const seen=new Map();
   const done=(async()=>{
     let cursor;
     try { cursor=await state.readCursor(); }
@@ -63,7 +63,19 @@ export async function startWechatListener({
       let failed=false;
       for (const raw of response.msgs) {
         const id=messageId(raw);
-        if (!id||seen.has(id)) continue;
+        if (!id) continue;
+        const fingerprint=messageFingerprint(raw);
+        const previous=seen.get(id);
+        if (previous!==undefined) {
+          if (previous!==fingerprint) {
+            await report(
+              onError,
+              "wechat_message_id_collision",
+              "wechat_intake"
+            );
+          }
+          continue;
+        }
         const intake=toIncoming(raw,binding,state.resources);
         if (!intake.message) {
           if (intake.code) await report(onError,intake.code,"wechat_intake");
@@ -71,7 +83,7 @@ export async function startWechatListener({
         }
         try {
           await onMessage(intake.message);
-          remember(seen,id);
+          remember(seen,id,fingerprint);
         } catch {
           failed=true;
           await report(onError,"wechat_message_failed");
@@ -155,9 +167,19 @@ function messageId(value) {
   return null;
 }
 
-function remember(seen,id) {
-  seen.add(id);
-  while (seen.size>MAX_SEEN) seen.delete(seen.values().next().value);
+function remember(seen,id,fingerprint) {
+  seen.set(id,fingerprint);
+  while (seen.size>MAX_SEEN) seen.delete(seen.keys().next().value);
+}
+
+function messageFingerprint(raw) {
+  return createHash("sha256")
+    .update(JSON.stringify({
+      messageType:raw.message_type,
+      messageState:raw.message_state,
+      itemList:raw.item_list
+    }))
+    .digest("hex");
 }
 
 async function report(onError,code,stage="wechat_poll") {

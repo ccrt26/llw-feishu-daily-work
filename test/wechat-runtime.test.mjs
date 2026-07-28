@@ -139,6 +139,58 @@ test("keeps adjacent large JSON message IDs distinct through reply idempotency a
   assert.deepEqual(errors,[{stage:"wechat_poll",code:"wechat_auth_expired"}]);
 });
 
+test("reports a safe collision when one WeChat batch reuses an id for different files",async () => {
+  const channelState=state();
+  const received=[],errors=[];
+  const mediaUrl="https://media.weixin.qq.com/encrypted";
+  const aesKey="MDEyMzQ1Njc4OWFiY2RlZg==";
+  const fileMessage=(name,url)=>({
+    ...baseMessage,
+    message_id:1501,
+    item_list:[{
+      type:4,
+      file_item:{
+        file_name:name,
+        media:{full_url:url,aes_key:aesKey}
+      }
+    }]
+  });
+  const replies=[
+    {
+      ret:0,
+      get_updates_buf:"cursor-2",
+      msgs:[
+        fileMessage("first.docx",mediaUrl),
+        fileMessage(
+          "second-must-not-appear.docx",
+          "https://media.weixin.qq.com/encrypted-2"
+        )
+      ]
+    },
+    {ret:1,errcode:-14}
+  ];
+  const listener=await startWechatListener({
+    api:{getUpdates:async()=>replies.shift()},
+    state:channelState,
+    binding:{userId:owner,conversationId:owner},
+    onMessage:async message=>received.push(message),
+    onError:error=>errors.push(error),
+    retryDelayMs:0
+  });
+  await listener.done;
+
+  assert.equal(received.length,1);
+  assert.deepEqual(errors,[
+    {stage:"wechat_intake",code:"wechat_message_id_collision"},
+    {stage:"wechat_poll",code:"wechat_auth_expired"}
+  ]);
+  assert.equal(
+    JSON.stringify(errors).includes("second-must-not-appear"),
+    false
+  );
+  assert.deepEqual(channelState.writes,["cursor-2"]);
+});
+
 test("keeps invalid decimal forms out of the Dispatcher without exposing IDs or text in errors",async () => {
   const marker="invalid-message-body-marker";
   const api=apiFromBodies([
