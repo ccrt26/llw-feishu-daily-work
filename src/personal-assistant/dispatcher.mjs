@@ -7,7 +7,8 @@ import {handleModelCommand} from "../core/model-command.mjs";
 
 export class PersonalAssistantDispatcher {
   constructor({
-    binding,bindings,state,coordinator,modelMode,deepseekEnabled,messenger
+    binding,bindings,state,coordinator,modelMode,deepseekEnabled,messenger,
+    onFailure=()=>{}
   }) {
     this.binding=binding;
     this.bindings=bindings;
@@ -16,6 +17,7 @@ export class PersonalAssistantDispatcher {
     this.modelMode=modelMode;
     this.deepseekEnabled=deepseekEnabled;
     this.messenger=messenger;
+    this.onFailure=typeof onFailure==="function"?onFailure:()=>{};
     this.queue=Promise.resolve();
   }
 
@@ -75,9 +77,12 @@ export class PersonalAssistantDispatcher {
       return {handled:true,status:outcome.status};
     } catch (error) {
       if (this.state.hasOutcome(key)) throw error;
+      const reasonCode=boundedFailureCode(error);
+      try { this.onFailure(reasonCode); } catch {}
       await this.persistAndSendCommand(key,message,{
         status:"failed",
-        reply:"本次处理失败，系统没有确认任何写入；请稍后重试。"
+        reply:"本次处理失败，系统没有确认任何写入；请稍后重试。",
+        reasonCode
       });
       return {handled:true,status:"failed"};
     }
@@ -89,7 +94,8 @@ export class PersonalAssistantDispatcher {
       status:draft.status,reply:draft.reply,artifacts:[],
       replyFiles:[],noReplyRequired:false,
       replyTarget:structuredClone(message.replyTarget),
-      createdAt:new Date().toISOString()
+      createdAt:new Date().toISOString(),
+      ...(draft.reasonCode?{reasonCode:draft.reasonCode}:{})
     };
     await this.state.saveOutcome(key,outcome);
     await this.messenger.send({
@@ -107,6 +113,20 @@ export class PersonalAssistantDispatcher {
       );
     }
   }
+}
+
+const SAFE_FAILURE_CODES=new Set([
+  "assistant_source_invalid","assistant_source_unsupported",
+  "content_safety_rejected","agent_turn_context_invalid",
+  "personal_rules_invalid","assistant_model_failed",
+  "assistant_model_unsupported","provider_result_invalid",
+  "tool_call_invalid"
+]);
+
+function boundedFailureCode(error) {
+  return SAFE_FAILURE_CODES.has(error?.message)
+    ?error.message
+    :"personal_assistant_failed";
 }
 
 export function personalOutcomeKey(message) {

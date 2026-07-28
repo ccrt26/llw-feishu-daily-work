@@ -291,7 +291,8 @@ async function runPersonalAssistantMain(config) {
   });
   const dispatcher=new PersonalAssistantDispatcher({
     binding,bindings,state,coordinator,modelMode,
-    deepseekEnabled:config.deepseekEnabled,messenger
+    deepseekEnabled:config.deepseekEnabled,messenger,
+    onFailure:createPersonalAssistantFailureLogger()
   });
   await scavengeInvoiceTempRoot(invoiceConfig.tempRoot);
   await scavengeInvoiceTempRoot(knowledgeConfig.tempRoot);
@@ -843,6 +844,15 @@ function validateWechatChannelState(value) {
 
 function reportWechatEntry(logger,code) {
   try { logger(code); } catch {}
+}
+
+export function createPersonalAssistantFailureLogger(
+  write=value=>process.stderr.write(value)
+) {
+  if (typeof write!=="function") {
+    throw new Error("personal_assistant_failure_logger_invalid");
+  }
+  return code=>write(`${safeLog({stage:"analyze",code})}\n`);
 }
 
 function bounded(value,maxBytes) {

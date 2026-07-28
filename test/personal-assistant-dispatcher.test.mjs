@@ -75,8 +75,8 @@ test("accepts an attachment with empty instructionText",async()=>{
   assert.equal(calls,1);
 });
 
-test("persists a bounded failure Outcome before replying when preparation or AI fails",async()=>{
-  const saved=[],sent=[];
+test("persists and reports only a bounded failure code before replying",async()=>{
+  const saved=[],sent=[],failures=[];
   const dispatcher=new PersonalAssistantDispatcher({
     binding:{senderId:"owner",chatId:"private"},
     bindings:{feishu:{userId:"owner",conversationId:"private"}},
@@ -87,14 +87,37 @@ test("persists a bounded failure Outcome before replying when preparation or AI 
     },
     coordinator:{async handle(){throw new Error("private_provider_detail");}},
     modelMode:{},deepseekEnabled:false,
-    messenger:{async send(value){sent.push(value);}}
+    messenger:{async send(value){sent.push(value);}},
+    onFailure:code=>failures.push(code)
   });
   const result=await dispatcher.handleIncomingMessage(incoming());
   assert.deepEqual(result,{handled:true,status:"failed"});
   assert.equal(saved[0].key,"feishu:m1");
   assert.equal(saved[0].outcome.status,"failed");
+  assert.equal(saved[0].outcome.reasonCode,"personal_assistant_failed");
   assert.equal(saved[0].outcome.reply.includes("private_provider_detail"),false);
+  assert.deepEqual(failures,["personal_assistant_failed"]);
   assert.equal(sent.length,1);
   assert.equal(sent[0].idempotencyKey,"reply:feishu:m1");
   assert.deepEqual(saved[1],{marked:"feishu:m1"});
+});
+
+test("keeps a controlled provider failure code in Outcome and diagnostics",async()=>{
+  const saved=[],failures=[];
+  const dispatcher=new PersonalAssistantDispatcher({
+    binding:{senderId:"owner",chatId:"private"},
+    bindings:{feishu:{userId:"owner",conversationId:"private"}},
+    state:{
+      hasOutcome:()=>false,
+      async saveOutcome(key,outcome){saved.push({key,outcome});},
+      async markReplied(){}
+    },
+    coordinator:{async handle(){throw new Error("assistant_model_failed");}},
+    modelMode:{},deepseekEnabled:false,
+    messenger:{async send(){}},
+    onFailure:code=>failures.push(code)
+  });
+  await dispatcher.handleIncomingMessage(incoming());
+  assert.equal(saved[0].outcome.reasonCode,"assistant_model_failed");
+  assert.deepEqual(failures,["assistant_model_failed"]);
 });

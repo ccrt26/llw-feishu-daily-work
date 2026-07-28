@@ -32,6 +32,23 @@ test("version 6 enters one personal-assistant composition before legacy routing"
   }]);
 });
 
+test("personal-assistant failures use the existing bounded analyze log",async()=>{
+  const {createPersonalAssistantFailureLogger}=await import("../src/main.mjs");
+  const lines=[];
+  const logger=createPersonalAssistantFailureLogger(
+    value=>lines.push(value)
+  );
+  logger("assistant_model_failed");
+  assert.equal(lines.length,1);
+  const parsed=JSON.parse(lines[0]);
+  assert.equal(parsed.stage,"analyze");
+  assert.equal(parsed.code,"assistant_model_failed");
+  assert.deepEqual(
+    Object.keys(parsed).sort(),
+    ["code","correlation","stage","time"].sort()
+  );
+});
+
 test("main validates one protected PDFium runtime before state and injects one shared bounded PDF preparer",async () => {
   const source=await readFile(fileURLToPath(new URL("../src/main.mjs",import.meta.url)),"utf8");
   assert.match(source,/import \{loadConfig\} from "\.\/config\.mjs"/);
