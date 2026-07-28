@@ -724,6 +724,100 @@ test("split same-turn Feishu two-PDF request is coalesced before preparation and
   }
 });
 
+test("Feishu cloud document travels through one snapshot, Source Intake, AI, Outcome and read-only Reply",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"llw-v401-feishu-cloud-"));
+  try {
+    const exportJob=join(root,"export-job");
+    await mkdir(exportJob,{mode:0o700});
+    const snapshot=await createDocx(
+      exportJob,"合成飞书云文档正文。","snapshot"
+    );
+    let exports=0,downloads=0,assistantCalls=0,writerCalls=0;
+    const outcomes=new Map(),sent=[];
+    const prepareSource=createAssistantSourcePreparer({
+      tempRoot:join(root,"intake"),
+      download:async()=>{
+        downloads+=1;
+        throw new Error("must_not_download_uploaded_file");
+      },
+      exportFeishuDocument:async({url})=>{
+        exports+=1;
+        assert.equal(
+          url,"https://example.feishu.cn/docx/synthetic_cloud_token"
+        );
+        return {
+          tempDir:exportJob,file:snapshot,extension:"docx",
+          displayName:"合成飞书云文档.docx",
+          safeSourceReference:`feishu:${"a".repeat(64)}`
+        };
+      }
+    });
+    const coordinator=new PersonalAssistantCoordinator({
+      prepareSource,
+      assistant:{async decide(context){
+        assistantCalls+=1;
+        assert.equal(
+          context.instructionText,
+          "请总结[飞书文档快照]，不保存"
+        );
+        assert.equal(
+          JSON.stringify(context).includes("synthetic_cloud_token"),
+          false
+        );
+        assert.deepEqual(
+          context.sources.map(source=>({
+            sourceId:source.sourceId,format:source.format
+          })),
+          [{sourceId:"source-001",format:"docx"}]
+        );
+        return {kind:"reply",text:"云文档只读摘要。"};
+      }},
+      writer:{async commit(){writerCalls+=1;}},
+      outcomeStore:{
+        async get(key){return outcomes.get(key)??null;},
+        async save(outcome,key){
+          outcomes.set(key,{...structuredClone(outcome),replied:false});
+        },
+        async markReplied(key){outcomes.get(key).replied=true;}
+      },
+      messenger:{async send(value){sent.push(structuredClone(value));}},
+      personalRules:[],model:"codex",skillVersion:"4.0.1"
+    });
+    const dispatcher=new PersonalAssistantDispatcher({
+      binding:{senderId:"owner",chatId:"private-chat"},
+      bindings:{feishu:{userId:"owner",conversationId:"private-chat"}},
+      state:{
+        hasOutcome:key=>outcomes.has(key),
+        getOutcome:key=>outcomes.get(key)??null
+      },
+      coordinator,modelMode:{},deepseekEnabled:false,
+      messenger:{async send(){}}
+    });
+    const result=await dispatcher.handleIncomingMessage(
+      createFeishuIncomingMessage({
+        messageId:"cloud-journey",senderId:"owner",
+        chatId:"private-chat",messageType:"text",
+        content:
+          "请总结https://example.feishu.cn/docx/synthetic_cloud_token，不保存",
+        createTimeMs:1785196800000
+      })
+    );
+    assert.deepEqual(result,{handled:true,status:"committed"});
+    assert.equal(exports,1);
+    assert.equal(downloads,0);
+    assert.equal(assistantCalls,1);
+    assert.equal(writerCalls,0);
+    assert.equal(sent.length,1);
+    assert.equal(outcomes.get("feishu:cloud-journey").replied,true);
+    assert.deepEqual(
+      outcomes.get("feishu:cloud-journey").artifacts,
+      []
+    );
+  } finally {
+    await rm(root,{recursive:true,force:true});
+  }
+});
+
 async function createDocx(root,text,name="source") {
   const packageRoot=join(root,`${name}-package`);
   const parts={

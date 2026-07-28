@@ -1,4 +1,7 @@
 import {rm} from "node:fs/promises";
+import {
+  extractFeishuDocumentRequests
+} from "../../core/feishu-document-link.mjs";
 import {validateKnowledgeDecision} from "./decision-validator.mjs";
 import {
   formatKnowledgeAttachmentNeedsRequest,formatKnowledgeCodexOnly,
@@ -108,7 +111,15 @@ export function createKnowledgeIngestCapability({
     name:"knowledge-ingest",
     async handle(message,{state,model="codex",knowledgePending=null}={}) {
       if (model!=="codex") return formatKnowledgeCodexOnly();
-      const documentRequest=feishuDocumentRequest(message);
+      const documentBundle=validDirectTextMessage(message)
+        ?extractFeishuDocumentRequests(message)
+        :null;
+      const documentRequest=documentBundle?.requests.length===1
+        ?{
+          ...documentBundle.requests[0],
+          safeInstructionText:documentBundle.safeInstructionText
+        }
+        :null;
       if (documentRequest) {
         let exported,stage="knowledge_source_prepare_failed";
         try {
@@ -129,7 +140,8 @@ export function createKnowledgeIngestCapability({
           stage="knowledge_library_catalog_failed";
           const libraries=await catalog();
           return await processPrepared({
-            request:documentRequest.safeRequest,source,content,sourceBytes,
+            request:documentRequest.safeInstructionText,
+            source,content,sourceBytes,
             libraries,state,startedAt:message.receivedAt,allowPending:false,
             channel:message.source,ingestedAt:message.receivedAt
           });
@@ -266,27 +278,4 @@ function validDirectTextMessage(message) {
     typeof message.receivedAt==="string"&&
     Number.isFinite(Date.parse(message.receivedAt))
   );
-}
-
-function feishuDocumentRequest(message) {
-  if (!validDirectTextMessage(message)) return null;
-  const urls=[...message.text.matchAll(/https:\/\/[^\s<>()]+/gu)]
-    .map(match=>match[0]);
-  if (urls.length!==1) return null;
-  try {
-    const url=new URL(urls[0]);
-    const host=url.hostname.toLowerCase();
-    if (!(host==="feishu.cn"||host.endsWith(".feishu.cn")||
-          host==="larksuite.com"||host.endsWith(".larksuite.com"))||
-        !/^\/(?:docx?|sheets|slides|wiki|base|bitable)\/[A-Za-z0-9_-]+\/?$/u
-          .test(url.pathname)) {
-      return null;
-    }
-    return {
-      url:urls[0],
-      safeRequest:message.text.replace(urls[0],"[飞书文档快照]").trim()
-    };
-  } catch {
-    return null;
-  }
 }

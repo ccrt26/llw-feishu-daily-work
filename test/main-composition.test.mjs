@@ -25,6 +25,8 @@ test("version 6 enters one personal-assistant composition before legacy routing"
     "const prepareTurnSources=createAssistantSourcePreparer({",
     "maxSourcesPerTurn:config.personalAssistant.maxSourcesPerTurn",
     "maxTurnSourceBytes:config.personalAssistant.maxTurnSourceBytes",
+    "const feishuDocumentExporter=createFeishuDocumentExporter({",
+    "exportFeishuDocument:feishuDocumentExporter.exportSnapshot",
     "workspaceDir",
     "sourceBurstQuietMs:config.personalAssistant.sourceBurstQuietMs",
     "sourceBurstMaxMs:config.personalAssistant.sourceBurstMaxMs",

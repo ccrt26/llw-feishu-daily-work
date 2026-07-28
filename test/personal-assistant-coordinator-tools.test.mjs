@@ -80,3 +80,43 @@ test("labels an unknown model-selection failure before source preparation",async
       error.failurePhase==="model_selection_failed"
   );
 });
+
+test("rejects a Feishu cloud-document source in DeepSeek mode before export or AI",async()=>{
+  let prepares=0,assistantCalls=0,saves=0,sends=0;
+  const coordinator=new PersonalAssistantCoordinator({
+    prepareSource:async()=>{
+      prepares+=1;
+      return {
+        instructionText:"总结[飞书文档快照]",
+        workspaceDir:"/private/tmp/must-not-prepare",
+        sources:[],cleanup:async()=>{}
+      };
+    },
+    assistant:{async decide(){
+      assistantCalls+=1;
+      return {kind:"reply",text:"must not decide"};
+    }},
+    writer:{},dailyWriter:{},invoiceWriter:{},
+    outcomeStore:{
+      async get(){return null;},
+      async save(){saves+=1;}
+    },
+    messenger:{async send(){sends+=1;}},
+    selectModel:async()=>"deepseek",
+    personalRules:[],model:"codex",skillVersion:"4.0.1"
+  });
+  const result=await coordinator.handle({
+    ...base,sourceMessageId:"cloud-deepseek",
+    instructionText:
+      "总结https://example.feishu.cn/docx/synthetic_token",
+    replyTarget:{
+      source:"feishu",sourceMessageId:"cloud-deepseek",conversationId:"c1"
+    }
+  });
+  assert.equal(result.status,"rejected");
+  assert.match(result.reply,/附件任务请先切换为 Codex/u);
+  assert.equal(prepares,0);
+  assert.equal(assistantCalls,0);
+  assert.equal(saves,1);
+  assert.equal(sends,1);
+});

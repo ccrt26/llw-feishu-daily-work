@@ -164,6 +164,11 @@ async function runPersonalAssistantMain(config) {
       config.personalAssistant.personalRulesFile
     )
     :null;
+  const feishuDocumentExporter=createFeishuDocumentExporter({
+    cliPath:config.cliPath,profile:config.profile,
+    tempRoot:knowledgeConfig.tempRoot,
+    timeoutMs:config.personalAssistant.aiTimeoutMs
+  });
   const state=await StateStore.open(config.stateFile);
   const modelMode=new ModelMode(config.modelStateFile);
   const binding={senderId:config.senderId,chatId:config.chatId};
@@ -208,6 +213,7 @@ async function runPersonalAssistantMain(config) {
   };
   const prepareTurnSources=createAssistantSourcePreparer({
     download,
+    exportFeishuDocument:feishuDocumentExporter.exportSnapshot,
     tempRoot:knowledgeConfig.tempRoot,
     cleanup:directory=>rm(directory,{recursive:true,force:true}),
     maxSourcesPerTurn:config.personalAssistant.maxSourcesPerTurn,

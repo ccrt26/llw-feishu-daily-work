@@ -7,6 +7,9 @@ import {executeArchiveDiningInvoice} from "./tools/archive-dining-invoice.mjs";
 import {executeCreateDocument} from "./tools/create-document.mjs";
 import {createHash} from "node:crypto";
 import {isConversationCancellation} from "./conversation.mjs";
+import {
+  extractFeishuDocumentRequests
+} from "../core/feishu-document-link.mjs";
 
 export class PersonalAssistantCoordinator {
   constructor({
@@ -76,7 +79,10 @@ export class PersonalAssistantCoordinator {
       preflightPhase="model_selection_failed";
       model=active?.model||
         (this.selectModel?await this.selectModel():this.model);
-      if (model==="deepseek"&&turnMessage.attachments.length) {
+      if (model==="deepseek"&&(
+        turnMessage.attachments.length||
+        extractFeishuDocumentRequests(turnMessage)
+      )) {
         preflightPhase="conversation_state_failed";
         await this.conversationStore?.clear(message.source);
         const outcome={
@@ -100,6 +106,11 @@ export class PersonalAssistantCoordinator {
     let prepared,failurePhase="source_preparation_failed";
     try {
       prepared=await this.prepareSource(turnMessage);
+      if (typeof prepared?.instructionText==="string") {
+        turnMessage={
+          ...turnMessage,instructionText:prepared.instructionText
+        };
+      }
       failurePhase="content_safety_rejected";
       assertContentSafe({
         instructionText:turnMessage.instructionText,
