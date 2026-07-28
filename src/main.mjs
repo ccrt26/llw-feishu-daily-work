@@ -181,13 +181,6 @@ async function runPersonalAssistantMain(config) {
       return wechatMessenger.send(message);
     }}
   });
-  const preparePdf=({file})=>prepareInvoicePdf({
-    file,pdfProcessorPath:invoiceConfig.pdfProcessorPath,
-    maxPages:invoiceConfig.maxPdfPages,
-    maxTextBytes:invoiceConfig.maxPdfTextBytes,
-    maxRenderBytes:invoiceConfig.maxPdfRenderBytes,
-    timeoutMs:invoiceConfig.pdfPrepareTimeoutMs
-  });
   const download=({message,attachment})=>{
     if (message.source==="feishu") {
       return downloadLarkResource({
@@ -212,27 +205,17 @@ async function runPersonalAssistantMain(config) {
     }
     throw new Error("download_failed");
   };
-  const prepareSource=createAssistantSourcePreparer({
+  const prepareTurnSources=createAssistantSourcePreparer({
     download,
-    inspect:file=>inspectInvoiceFile(file,{
-      maxBytes:invoiceConfig.maxFileBytes
-    }),
-    preparePdf,
-    prepareOffice:input=>prepareKnowledgeOfficeFile({
-      ...input,
-      processorPath:new URL(
-        "./capabilities/knowledge-ingest/ooxml_processor.py",import.meta.url
-      ),
-      timeoutMs:30_000
-    }),
-    prepareTextFile:prepareKnowledgeFile,
+    tempRoot:knowledgeConfig.tempRoot,
     cleanup:directory=>rm(directory,{recursive:true,force:true}),
-    maxSourceBytes:knowledgeConfig.maxSourceBytes,
-    maxFileBytes:invoiceConfig.maxFileBytes
+    maxSourcesPerTurn:config.personalAssistant.maxSourcesPerTurn,
+    maxFileBytes:config.personalAssistant.maxSourceFileBytes,
+    maxTurnSourceBytes:config.personalAssistant.maxTurnSourceBytes
   });
   const assistant=new PersonalAssistantClient({
-    codex:(context,{imageFiles})=>invokePersonalAssistantCodex({
-      codexPath:config.codexPath,workspaceRoot:config.vaultRoot,
+    codex:(context,{workspaceDir,imageFiles})=>invokePersonalAssistantCodex({
+      codexPath:config.codexPath,workspaceDir,
       skillRoot,context,imageFiles,
       timeoutMs:config.personalAssistant.aiTimeoutMs
     }),
@@ -263,7 +246,7 @@ async function runPersonalAssistantMain(config) {
     markReplied:key=>state.markReplied(key)
   };
   const coordinator=new PersonalAssistantCoordinator({
-    prepareSource,assistant,
+    prepareSource:prepareTurnSources,assistant,
     writer:new KnowledgeWriter({
       vaultRoot:config.vaultRoot,libraries:knowledgeConfig.libraries
     }),
@@ -293,7 +276,9 @@ async function runPersonalAssistantMain(config) {
     binding,bindings,state,coordinator,modelMode,
     deepseekEnabled:config.deepseekEnabled,messenger,
     onFailure:createPersonalAssistantFailureLogger(),
-    coalesceWindowMs:2_000
+    sourceBurstQuietMs:config.personalAssistant.sourceBurstQuietMs,
+    sourceBurstMaxMs:config.personalAssistant.sourceBurstMaxMs,
+    maxSourcesPerTurn:config.personalAssistant.maxSourcesPerTurn
   });
   await scavengeInvoiceTempRoot(invoiceConfig.tempRoot);
   await scavengeInvoiceTempRoot(knowledgeConfig.tempRoot);

@@ -9,6 +9,10 @@ import {inspectAssistantSource} from "./source-security-inspector.mjs";
 const MAX_SOURCES=8;
 const MAX_FILE_BYTES=20*1024*1024;
 const MAX_TURN_BYTES=80*1024*1024;
+const SUPPORTED_EXTENSIONS=new Set([
+  "","txt","md","docx","pptx","xlsx","pdf",
+  "png","jpg","jpeg","webp"
+]);
 
 export function createAssistantSourcePreparer({
   download,tempRoot,inspect=inspectAssistantSource,
@@ -45,20 +49,36 @@ export function createAssistantSourcePreparer({
       let totalBytes=0;
       for (let index=0;index<message.attachments.length;index+=1) {
         const attachment=message.attachments[index];
+        if (!SUPPORTED_EXTENSIONS.has(attachment.extension.toLowerCase())) {
+          throw new Error("assistant_model_unsupported");
+        }
         let downloaded=null;
         try {
-          downloaded=await download({message,attachment});
+          try {
+            downloaded=await download({message,attachment});
+          } catch {
+            throw new Error("source_receive_failed");
+          }
           if (!downloaded||typeof downloaded.file!=="string"||
               typeof downloaded.tempDir!=="string") {
-            throw new Error("assistant_source_invalid");
+            throw new Error("source_receive_failed");
           }
-          const inspected=await inspect(downloaded.file,{
-            claimedExtension:attachment.extension,
-            maxFileBytes
-          });
+          const downloadedInfo=await lstat(downloaded.file);
+          if (downloadedInfo.size>maxFileBytes) {
+            throw new Error("source_limit_exceeded");
+          }
+          let inspected;
+          try {
+            inspected=await inspect(downloaded.file,{
+              claimedExtension:attachment.extension,
+              maxFileBytes
+            });
+          } catch {
+            throw new Error("source_security_rejected");
+          }
           totalBytes+=inspected.byteSize;
           if (totalBytes>maxTurnSourceBytes) {
-            throw new Error("assistant_source_too_large");
+            throw new Error("source_limit_exceeded");
           }
           const sourceId=`source-${String(index+1).padStart(3,"0")}`;
           const relativePath=`${sourceId}.${inspected.archiveExtension}`;
@@ -98,7 +118,10 @@ export function createAssistantSourcePreparer({
       return result;
     } catch (error) {
       if (workspaceDir) await cleanup(workspaceDir).catch(()=>{});
-      if (error?.message==="assistant_source_too_large") throw error;
+      if (new Set([
+        "source_receive_failed","source_security_rejected",
+        "source_limit_exceeded","assistant_model_unsupported"
+      ]).has(error?.message)) throw error;
       throw new Error("assistant_source_invalid");
     }
   };

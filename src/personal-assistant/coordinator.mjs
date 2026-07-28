@@ -180,6 +180,11 @@ export class PersonalAssistantCoordinator {
       }
       const outcome={
         ...result,
+        ...(result.status==="partial"
+          ?{reasonCode:"writer_partial"}
+          :result.status==="failed"
+            ?{reasonCode:"tool_execution_failed"}
+            :{}),
         replyFiles:result.replyFile?[structuredClone(result.replyFile)]:[],
         noReplyRequired:result.reply===null,
         replyTarget:structuredClone(message.replyTarget)

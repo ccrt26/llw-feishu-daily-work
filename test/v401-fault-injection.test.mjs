@@ -64,19 +64,8 @@ test("unsafe tool arguments become one failure Outcome and duplicate delivery do
   };
   const coordinator=new PersonalAssistantCoordinator({
     prepareSource:async()=>({
-      preparedSource:{
-        version:1,sourceKind:"text",detectedFormat:"text",
-        displayName:"message.txt",sizeBytes:6,sha256:"a".repeat(64),
-        jobSourceName:"source.txt",safeSourceReference:"",
-        extractionIntegrity:"complete",extractionLimitations:[],
-        content:"安全内容"
-      },
-      evidence:{
-        kind:"text",displayName:"message.txt",byteSize:6,
-        sha256:"a".repeat(64),text:"安全内容",structure:[],
-        integrity:"complete",limitations:[],jobRef:"source.txt"
-      },
-      imageFiles:[],cleanup:async()=>{}
+      workspaceDir:"/private/tmp/llw-turn-fault",
+      sources:[],cleanup:async()=>{}
     }),
     assistant:new PersonalAssistantClient({
       codex:async()=>{
@@ -86,6 +75,7 @@ test("unsafe tool arguments become one failure Outcome and duplicate delivery do
           arguments:{
             libraryKey:"personal-knowledge",folderSegments:["安全"],
             title:"测试",summary:"安全摘要。",tags:[],
+            sourceIds:[],
             knowledgeSections:{
               keyFacts:["安全事实。"],
               structureAndMainContent:"安全内容。",
@@ -171,19 +161,8 @@ test("Writer publication failure never triggers a second assistant decision",asy
   const saved=[];
   const coordinator=new PersonalAssistantCoordinator({
     prepareSource:async()=>({
-      preparedSource:{
-        version:1,sourceKind:"text",detectedFormat:"text",
-        displayName:"message.txt",sizeBytes:6,sha256:"a".repeat(64),
-        jobSourceName:"source.txt",safeSourceReference:"",
-        extractionIntegrity:"complete",extractionLimitations:[],
-        content:"安全内容"
-      },
-      evidence:{
-        kind:"text",displayName:"message.txt",byteSize:6,
-        sha256:"a".repeat(64),text:"安全内容",structure:[],
-        integrity:"complete",limitations:[],jobRef:"source.txt"
-      },
-      imageFiles:[],cleanup:async()=>{}
+      workspaceDir:"/private/tmp/llw-turn-fault",
+      sources:[],cleanup:async()=>{}
     }),
     assistant:new PersonalAssistantClient({
       codex:async()=>{
@@ -193,6 +172,7 @@ test("Writer publication failure never triggers a second assistant decision",asy
           arguments:{
             libraryKey:"personal-knowledge",folderSegments:["安全"],
             title:"测试",summary:"安全摘要。",tags:[],
+            sourceIds:[],
             knowledgeSections:{
               keyFacts:["安全事实。"],
               structureAndMainContent:"安全内容。",

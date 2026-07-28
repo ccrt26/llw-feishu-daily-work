@@ -94,9 +94,9 @@ test("persists and reports only a bounded failure code before replying",async()=
   assert.deepEqual(result,{handled:true,status:"failed"});
   assert.equal(saved[0].key,"feishu:m1");
   assert.equal(saved[0].outcome.status,"failed");
-  assert.equal(saved[0].outcome.reasonCode,"personal_assistant_failed");
+  assert.equal(saved[0].outcome.reasonCode,"tool_execution_failed");
   assert.equal(saved[0].outcome.reply.includes("private_provider_detail"),false);
-  assert.deepEqual(failures,["personal_assistant_failed"]);
+  assert.deepEqual(failures,["tool_execution_failed"]);
   assert.equal(sent.length,1);
   assert.equal(sent[0].idempotencyKey,"reply:feishu:m1");
   assert.deepEqual(saved[1],{marked:"feishu:m1"});

@@ -232,7 +232,7 @@ export class PersonalAssistantDispatcher {
       try { this.onFailure(reasonCode); } catch {}
       await this.persistAndSendCommand(key,message,{
         status:"failed",
-        reply:"本次处理失败，系统没有确认任何写入；请稍后重试。",
+        reply:failureReply(reasonCode),
         reasonCode
       });
       return {handled:true,status:"failed"};
@@ -267,17 +267,54 @@ export class PersonalAssistantDispatcher {
 }
 
 const SAFE_FAILURE_CODES=new Set([
-  "assistant_source_invalid","assistant_source_unsupported",
+  "source_receive_failed","source_security_rejected",
+  "source_limit_exceeded",
   "content_safety_rejected","agent_turn_context_invalid",
   "personal_rules_invalid","assistant_model_failed",
   "assistant_model_unsupported","provider_result_invalid",
-  "tool_call_invalid"
+  "tool_call_invalid","tool_execution_failed","writer_partial",
+  "reply_delivery_failed"
 ]);
 
 function boundedFailureCode(error) {
-  return SAFE_FAILURE_CODES.has(error?.message)
-    ?error.message
-    :"personal_assistant_failed";
+  if (SAFE_FAILURE_CODES.has(error?.message)) return error.message;
+  if (error?.message==="assistant_source_invalid") {
+    return "source_security_rejected";
+  }
+  if (error?.message==="assistant_source_too_large") {
+    return "source_limit_exceeded";
+  }
+  return "tool_execution_failed";
+}
+
+function failureReply(code) {
+  return new Map([
+    [
+      "source_receive_failed",
+      "文件未能安全接收，本次没有调用 AI，也没有写入。请重新发送该文件。"
+    ],
+    [
+      "source_security_rejected",
+      "文件未通过安全检查，本次没有调用 AI，也没有写入。请确认文件未加密、未损坏且格式正确。"
+    ],
+    [
+      "source_limit_exceeded",
+      "文件数量或大小超过本轮上限，本次没有调用 AI，也没有写入。请分开发送。"
+    ],
+    [
+      "assistant_model_unsupported",
+      "当前尚未支持这种文件格式，本次没有调用 Writer，也没有写入。"
+    ],
+    [
+      "assistant_model_failed",
+      "AI 本次未能完成分析，系统没有确认任何写入；请稍后重试。"
+    ],
+    [
+      "tool_call_invalid",
+      "AI 返回的操作请求未通过安全校验，系统没有写入；请重试。"
+    ]
+  ]).get(code)||
+    "本次工具执行失败，系统没有确认新的写入；请稍后重试。";
 }
 
 function validTurnShape(message) {

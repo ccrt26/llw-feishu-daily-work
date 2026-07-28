@@ -94,7 +94,7 @@ test("enforces per-file and whole-turn byte limits",async()=>{
     await assert.rejects(()=>prepare({
       source:"wechat",sourceMessageId:"m3",instructionText:"处理",
       attachments:[attachment(1),attachment(2)]
-    }),/assistant_source_too_large/);
+    }),/source_limit_exceeded/);
   } finally {
     await rm(tempRoot,{recursive:true,force:true});
     await rm(downloadRoot,{recursive:true,force:true});
@@ -110,8 +110,8 @@ test("cleans each downloader directory and the workspace once after partial fail
     tempRoot,
     download:async()=>{
       calls+=1;
-      if (calls===2) throw new Error("download_failed");
-      const tempDir=join(downloadRoot,"job-1");
+      if (calls===3) throw new Error("download_failed");
+      const tempDir=join(downloadRoot,`job-${calls}`);
       await mkdir(tempDir,{mode:0o700});
       const file=join(tempDir,"attachment.txt");
       await writeFile(file,"safe",{mode:0o600});
@@ -125,9 +125,10 @@ test("cleans each downloader directory and the workspace once after partial fail
   try {
     await assert.rejects(()=>prepare({
       source:"feishu",sourceMessageId:"m4",instructionText:"处理",
-      attachments:[attachment(1),attachment(2)]
-    }),/assistant_source_invalid/);
+      attachments:[attachment(1),attachment(2),attachment(3)]
+    }),/source_receive_failed/);
     assert.equal(cleanupCalls.get(join(downloadRoot,"job-1")),1);
+    assert.equal(cleanupCalls.get(join(downloadRoot,"job-2")),1);
     assert.equal(
       [...cleanupCalls.entries()].filter(([path])=>path.startsWith(tempRoot))
         .reduce((sum,[,count])=>sum+count,0),

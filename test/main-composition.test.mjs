@@ -21,6 +21,22 @@ test("version 6 enters one personal-assistant composition before legacy routing"
     /config\.personalAssistant\.personalRulesFile\s*\?\s*await PersonalRulesStore\.open/
   );
   assert.match(source,/personalRulesStore,\s*\n\s*selectModel:/);
+  for (const expected of [
+    "const prepareTurnSources=createAssistantSourcePreparer({",
+    "maxSourcesPerTurn:config.personalAssistant.maxSourcesPerTurn",
+    "maxTurnSourceBytes:config.personalAssistant.maxTurnSourceBytes",
+    "workspaceDir",
+    "sourceBurstQuietMs:config.personalAssistant.sourceBurstQuietMs",
+    "sourceBurstMaxMs:config.personalAssistant.sourceBurstMaxMs"
+  ]) assert.equal(source.includes(expected),true);
+  const v6Start=source.indexOf("async function runPersonalAssistantMain");
+  const v6=source.slice(
+    v6Start,source.indexOf("\nlet assistantSkillRoot=null;",v6Start)
+  );
+  assert.equal(v6.includes("prepareKnowledgeOfficeFile"),false);
+  assert.equal(v6.includes("createSourceEvidence"),false);
+  assert.equal(v6.includes("knowledge_source_incomplete"),false);
+  assert.equal(v6.includes("workspaceRoot:config.vaultRoot"),false);
   const {V6_PRIVATE_SKILL_ALLOWLIST}=await import("../src/main.mjs");
   assert.deepEqual(V6_PRIVATE_SKILL_ALLOWLIST,[{
     name:"llw-personal-assistant",
