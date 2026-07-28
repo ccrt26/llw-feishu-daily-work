@@ -31,38 +31,22 @@ export async function runV401ModelSmoke({
   };
   const codexContext={
     ...common,model:"codex",entry:"feishu",
-    instructionText:"请用一句话概括这段测试材料，不保存。",
-    sourceEvidence:{
-      kind:"text",displayName:"message.txt",byteSize:24,
-      sha256:"a".repeat(64),text:"测试材料说明需要先确认交流目标。",
-      structure:[],integrity:"complete",limitations:[],
-      jobRef:"source.txt"
-    }
+    instructionText:"请用一句话概括：测试材料说明需要先确认交流目标。不保存。",
+    sources:[]
   };
   const deepseekContext={
     ...common,model:"deepseek",entry:"feishu",
     instructionText:"今天完成了方案评审。",
-    sourceEvidence:{
-      kind:"text",displayName:"message.txt",byteSize:33,
-      sha256:"b".repeat(64),text:"今天完成了方案评审。",
-      structure:[],integrity:"complete",limitations:[],
-      jobRef:"source.txt"
-    }
+    sources:[]
   };
   const codexRuleContext={
     ...common,model:"codex",entry:"feishu",
     instructionText:"以后清晰且符合归档规则的餐饮发票都默认归档。",
-    sourceEvidence:{
-      kind:"text",displayName:"message.txt",byteSize:72,
-      sha256:"c".repeat(64),
-      text:"以后清晰且符合归档规则的餐饮发票都默认归档。",
-      structure:[],integrity:"complete",limitations:[],
-      jobRef:"source.txt"
-    }
+    sources:[]
   };
   const client=new PersonalAssistantClient({
-    codex:context=>codexInvoke({
-      codexPath:config.codexPath,workspaceRoot:config.vaultRoot,
+    codex:(context,{workspaceDir})=>codexInvoke({
+      codexPath:config.codexPath,workspaceDir,
       skillRoot:root,context,imageFiles:[],timeoutMs:120_000
     }),
     deepseek:context=>deepseekInvoke({
@@ -72,8 +56,8 @@ export async function runV401ModelSmoke({
       skillRoot:root,context,imageFiles:[]
     })
   });
-  const codex=await client.decide(codexContext);
-  const codexRule=await client.decide(codexRuleContext);
+  const codex=await client.decide(codexContext,{workspaceDir:root});
+  const codexRule=await client.decide(codexRuleContext,{workspaceDir:root});
   const deepseek=config.deepseekEnabled
     ?await client.decide(deepseekContext)
     :null;

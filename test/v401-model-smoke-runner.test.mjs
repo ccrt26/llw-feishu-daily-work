@@ -16,14 +16,23 @@ test("reports only bounded decision kinds for the representative model smoke",as
   try {
     const report=await runV401ModelSmoke({
       configFile,skillRoot:root,
-      codexInvoke:async({context})=>context.instructionText.includes("以后")
-        ?{
+      codexInvoke:async({context,workspaceDir,workspaceRoot})=>{
+        assert.equal(workspaceDir,root);
+        assert.equal(workspaceRoot,undefined);
+        assert.ok(Array.isArray(context.sources));
+        assert.equal("sourceEvidence" in context,false);
+        return context.instructionText.includes("以后")
+          ?{
           type:"ask",question:"确认保存这条长期规则吗？",
           waitingType:"waiting_confirmation",preparedTool:null,
           preparedRule:"清晰且符合归档规则的餐饮发票默认归档。"
         }
-        :{type:"reply",text:"测试概括。"},
-      deepseekInvoke:async()=>({
+          :{type:"reply",text:"测试概括。"};
+      },
+      deepseekInvoke:async({context})=>{
+        assert.deepEqual(context.sources,[]);
+        assert.equal("sourceEvidence" in context,false);
+        return {
         type:"tool_call",toolName:"record_daily_work",
         arguments:{
           operation:"create",targetRecordId:"",
@@ -34,7 +43,8 @@ test("reports only bounded decision kinds for the representative model smoke",as
             original_text:"今天完成了方案评审。"
           }]
         }
-      })
+        };
+      }
     });
     assert.deepEqual(report,{
       rawInputsIncluded:false,rawOutputsIncluded:false,
