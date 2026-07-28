@@ -1,298 +1,220 @@
-# Project Overview
+# LLW Personal Assistant V4.0.1 Project Overview
 
-日期：2026-07-26
-状态：V3.6.3 已实现、部署并完成正式验收
-用途：供项目所有者、开发者和 AI 评审者理解当前公开安全基线
+日期：2026-07-29
 
-## 1. Scope and Design Principles
+状态：V4.0.1 核心已实现、部署并完成除飞书云文档外的真实双入口验收
 
-LLW Personal AI Skill Platform 是一个本机优先、消息驱动的个人 AI 助手。当前运行组件接收飞书或微信私聊，将平台事件缩减为内部合同，再通过统一路由选择唯一能力。
+用途：供项目所有者、开发者和 AI 评审者理解当前生产架构
 
-当前稳定范围：
+## 1. 目标与原则
 
-- 每日工作记录；
-- 单张发票图片与 PDF 归档；
-- 显式模型状态命令；
-- 飞书和微信两个薄入口。
+V4.0.1 把历史上“公共 Router → Capability registry → 各业务 AI → 公共 normalizer”的多层语义链，收敛为一个 LLW Personal Assistant：
+
+```text
+飞书 / 微信薄入口
+  → 绑定、幂等和来源安全
+  → 一个 Personal Assistant
+  → 直接回复 / 询问一次 / 调用一个安全工具
+  → Writer
+  → Outcome
+  → 原入口回复
+```
 
 核心原则：
 
-1. **一个语义，一个负责人。** Skill 定义 AI 语义，Capability 编排执行，Node.js 应用固定规则，writer 负责持久化。
-2. **入口不同，核心相同。** 飞书和微信在内部消息之后共用同一套业务链。
-3. **AI 提取事实，程序作固定决定。** 模型不生成最终文件路径、不绕过业务资格、不覆盖文件。
-4. **失败关闭。** 无法验证的输入、输出、运行件或状态不会进入下一层。
-5. **最小数据。** 每层只取得完成职责必需的数据。
-6. **可回滚。** 配置、状态、运行组件、Skills 和受保护运行件必须存在一致的版本化恢复边界。
+1. 自然语言是当前任务，文件是处理对象；两者必须联合交给同一个 AI 回合。
+2. 程序在 AI 前只处理传输与安全，不提前替 AI 做业务语义判断。
+3. 一轮可以查看多个来源，但最多执行一个副作用工具。
+4. 工具参数定义只有一份，同时用于模型声明、执行校验和测试。
+5. Writer 是唯一业务持久化者；AI 不能提前宣称写入成功。
+6. 飞书和微信只是入口，不各自建立业务系统。
+7. 失败关闭、最小数据、可恢复、可回滚。
 
-## 2. Shared Runtime Architecture
+## 2. 当前生产架构
 
 ```mermaid
 flowchart TD
-  subgraph Entry["Thin platform entries"]
-    F["Feishu listener / adapter"]
-    W["WeChat listener / adapter"]
+  subgraph Entry["Thin entries"]
+    F["Feishu"]
+    W["WeChat"]
   end
-
-  F --> I["IncomingMessage + ReplyTarget"]
+  F --> I["IncomingMessage: instruction + 0..8 attachments"]
   W --> I
-  I --> G["Security, binding, idempotency"]
-  G --> D["One shared Dispatcher queue"]
-  D --> M{"Text or visual attachment?"}
-  M -->|Text| RT["router.text"]
-  M -->|Image / PDF| P["Restricted attachment preparation"]
-  P --> RV["router.visual"]
-  RT --> R["Strict router result"]
-  RV --> R
-  R --> C{"Exactly one enabled Capability"}
-  C --> DW["daily-work"]
-  C --> IV["invoice"]
-  DW --> DI["daily-work.interpret"]
-  IV --> IX["invoice.visual"]
-  DI --> NR["Deterministic validation and writer"]
-  IX --> NR
-  NR --> O["Persist outcome before reply"]
-  O --> RF["Reply through original entry"]
-  O --> RW["Safe recovery of unreplied outcome"]
+  I --> B["Binding, queue, idempotency, burst collection"]
+  B --> S["Source Intake and Content Safety"]
+  S --> A["LLW Personal Assistant"]
+  A --> R["Direct reply / one question"]
+  A --> T{"One tool call"}
+  T --> DW["record_daily_work"]
+  T --> IV["archive_dining_invoice"]
+  T --> K["save_knowledge"]
+  T --> D["create_document"]
+  DW --> O["Outcome first"]
+  IV --> O
+  K --> O
+  D --> O
+  R --> O
+  O --> P["Reply recovery and original-entry reply"]
 ```
 
-平台适配器可以有不同协议，但不得各自实现发票判断、每日工作语义或持久化规则。统一 Dispatcher 使用一条队列处理两个入口，并用入口相关的 outcome key 保持幂等。
+生产配置 version 6 只加载 `llw-personal-assistant`。旧 Router、Capability registry 和候选 normalizer 已从 V6 静态启动链退出；旧版本兼容代码只在非 V6 回滚入口按需加载，历史还保存在 Git 和受保护回滚包中。
 
-## 3. Internal Message and Reply Boundaries
+## 3. 消息与多来源
 
-`IncomingMessage` 只保留运行核心需要的字段类别：
+`IncomingMessage` 可以同时包含：
 
-- 来源类型；
-- 来源消息标识；
-- 绑定用户和会话；
-- 接收时间；
-- 一段文本或一个受限附件描述；
-- 最小 `ReplyTarget`。
+- 当前自然语言 `instructionText`；
+- 0–8 个附件；
+- 原入口的最小 `ReplyTarget`。
 
-飞书适配器从受限事件字段建立该对象。微信适配器先在自己的协议边界完成绑定、媒体取得与解密，再建立相同语义的对象。原始平台事件不会直接交给 Router 或业务 Skill。
+飞书或微信把文字与文件拆成相邻事件时，入口内的有界 burst collector 会把它们组合为一轮；不会跨入口、跨用户或跨会话消费。
 
-`ReplyTarget` 只让 messenger 知道回复应回到哪个已绑定入口。业务 Skill 不需要知道平台 API 字段，也不能自行选择其他收件人。
+首批资源限制：
 
-## 4. Routing and Capability Boundaries
+- 每轮最多 8 个来源；
+- 单个来源最多 20 MiB；
+- 一轮总计最多 80 MiB；
+- 支持 TXT、Markdown、DOCX、PPTX、XLSX、PDF 和安全图片；
+- 多个明显相关文件默认作为一个来源集合交给一次 AI；
+- 多个互不相关任务只问一次“合并还是拆分”，不自动调用多个工具。
 
-统一意图路由由 `feishu-intent-router` 定义。它只能返回三类结果：
+当前用户要求优先于文件名和附件内容。例如“总结，不保存”必须零 Writer；附件正文即使含有命令式文字，也只被视为数据。
 
-- 路由到一个已启用 Capability，且置信度必须为 `high`；
-- 提出一次有界澄清问题；
-- 返回不支持或取消。
+## 4. AI-first 原文件理解
 
-Router 不执行每日工作写入，不提取发票字段，也不依次尝试多个业务能力。
+Codex 运行在当前轮的私有任务目录：
 
-当前运行组件注册两个业务 Capability：
+- `cwd` 仅为当前轮工作区；
+- sandbox 为只读；
+- Vault 根目录不进入 AI 工作区；
+- Office/PDF 通过安全相对路径查看；
+- 图片通过多个视觉输入传递；
+- 不授予任务网络权限。
 
-- `daily-work`：处理已经被路由为每日工作的文本；
-- `invoice`：处理已经被路由为发票的单个已准备视觉附件。
+“AI 直接读原文件”不等于把平台附件无检查地交给模型。Source Intake 仍负责：
 
-路由合同来自业务 Skill 的版本化参考文件。组件启动时校验合同，只有显式启用的 Capability 才进入 Router 候选集合。
+- 受限下载或云文档快照；
+- 普通文件、所有权和权限；
+- 扩展名、文件头和 OOXML/PDF 容器边界；
+- 大小与总量；
+- 安全相对路径、哈希和清理。
 
-## 5. Business Skills
+它不做业务摘要、不判断应调用哪个工具，也不把预解析结论当成 AI 的输入真相。
 
-当前运行基线集成三个语义合同：
+## 5. 四个确定性工具
 
-| Skill | 责任 | 不负责 |
-|---|---|---|
-| `feishu-intent-router` | 在已启用能力中选择一个，或澄清/拒绝 | 业务写入、发票字段提取 |
-| `feishu-daily-work` | 解释每日工作创建、补充、澄清、取消和忽略 | 发票、附件和其他目录 |
-| `filing-invoices` | 提取规定的发票事实、清晰度和文档状态 | 购买方资格决定、路径、写文件 |
+### `record_daily_work`
 
-这些合同、严格输出 Schema 和评测保存在 [llw-personal-ai-skills](https://github.com/ccrt26/llw-personal-ai-skills)。Skills 仓库还可能保存未接入当前运行组件的其他合同；文件存在不等于生产 Capability 已启用。
+AI 选择创建或补充目标；程序复核北京时间、候选记录、目标唯一性和原始用户文字，再调用既有 `VaultWriter`。
 
-## 6. Model Support
+### `archive_dining_invoice`
 
-运行时把模型支持绑定到四个语义任务，而不是笼统绑定到整个应用：
+支持一张或多张发票。批次在写入前完成全部硬规则校验；七个票面字段、购买方、餐饮类别、日期、金额、文件类型、哈希、命名、幂等和无覆盖由程序负责。批次中途 Writer 失败时返回可恢复的部分结果，不继续执行后续项目，也不重新调用 AI。
 
-| 语义任务 | Codex | DeepSeek |
+### `save_knowledge`
+
+一个工具调用建立一个知识项，可以绑定 0–8 个当前来源并保留多个原件。模型只能使用允许的资料库 key；程序负责目录段、来源 ID、组合摘要哈希、原件命名、白名单、原子发布和重复幂等。
+
+### `create_document`
+
+生成 DOCX、PPTX 或 XLSX。文件先在私有输出工作区生成，再检查唯一工件、OOXML 类型、宏、加密、大小、普通文件、SHA-256 和稳定路径。生成文件不会自动保存到知识库。
+
+## 6. Provider 边界
+
+| 场景 | Codex | DeepSeek |
 |---|---:|---:|
-| `router.text` | 支持 | 显式启用时支持 |
-| `router.visual` | 支持 | 不支持 |
-| `daily-work.interpret` | 支持 | 显式启用时支持 |
-| `invoice.visual` | 支持 | 不支持 |
+| 纯文字每日工作 | 支持 | 已批准子集支持 |
+| 普通问答/知识整理 | 支持 | 不扩大 |
+| 图片、PDF、Office | 支持 | 不支持 |
+| 多来源任务 | 支持 | 不支持 |
+| 文件生成 | 支持 | 不支持 |
+| 发票视觉 | 支持 | 不支持 |
 
-模型只能由精确命令切换。每个新任务在开始时取得一个模型快照；进行中的澄清不会因全局状态变化而中途换模型。DeepSeek 禁用、状态无效或状态路径不安全时，有效状态安全回到 Codex。DeepSeek 调用失败不会偷偷转交 Codex。
+Provider adapter 只转换工具调用外壳，不理解业务、不做第二次路由，也不会在失败后自动切换模型。
 
-推理强度属于具体任务配置。V3.6.3 的发票视觉任务继续使用 Codex，并保持既有推理设置。
+## 7. 已验证的真实业务旅程
 
-## 7. Invoice Image and PDF Flow
+V4.0.1 已完成以下生产验收：
 
-图片和 PDF 都采用“先通用准备，再视觉路由，再复用准备结果”的顺序：
+- 飞书文字知识保存；
+- 微信“先发要求、后发三份文件”，合并为一个知识项并保留三个原件；
+- 微信同轮三文件只读理解，零 Writer；
+- 飞书和微信 PDF + 自然语言只读总结；
+- 飞书每日工作；
+- 飞书单张无文字餐饮发票自动归档；
+- 微信两张餐饮发票批次归档；
+- 已归档票据重复发送的真实幂等；
+- 等待文件任务取消；
+- 不支持音频/视频在 AI、下载和 Writer 前确定性拒绝；
+- 服务重启后 Outcome/回复恢复不重复业务。
+
+发票与知识工件验收均核对真实 Writer 结果、SHA-256、事务、Outcome、回复和临时清理。
+
+## 8. 飞书云文档遗留项
+
+飞书普通文档 → DOCX、表格 → XLSX、幻灯片 → PPTX、Wiki 解包后导出的代码和隔离纵向测试已经完成。真实飞书测试确认：
+
+- 入口和链接识别已触发；
+- 失败发生在 Source Intake 的用户身份权限检查；
+- AI、工具和 Writer 均未运行；
+- 零写入。
+
+项目所有者因企业审批流程决定暂缓该能力，不阻塞 V4.0.1 其余发布。
+
+当前固定版飞书 CLI 后续应一次申请并重新授权完整的五项增量权限：
+
+- `drive:drive.metadata:readonly`
+- `docs:document.content:read`
+- `docs:document:export`
+- `docx:document:readonly`
+- `wiki:node:read`
+
+重新授权必须保留现有身份和邮箱权限。当前实现不需要编辑、删除、移动、分享、协作者管理或上传权限；不得借此扩大授权。权限通过后必须分别验收普通文档、表格、幻灯片、Wiki 包装类型及含图片/表格块的文档。
+
+## 9. 音频与视频边界
+
+AIFF 是音频格式，但 V4.0.1 不包含音频或视频理解。当前只把已知音视频元数据送到确定性拒绝路径：
+
+- 不下载；
+- 不调用 AI；
+- 不调用 Writer；
+- 不安装转写、FFmpeg 插件或新模型；
+- 返回明确不支持。
+
+未来扩展可以在同一 `TurnBundle` 下增加音频或视频 reader adapter 和独立资源限制，不需要改入口、工具或 Outcome 总架构；必须另行设计和批准。
+
+## 10. 安全、状态与恢复
+
+- 配置 version 6，状态继续使用已验证的 version 4 持久结构；
+- 飞书和微信各最多一个 24 小时短期 Conversation；
+- 只保存等待类型、有限摘要、准备工具、安全确认、模型和时间；
+- 不保存附件字节、token、完整模型输出、绝对来源路径或整个 Vault；
+- 每个副作用先写真实 Writer，再由程序生成成功回执；
+- Outcome 在回复前持久化；
+- Writer 重试不重调 AI，回复重试不重做业务；
+- 日志只保留阶段和有界错误码；
+- 生产仍为一个 LaunchAgent、一个 Node.js 主进程和一条飞书事件消费链。
+
+受保护回滚点包含完整组件/Skills Git bundle、配置恢复器、状态结构、LaunchAgent、PDFium 运行件事实、SHA-256 清单和隔离恢复证据；不包含密钥、平台标识、消息正文、真实发票或用户资料。
+
+## 11. 验证基线
+
+最终收口完整回归：591/591。
+
+回归不仅统计单元数量，还包含完整纵向旅程：
 
 ```text
-一个飞书或微信附件
-  → 下载到当前消息的私有临时目录
-  → 文件头、扩展名、大小、普通文件和无符号链接检查
-  → 图片：建立一个已准备页面
-  → PDF：一个受限 PDFium 子进程完成结构、加密、页数、文本和全部页面 PNG
-  → Node.js 复核固定清单和资源限制
-  → router.visual 查看已验证页面，只选择 Capability
-  → route: invoice / high
-  → invoice Capability 复用同一准备结果
-  → invoice.visual 按 filing-invoices 提取票面事实
-  → Node.js 固定业务判断
-  → writer 归档用户发送的原始文件
-  → 清理全部临时准备文件
+IncomingMessage
+→ binding / idempotency / burst collection
+→ real Source Intake
+→ Content Safety
+→ Personal Assistant
+→ frozen Tool Definition
+→ real Writer or zero-write reply
+→ Outcome
+→ Reply / recovery
 ```
 
-PDF 只使用 PDFium，不保留 Poppler 正常路径或回退。V3.6.3 选择 pypdfium2 `5.11.0` / PDFium `151.0.7920.0`，是因为同一真实电子发票在旧渲染路径丢失关键中文页面元素，而隔离验证证明 PDFium 可以完整渲染该类文档。
+部署后另运行 19 条启动组合与纵向旅程测试，全部通过。生产健康检查确认心跳推进、待回复为零、活动对话为零、未完成归档事务为零、临时工作区为空。
 
-PDF 固定边界包括最多 10 页、文本最多 262,144 字节、渲染输出合计最多 100 MiB、页面最长边 3,508 像素和子进程 60 秒总时限。加密、结构、页数、文本、渲染和超时错误均映射为不包含票面内容的安全类别。
-
-`router.visual` 不提取发票字段。`invoice.visual` 不决定是否归档。详细技术决定、测试矩阵和回滚要求见 [V3.6.3 单一 PDFium 设计](superpowers/specs/2026-07-26-pdfium-only-invoice-pdf-design.md)。
-
-## 8. Deterministic Storage Rules
-
-发票模型只提取合同规定的事实与清晰状态。Node.js 随后执行固定规则：
-
-1. 输入必须是一张清晰完整的发票；多张或相互冲突的文档不处理。
-2. 购买方名称和统一社会信用代码必须与受保护配置中的归档主体匹配。
-3. 当前允许归档的类别是餐饮。
-4. 日期只用于确定月份目录；金额只用于生成展示文件名。
-5. 同月同金额依次使用 `金额`、`金额-2`、`金额-3`；跨月重新开始。
-6. 发票号可用于识别票面事实，但不是额外业务资格门。
-7. 原始图片或 PDF 才是归档对象，渲染页面不是归档副本。
-8. SHA-256、事务记录和排他创建保证重复幂等且不覆盖。
-
-若 AI 无法清楚读取资格所需字段、日期或金额，结果是暂不归档并提示重新发送清晰完整的单张原件。模型输出未知字段、Schema 不合法或存储值不安全时按技术失败关闭。
-
-每日工作 writer 同样限制在配置的目标根目录，使用结构化动作、候选记录和原始用户文字完成可核验写入。
-
-## 9. Security, State, and Rollback
-
-- 密钥保存在受保护凭据系统中，不写入配置、仓库或普通日志。
-- 运行配置与状态使用仅当前用户可读写的权限，并拒绝符号链接身份。
-- 状态先保存 outcome，再发送回复；发送失败可以恢复同一回复而不重复业务工作。
-- 附件临时目录属于单个消息 job，成功或失败都清理，启动时可继续清理遗留。
-- PDFium 使用固定版本、逐文件哈希、许可证和受保护运行件；消息处理中不联网安装依赖。
-- 部署前回滚点覆盖组件、Skills、配置、状态和运行件事实，但不包含凭据、消息正文、真实发票或业务资料。
-- 版本恢复必须在隔离目录核对清单和测试。组件与配置需要原子切换，不允许新旧合同交叉运行。
-
-公开仓库不包含实时本机状态。实时事实由私有系统基线维护，公开文档只记录已经确认且适合公开的日期快照。
-
-## 10. Current Verified Baseline
-
-以下是截至 2026-07-26 的已验证快照，不是永久不变的运行常量：
-
-| 项目 | 已验证事实 |
-|---|---|
-| 组件 `main` | 已包含 V3.6.3 单一 PDFium rollout |
-| 生产运行代码 | `d06da01` |
-| Skills | `78433ab` |
-| 当前组件完整回归 | `326/326` |
-| 部署前旧基线隔离恢复回归 | `313/313` |
-| PDF 运行件 | pypdfium2 `5.11.0` / PDFium `151.0.7920.0` |
-| 发票有效模型 | Codex |
-| 正式微信 PDF 验收 | 一个 `committed` 发票 outcome、一个工件、一个 `published` 事务 |
-| 文件一致性 | 用户原始 PDF 与归档目标 SHA-256 相同 |
-| 清理与恢复状态 | 临时遗留为零，待回复为零 |
-
-正式验收还证明：附件只下载和准备一次；`router.visual` 只调用一次并选择唯一 invoice；`invoice.visual` 随后复用同一准备结果；成功后只归档用户发送的原始 PDF。
-
-### 10.1 V3.7.0 受控发布候选
-
-`integration/v370` 已形成可按配置门逐项启用的 `knowledge-ingest` 与
-`assistant-work` 闭环。`knowledge-ingest` 处理明确要求保存的直接文字，单个 TXT、Markdown、
-DOCX、PPTX 或 XLSX 来源，一个受支持的飞书云文档一次性快照，以及在受管资料根下
-创建明确指定的空分类目录。
-
-候选目录规则固定为：
-
-- 已有规则能唯一匹配现有目录时直接选择；
-- 用户明确给出的新目录可以创建；
-- Skill 建议的新目录、多个可能目录或命名不唯一时，只提出一次确认；
-- 移动、重命名、合并、覆盖、删除、批量整理和受管根外操作始终拒绝。
-
-模型只得到不透明资料库 key、安全显示名、别名和经过程序验证的相对目录段，不得到
-Vault 根、受管根绝对路径、其他私有 Skill、平台标识或回复目标。Node.js 重新校验严格
-决策，并由不可覆盖 Writer 在同一文件系统中完成 staging、哈希、幂等和原子发布。
-
-Office 文件仍只下载一次并只建立一个私有 job。程序在 AI 前检查 OOXML 文件头、
-容器结构、条目和解压上限、必需部件、宏、加密、嵌入对象及外部关系；只把有界提取
-文本交给一次 `knowledge.ingest` 语义任务。选择保留原件时，Writer 按原始 SHA-256
-逐字节写入同一新知识项目录。飞书云文档只允许 `doc/docx`、`sheet` 和 `slides`
-经现有用户身份导出一次 DOCX、XLSX 或 PPTX 快照；Wiki 必须先只读解析为其中一种。
-不支持自动同步、权限申请、云端 WPS 转换或覆盖旧快照。
-
-本机 WPS Office 用于用户现场文档任务和后续生成文件的打开、排版及兼容性验收。
-后台附件链路不调用 WPS 的未公开 macOS 内部组件，也不把私人文件上传到需要应用密钥
-的 WPS WebOffice。后台 OOXML 安全准备为本地确定性处理，不调用 AI 插件、不消耗额外
-模型额度；语义理解仍保持一次 Codex 调用。
-
-`assistant-work` 复用同一个 Dispatcher、Router 和 StateStore。它只搜索候选配置
-允许的知识资料根，只读取有界 Markdown 正文，并把实际使用的 Vault 相对路径交给
-严格决策校验。每个绑定用户首批最多一个开放 Task Session；会话固定 Codex 与
-`source_strict`、`hybrid` 或 `creative` 模式。完整工作稿只保存在本机私有的受控
-工作区中，按 `draft-vN.md` 新建版本，不进入长期知识库或状态正文；服务重启可以从
-状态与工作区恢复。开放任务的明显续接仍进入 `assistant-work`，明确知识入库等独立
-动作仍由统一 Router 分配，且不会删除当前工作稿。
-
-受控文件输出候选现已把首批范围固定为 DOCX、PPTX 与 XLSX，每次最多一个文件；
-PDF 与 Markdown 输出仍未加入。只有当前工作稿已经存在、用户明确指定唯一格式且
-入口支持文件回复时才建立一个 workspace-write 私有 job。job 只得到当前工作稿，
-并调用本地已安装的对应格式 Skill；不安装 Office，不调用 WPS AI 或云插件，不写
-Vault。程序随后检查唯一固定输出、OOXML 结构、扩展名、普通文件、符号链接、大小、
-宏、加密、额外文件和 SHA-256，再以程序规范化显示名原子发布到稳定受控目录。
-
-Outcome 新增独立 `replyFiles`，保存稳定路径、显示名、MIME、SHA-256、大小和文件发送
-幂等键。文字和文件均发送成功后才标记已回复；失败和服务重启都复用同一稳定工件，
-不重新生成。现有 `lark-cli` 已验证具有本地文件上传并回复原飞书消息的真实合同；
-微信 iLink 目前只有纯文字发送合同，因此微信文件输出在生成前明确拒绝，不伪装
-成功、不返回本机路径、不切换平台。
-
-合成 DOCX、三页 PPTX 和含两条公式的 XLSX 已由本地格式工具生成并在本机 WPS
-Office 中打开验收：中文、页面结构、可编辑对象、表格与公式结果均正常。LibreOffice
-预览器对 macOS 中文字体存在替代显示差异，因此最终兼容性结论以用户指定的 WPS
-真实打开结果为准。
-
-发布元数据允许这两个经过批准的能力被选择，但运行时仍由受保护配置门最终控制：
-
-- `llw-knowledge-ingest` 与 `llw-assistant-work` 的私有 manifest 均为 `enabled: true`；
-- 公共静态 allowlist 仅允许上述固定名称和固定版本；
-- version 5 迁移仍把两项能力写为 `enabled: false`，部署代码本身不会启用业务；
-- 专用原子开关只接受这两个固定能力和布尔值，便于按 R4 验收顺序逐项启用或回退。
-
-因此只有私有 manifest、公共静态 allowlist 和正式 version 5 配置三者同时匹配时，
-相应 Capability 才会注册；任一门不满足都安全关闭。正式部署、逐项验收和回退证据
-只记录在本机私有系统基线，不在公开仓库保存用户路径或平台标识。
-
-用户已经确认采用 macOS 每用户 Application Support 下的
-私有受控输出目录；具体用户名路径只记录在本机私有系统基线，不提交公开仓库。成功
-发送的文件从发送成功时起保留7天，未成功发送的文件不设到期时间并持续保留到发送
-成功。候选在启动时及之后每日执行一次有界清理，只删除预期会话/稿件结构中已到期且
-未受待回复状态保护的普通 OOXML 文件，不跟随符号链接。
-本阶段完整回归共 `457/457` 通过，零跳过、零取消；其中需要本地回环端口的
-`deepseek-client` 项也已在仅允许本机回环的隔离环境中复核通过。
-
-## 11. Deliberately Unsupported or Deferred Scope
-
-当前明确不包含：
-
-- PDF 的 Poppler 回退或第二 PDF 引擎；
-- 自动 OCR 回退、PDF 自动修复或 OFD 支持；
-- 多张发票自动拆分；
-- 非餐饮发票归档；
-- DeepSeek 视觉路由或发票视觉提取；
-- 模型自动选择、自动降级或隐藏切换；
-- 由业务 Skill 直接访问原始平台字段、凭据或任意本机目录；
-- 因 README 更新而重启或改变生产服务。
-
-这些项目只能在明确的新业务需求、书面设计、测试和回滚边界完成后加入。
-
-## 12. Interfaces for Future Feature Design
-
-后续功能讨论应先回答以下问题：
-
-1. 它是新的业务语义，还是现有 Skill 的明确扩展？
-2. Router 应该如何仅凭最小消息把它和现有能力区分？
-3. 它需要哪一个新的或既有 Capability？
-4. AI 只需要提取哪些事实？输出严格 Schema 是什么？
-5. 哪些判断可以由 Node.js 确定性执行？
-6. writer 的唯一目标、命名、幂等、覆盖和恢复规则是什么？
-7. Codex 或 DeepSeek 分别支持哪些具体语义任务与推理设置？
-8. 会新增哪些凭据、权限、网络、附件或隐私边界？
-9. 最小评测、完整回归、隔离恢复和真实验收如何证明它可用？
-10. 哪些实时事实只留在私有系统基线，哪些稳定设计可以公开？
-
-满足这些接口后，再决定更新现有 Skill 还是创建新 Skill。没有明确语义合同的模型能力不应提前变成空泛的 Skill。
+准确的生产/远端 Git 提交、回滚目录和审批进度由工作区私有 `SYSTEM_MAP.md` 维护，不把本机身份或业务路径写进仓库文档。
