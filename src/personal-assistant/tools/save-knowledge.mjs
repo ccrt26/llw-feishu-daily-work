@@ -6,7 +6,11 @@ export async function executeSaveKnowledge({
   const call=validateToolCall(toolCall);
   if (call.name!=="save_knowledge") throw new Error("tool_call_invalid");
   if (!completeSource(preparedSource)) {
-    throw new Error("knowledge_source_incomplete");
+    return {
+      status:"rejected",
+      reply:"这份文件有尚未完整读取的内容，本次没有保存。请改发完整 PDF，或处理文件中的复杂图片、图表、批注等内容后重试。",
+      artifacts:[]
+    };
   }
   const args=call.arguments;
   try {

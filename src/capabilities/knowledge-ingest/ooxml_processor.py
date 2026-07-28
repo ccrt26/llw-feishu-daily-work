@@ -89,7 +89,6 @@ def extraction_limitations(names, extension):
             (r"word/media/", "embedded_media_not_extracted"),
             (r"word/charts?/", "charts_not_extracted"),
             (r"word/(?:comments|footnotes|endnotes)\.xml", "annotations_not_extracted"),
-            (r"word/(?:header|footer)\d+\.xml", "headers_or_footers_not_extracted"),
         ),
         "pptx": (
             (r"ppt/media/", "embedded_media_not_extracted"),
@@ -112,8 +111,7 @@ def extraction_limitations(names, extension):
     return sorted(set(limitations))
 
 
-def docx_text(archive):
-    root = parse_xml(archive.read("word/document.xml"))
+def paragraph_text(root):
     lines = []
     for paragraph in root.iter():
         if local_name(paragraph.tag) != "p":
@@ -123,7 +121,69 @@ def docx_text(archive):
         ).strip()
         if text:
             lines.append(text)
-    return "# Word 文档\n\n" + "\n\n".join(lines)
+    return lines
+
+
+def docx_related_parts(archive, names, document, kind):
+    relationships_name = "word/_rels/document.xml.rels"
+    reference_ids = []
+    for node in document.iter():
+        if local_name(node.tag) != f"{kind}Reference":
+            continue
+        reference_id = next(
+            (
+                value
+                for key, value in node.attrib.items()
+                if local_name(key) == "id"
+            ),
+            "",
+        )
+        if not reference_id:
+            raise ValueError("relationship_missing")
+        reference_ids.append(reference_id)
+    if not reference_ids:
+        return []
+    if relationships_name not in names:
+        raise ValueError("relationship_missing")
+    relationships = parse_xml(archive.read(relationships_name))
+    by_id = {}
+    for node in relationships:
+        if local_name(node.tag) != "Relationship":
+            continue
+        relationship_id = node.attrib.get("Id", "")
+        if not relationship_id or relationship_id in by_id:
+            raise ValueError("relationship_invalid")
+        by_id[relationship_id] = node.attrib
+    parts = []
+    for reference_id in reference_ids:
+        relationship = by_id.get(reference_id)
+        target = relationship.get("Target", "") if relationship else ""
+        relationship_type = relationship.get("Type", "") if relationship else ""
+        if (
+            not relationship
+            or not relationship_type.endswith(f"/{kind}")
+            or not re.fullmatch(rf"{kind}\d+\.xml", target)
+            or f"word/{target}" not in names
+        ):
+            raise ValueError("relationship_invalid")
+        part = f"word/{target}"
+        if part not in parts:
+            parts.append(part)
+    return parts
+
+
+def docx_text(archive, names):
+    document = parse_xml(archive.read("word/document.xml"))
+    lines = paragraph_text(document)
+    output = ["# Word 文档", "", *lines]
+    for kind, title in (("header", "页眉"), ("footer", "页脚")):
+        parts = docx_related_parts(archive, names, document, kind)
+        values = []
+        for name in parts:
+            values.extend(paragraph_text(parse_xml(archive.read(name))))
+        if values:
+            output.extend(["", f"## {title}", "", *values])
+    return "\n\n".join(value for value in output if value)
 
 
 def pptx_text(archive, names):
@@ -234,7 +294,7 @@ def main():
         names = validate_archive(archive, extension)
         limitations = extraction_limitations(names, extension)
         content = {
-            "docx": lambda: docx_text(archive),
+            "docx": lambda: docx_text(archive, names),
             "pptx": lambda: pptx_text(archive, names),
             "xlsx": lambda: xlsx_text(archive, names),
         }[extension]()

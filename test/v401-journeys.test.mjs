@@ -174,7 +174,9 @@ test("WeChat waiting_file DOCX travels through real preparation, State, Writer, 
           assert.equal(context.instructionText,
             "把我接下来发的文件整理后保存到日常生活");
           assert.equal(context.sourceEvidence.kind,"docx");
+          assert.equal(context.sourceEvidence.integrity,"complete");
           assert.match(context.sourceEvidence.text,/交流方案正文/u);
+          assert.match(context.sourceEvidence.text,/第 1 页/u);
         }
         return decisions.shift();
       },
@@ -430,7 +432,9 @@ async function createDocx(root,text) {
   const packageRoot=join(root,"docx-package");
   const parts={
     "[Content_Types].xml":`<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`,
-    "word/document.xml":`<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:body></w:document>`
+    "word/document.xml":`<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:p><w:r><w:t>${text}</w:t></w:r></w:p><w:sectPr><w:footerReference w:type="default" r:id="rIdFooter"/></w:sectPr></w:body></w:document>`,
+    "word/_rels/document.xml.rels":`<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdFooter" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/></Relationships>`,
+    "word/footer1.xml":`<?xml version="1.0"?><w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:r><w:t>第 1 页</w:t></w:r></w:p></w:ftr>`
   };
   for (const [name,content] of Object.entries(parts)) {
     const target=join(packageRoot,name);

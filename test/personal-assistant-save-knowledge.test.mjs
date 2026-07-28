@@ -62,7 +62,7 @@ test("binds the real current source and creates the receipt from Writer result",
   });
 });
 
-test("does not call Writer for partial sources or unsafe tool arguments",async() => {
+test("reports a partial-source limitation without calling Writer or creating a generic failure",async() => {
   let writerCalls=0;
   const prepared={
     ...prepareKnowledgeText({text:"部分内容",maxSourceBytes:262_144}),
@@ -70,13 +70,17 @@ test("does not call Writer for partial sources or unsafe tool arguments",async()
     extractionIntegrity:"partial",
     extractionLimitations:["embedded_images_not_extracted"]
   };
-  await assert.rejects(executeSaveKnowledge({
+  assert.deepEqual(await executeSaveKnowledge({
     toolCall:toolCall(),
     preparedSource:prepared,
     writer:{async commit() { writerCalls+=1; }},
     skillVersion:"4.0.1",
     ingestedAt:"2026-07-28T00:00:00.000Z"
-  }),/knowledge_source_incomplete/);
+  }),{
+    status:"rejected",
+    reply:"这份文件有尚未完整读取的内容，本次没有保存。请改发完整 PDF，或处理文件中的复杂图片、图表、批注等内容后重试。",
+    artifacts:[]
+  });
   await assert.rejects(executeSaveKnowledge({
     toolCall:{...toolCall(),arguments:{...toolCall().arguments,path:"/tmp/x"}},
     preparedSource:{...prepared,extractionIntegrity:"complete",extractionLimitations:[]},

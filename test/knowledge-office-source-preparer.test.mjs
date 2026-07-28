@@ -12,7 +12,7 @@ import {
 
 const run=promisify(execFile);
 
-async function fixture(root,extension,{unsafePart}={}) {
+async function fixture(root,extension,{unsafePart,extraParts={}}={}) {
   const packageRoot=join(root,`${extension}-package`);
   const parts={
     docx:{
@@ -31,6 +31,7 @@ async function fixture(root,extension,{unsafePart}={}) {
     }
   }[extension];
   if (unsafePart) parts[unsafePart]=Buffer.from("unsafe");
+  Object.assign(parts,extraParts);
   for (const [name,content] of Object.entries(parts)) {
     const target=join(packageRoot,name);
     await mkdir(dirname(target),{recursive:true,mode:0o700});
@@ -67,6 +68,34 @@ test("prepares one bounded DOCX, PPTX or XLSX with original bytes and extracted 
       assert.equal(result.extractionIntegrity,"complete");
       assert.deepEqual(result.extractionLimitations,[]);
     }
+  } finally { await rm(root,{recursive:true,force:true}); }
+});
+
+test("extracts ordinary DOCX headers and footers instead of marking the source partial",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"llw-office-source-header-footer-"));
+  try {
+    const file=await fixture(root,"docx",{
+      extraParts:{
+        "word/document.xml":`<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:p><w:r><w:t>交流方案正文</w:t></w:r></w:p><w:sectPr><w:headerReference w:type="default" r:id="rIdHeader"/><w:footerReference w:type="default" r:id="rIdFooter"/></w:sectPr></w:body></w:document>`,
+        "word/_rels/document.xml.rels":`<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdHeader" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/><Relationship Id="rIdFooter" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/></Relationships>`,
+        "word/header1.xml":`<?xml version="1.0"?><w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:r><w:t>内部资料</w:t></w:r></w:p></w:hdr>`,
+        "word/footer1.xml":`<?xml version="1.0"?><w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:r><w:t>第 1 页</w:t></w:r></w:p></w:ftr>`,
+        "word/footer2.xml":`<?xml version="1.0"?><w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:r><w:t>未引用内容</w:t></w:r></w:p></w:ftr>`
+      }
+    });
+    const result=await prepareKnowledgeOfficeFile({
+      file,displayName:"with-header-footer.docx",extension:"docx",
+      maxSourceBytes:20*1024*1024,maxExtractedBytes:262_144,
+      processorPath:new URL(
+        "../src/capabilities/knowledge-ingest/ooxml_processor.py",
+        import.meta.url
+      )
+    });
+    assert.equal(result.extractionIntegrity,"complete");
+    assert.deepEqual(result.extractionLimitations,[]);
+    assert.match(result.content,/内部资料/u);
+    assert.match(result.content,/第 1 页/u);
+    assert.doesNotMatch(result.content,/未引用内容/u);
   } finally { await rm(root,{recursive:true,force:true}); }
 });
 
