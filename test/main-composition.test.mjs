@@ -5,11 +5,40 @@ import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {fileURLToPath} from "node:url";
 
+test("version 6 production entry does not statically load legacy routing layers",async()=>{
+  const main=await readFile(
+    fileURLToPath(new URL("../src/main.mjs",import.meta.url)),"utf8"
+  );
+  const legacy=await readFile(
+    fileURLToPath(new URL("../src/legacy-main.mjs",import.meta.url)),"utf8"
+  );
+  for (const forbidden of [
+    "feishu-intent-router",
+    "buildCapabilityRegistry",
+    "createRouterTextTask",
+    "createRouterVisualTask",
+    "validateIntentRouterSkill",
+    "createKnowledgeIngestCapability",
+    "createAssistantWorkCapability",
+    "knowledge_source_incomplete"
+  ]) assert.equal(main.includes(forbidden),false,forbidden);
+  assert.match(
+    main,
+    /if \(config\.version!==6\) \{\s*const \{runLegacyMain\}=await import\("\.\/legacy-main\.mjs"\)/
+  );
+  assert.match(legacy,/feishu-intent-router/);
+  assert.match(legacy,/buildCapabilityRegistry/);
+  assert.match(legacy,/createRouterTextTask/);
+});
+
 test("version 6 enters one personal-assistant composition before legacy routing",async()=>{
   const source=await readFile(
     fileURLToPath(new URL("../src/main.mjs",import.meta.url)),"utf8"
   );
-  assert.match(source,/if \(config\.version===6\) \{\s*await runPersonalAssistantMain\(config\);\s*return;/);
+  assert.match(
+    source,
+    /if \(config\.version!==6\) \{[\s\S]*?runLegacyMain\(configFile\);[\s\S]*?return;[\s\S]*?\}\s*await runPersonalAssistantMain\(config\);/
+  );
   for (const expected of [
     "PersonalAssistantClient","createAssistantSourcePreparer",
     "PersonalAssistantCoordinator","PersonalAssistantDispatcher",
@@ -34,7 +63,7 @@ test("version 6 enters one personal-assistant composition before legacy routing"
   ]) assert.equal(source.includes(expected),true);
   const v6Start=source.indexOf("async function runPersonalAssistantMain");
   const v6=source.slice(
-    v6Start,source.indexOf("\nlet assistantSkillRoot=null;",v6Start)
+    v6Start,source.indexOf("\nexport async function startChatEntries",v6Start)
   );
   assert.equal(v6.includes("prepareKnowledgeOfficeFile"),false);
   assert.equal(v6.includes("createSourceEvidence"),false);
@@ -79,23 +108,22 @@ test("personal-assistant failures use the existing bounded analyze log",async()=
   );
 });
 
-test("main validates one protected PDFium runtime before state and injects one shared bounded PDF preparer",async () => {
+test("main validates one protected PDFium runtime before state and injects one bounded Source Intake",async () => {
   const source=await readFile(fileURLToPath(new URL("../src/main.mjs",import.meta.url)),"utf8");
   assert.match(source,/import \{loadConfig\} from "\.\/config\.mjs"/);
-  assert.match(source,/import \{validatePdfiumRuntime\} from "\.\/capabilities\/invoice\/pdfium-runtime\.mjs"/);
-  assert.match(source,/import \{prepareInvoicePdf\} from "\.\/capabilities\/invoice\/pdf-preparer\.mjs"/);
+  assert.equal(source.includes("validatePdfiumRuntime"),true);
+  assert.equal(source.includes("createAssistantSourcePreparer"),true);
   assert.ok(source.indexOf("await validatePdfiumRuntime(invoiceConfig.pdfProcessorPath)") < source.indexOf("StateStore.open"));
-  assert.match(source,/const preparePdf=\(\{file\}\) => prepareInvoicePdf\(\{/);
-  assert.match(source,/pdfProcessorPath:invoiceConfig\.pdfProcessorPath/);
-  for (const field of ["maxPdfPages","maxPdfTextBytes","maxPdfRenderBytes","pdfPrepareTimeoutMs"]) {
-    assert.match(source,new RegExp(`invoiceConfig\\.${field}`));
+  for (const field of [
+    "maxSourcesPerTurn","maxSourceFileBytes","maxTurnSourceBytes"
+  ]) {
+    assert.match(source,new RegExp(`config\\.personalAssistant\\.${field}`));
   }
   for (const legacy of ["pdfInfoPath","pdfToTextPath","pdfToPpmPath","validatePdfTools"]) assert.equal(source.includes(legacy),false);
-  assert.match(source,/preparePdf,\n\s+decide:invoiceVisual/);
 });
 
-test("main validates business routing contracts and injects one read-only intent router",async () => {
-  const source=await readFile(fileURLToPath(new URL("../src/main.mjs",import.meta.url)),"utf8");
+test("legacy rollback module retains its routing contracts without entering the V6 composition",async () => {
+  const source=await readFile(fileURLToPath(new URL("../src/legacy-main.mjs",import.meta.url)),"utf8");
   assert.match(source,/import \{loadPrivateSkillManifest\} from "\.\/core\/private-skill-manifest\.mjs"/);
   assert.match(source,/import \{loadRoutingContract\} from "\.\/core\/routing-contract\.mjs"/);
   assert.match(source,/import \{validateIntentRouterSkill\} from "\.\/core\/intent-router-client\.mjs"/);
@@ -142,7 +170,7 @@ test("main validates business routing contracts and injects one read-only intent
 });
 
 test("allows assistant work statically but requires the protected configuration gate",async()=>{
-  const source=await readFile(fileURLToPath(new URL("../src/main.mjs",import.meta.url)),"utf8");
+  const source=await readFile(fileURLToPath(new URL("../src/legacy-main.mjs",import.meta.url)),"utf8");
   for (const expected of [
     "createAssistantWorkCapability","createAssistantWorkTask","TaskSessionManager",
     "TaskWorkspace","searchKnowledge","loadKnowledgeSources"
@@ -151,7 +179,9 @@ test("allows assistant work statically but requires the protected configuration 
   assert.match(source,/allowlistEnabled:assistantPolicy\.enabled/);
   assert.match(source,/configurationEnabled:assistantConfig\?\.enabled/);
   assert.match(source,/"assistant-work":assistantEnabled/);
-  const {PRIVATE_SKILL_ALLOWLIST,assistantCandidateEnabled}=await import("../src/main.mjs");
+  const {
+    PRIVATE_SKILL_ALLOWLIST,assistantCandidateEnabled
+  }=await import("../src/legacy-main.mjs");
   const policy=PRIVATE_SKILL_ALLOWLIST.find(item=>item.name==="llw-assistant-work");
   assert.equal(policy.enabled,true);
   assert.equal(assistantCandidateEnabled({
@@ -169,7 +199,7 @@ test("allows assistant work statically but requires the protected configuration 
 });
 
 test("allows knowledge ingest statically but requires the protected configuration gate",async()=>{
-  const source=await readFile(fileURLToPath(new URL("../src/main.mjs",import.meta.url)),"utf8");
+  const source=await readFile(fileURLToPath(new URL("../src/legacy-main.mjs",import.meta.url)),"utf8");
   for (const expected of [
     'createKnowledgeIngestCapability',
     'createKnowledgeIngestTask',
@@ -191,7 +221,9 @@ test("allows knowledge ingest statically but requires the protected configuratio
   assert.match(source,/onFailureStage:\(\{code,stderrBytes,retryCount\}\)=>/);
   assert.match(source,/safeLog\(\{stage:"analyze",code,stderrBytes,retryCount\}\)/);
   assert.equal(source.includes("console.log(knowledge"),false);
-  const {PRIVATE_SKILL_ALLOWLIST,knowledgeCandidateEnabled}=await import("../src/main.mjs");
+  const {
+    PRIVATE_SKILL_ALLOWLIST,knowledgeCandidateEnabled
+  }=await import("../src/legacy-main.mjs");
   const policy=PRIVATE_SKILL_ALLOWLIST.find(item=>item.name==="llw-knowledge-ingest");
   assert.equal(policy.enabled,true);
   assert.equal(knowledgeCandidateEnabled({
