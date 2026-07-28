@@ -40,7 +40,15 @@ test("adapts direct replies, one question and one tool without business rewritin
 test("rejects multiple tools, mixed success claims and unknown envelopes",() => {
   for (const raw of [
     {type:"tool_calls",calls:[{name:"save_knowledge"},{name:"create_document"}]},
+    {tool_calls:[
+      {function:{name:"save_knowledge",arguments:"{}"}},
+      {function:{name:"create_document",arguments:"{}"}}
+    ]},
     {type:"tool_call",toolName:"save_knowledge",arguments:{},text:"已经保存成功"},
+    {
+      type:"tool_call",toolName:"save_knowledge",arguments:{},
+      calls:[{name:"create_document"}]
+    },
     {
       type:"ask",question:"确认吗？",waitingType:"waiting_answer",
       preparedRule:"以后都保存。"

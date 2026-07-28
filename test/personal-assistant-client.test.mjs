@@ -13,6 +13,7 @@ test("calls exactly one selected provider and validates one tool",async() => {
         arguments:{
           libraryKey:"personal-knowledge",folderSegments:[],
           title:"资料",summary:"资料摘要。",tags:[],
+          sourceIds:[],
           knowledgeSections:{
             keyFacts:["事实"],structureAndMainContent:"正文。",
             reusableContent:[],sourceNotes:"完整来源。",

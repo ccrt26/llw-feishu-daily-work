@@ -29,6 +29,7 @@ export function adaptProviderResult({provider,raw}) {
     if ((raw.type==="tool_call"||raw.action==="tool_call")&&
         safeName(raw.toolName||raw.name)&&
         plainObject(raw.arguments)&&
+        toolEnvelopeOnly(raw)&&
         !Object.hasOwn(raw,"text")&&!Object.hasOwn(raw,"question")) {
       return {
         kind:"tool",
@@ -50,6 +51,11 @@ function safeName(value) {
 }
 function plainObject(value) {
   return value&&typeof value==="object"&&!Array.isArray(value);
+}
+function toolEnvelopeOnly(value) {
+  return Object.keys(value).every(key=>
+    new Set(["type","action","toolName","name","arguments"]).has(key)
+  );
 }
 function reject() {
   throw new Error("provider_result_invalid");

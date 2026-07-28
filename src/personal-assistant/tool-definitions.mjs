@@ -4,6 +4,12 @@ const string=(maxLength,minLength=1)=>({
 const stringArray=(maxItems,maxLength)=>({
   type:"array",maxItems,items:string(maxLength)
 });
+const sourceId=()=>({
+  type:"string",pattern:"^source-00[1-8]$"
+});
+const sourceIds=()=>({
+  type:"array",maxItems:8,uniqueItems:true,items:sourceId()
+});
 
 const definitions={
   record_daily_work:{
@@ -41,23 +47,34 @@ const definitions={
   },
   archive_dining_invoice:{
     name:"archive_dining_invoice",
-    description:"归档当前已安全准备的一张餐饮发票；当前来源由程序自动绑定。",
+    description:"批量归档当前来源中的一至八张餐饮发票；每项必须绑定一个当前 sourceId。",
     parameters:{
       type:"object",additionalProperties:false,
-      required:["extraction"],
+      required:["items"],
       properties:{
-        extraction:{
-          type:"object",additionalProperties:false,
-          required:["invoice","field_quality","category","document_verification"],
-          properties:{
-            invoice:invoiceFields(string(500,0)),
-            field_quality:invoiceFields({
-              type:"string",enum:["clear","missing","unclear"]
-            }),
-            category:{type:"string",enum:["dining","non_dining","uncertain"]},
-            document_verification:{
-              type:"string",
-              enum:["single_invoice","multiple_invoices","conflicting_fields","unclear"]
+        items:{
+          type:"array",minItems:1,maxItems:8,
+          uniqueItems:true,"x-unique-by":"sourceId",
+          items:{
+            type:"object",additionalProperties:false,
+            required:["sourceId","extraction"],
+            properties:{
+              sourceId:sourceId(),
+              extraction:{
+                type:"object",additionalProperties:false,
+                required:["invoice","field_quality","category","document_verification"],
+                properties:{
+                  invoice:invoiceFields(string(500,0)),
+                  field_quality:invoiceFields({
+                    type:"string",enum:["clear","missing","unclear"]
+                  }),
+                  category:{type:"string",enum:["dining","non_dining","uncertain"]},
+                  document_verification:{
+                    type:"string",
+                    enum:["single_invoice","multiple_invoices","conflicting_fields","unclear"]
+                  }
+                }
+              }
             }
           }
         }
@@ -70,7 +87,8 @@ const definitions={
     parameters:{
       type:"object",additionalProperties:false,
       required:[
-        "libraryKey","folderSegments","title","summary","tags","knowledgeSections"
+        "libraryKey","folderSegments","title","summary","tags","sourceIds",
+        "knowledgeSections"
       ],
       properties:{
         libraryKey:{type:"string",pattern:"^[a-z][a-z0-9_-]{0,63}$"},
@@ -78,6 +96,7 @@ const definitions={
         title:string(200),
         summary:string(2_000),
         tags:stringArray(20,64),
+        sourceIds:sourceIds(),
         knowledgeSections:{
           type:"object",additionalProperties:false,
           required:[
@@ -102,8 +121,9 @@ const definitions={
     description:"根据当前已确认内容生成一个 DOCX、PPTX 或 XLSX 文件。",
     parameters:{
       type:"object",additionalProperties:false,
-      required:["format","title","content"],
+      required:["sourceIds","format","title","content"],
       properties:{
+        sourceIds:sourceIds(),
         format:{type:"string",enum:["docx","pptx","xlsx"]},
         title:string(200),
         content:string(262_144)
@@ -151,6 +171,12 @@ function validateSchema(schema,value) {
     if (!Array.isArray(value)||
         value.length<(schema.minItems??0)||
         value.length>(schema.maxItems??Number.MAX_SAFE_INTEGER)) reject();
+    if (schema.uniqueItems&&
+        new Set(value.map(stableJson)).size!==value.length) reject();
+    if (schema["x-unique-by"]) {
+      const field=schema["x-unique-by"];
+      if (new Set(value.map(item=>item?.[field])).size!==value.length) reject();
+    }
     for (const item of value) validateSchema(schema.items,item);
     return;
   }
@@ -163,6 +189,16 @@ function validateSchema(schema,value) {
     return;
   }
   reject();
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value&&typeof value==="object") {
+    return `{${Object.keys(value).sort().map(key=>
+      `${JSON.stringify(key)}:${stableJson(value[key])}`
+    ).join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 function deepFreeze(value) {
