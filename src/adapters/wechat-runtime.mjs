@@ -1,6 +1,7 @@
 import {createHash,randomUUID} from "node:crypto";
 import {extname} from "node:path";
 import {createWechatIncomingMessage} from "../core/incoming-message.mjs";
+import {isUnsupportedMediaExtension} from "../core/media-support.mjs";
 
 const MAX_CURSOR_BYTES=1024*1024;
 const MAX_SEEN=2000;
@@ -143,13 +144,22 @@ function toIncoming(raw,binding,resources) {
   if (!nonempty(rawName)) return {};
   const displayName=rawName.split(/[\\/]/).at(-1).slice(0,255);
   const extension=type==="image"?"":extname(displayName).slice(1).toLowerCase();
+  const supportedFile=type==="file"&&new Set([
+    "pdf","txt","md","docx","pptx","xlsx"
+  ]).has(extension);
+  const unsupportedMedia=type==="file"&&
+    isUnsupportedMediaExtension(extension);
   if (!displayName||extension.length>20||
-      type==="file"&&!new Set([
-        "pdf","txt","md","docx","pptx","xlsx"
-      ]).has(extension)) return {};
-  const resourceId=`wxr_${randomUUID().replaceAll("-","")}`;
-  while (resources.size>=MAX_RESOURCES) resources.delete(resources.keys().next().value);
-  resources.set(resourceId,{url,aesKey,type,displayName,extension});
+      type==="file"&&!supportedFile&&!unsupportedMedia) return {};
+  const resourceId=`${unsupportedMedia?"wxu":"wxr"}_${
+    randomUUID().replaceAll("-","")
+  }`;
+  if (!unsupportedMedia) {
+    while (resources.size>=MAX_RESOURCES) {
+      resources.delete(resources.keys().next().value);
+    }
+    resources.set(resourceId,{url,aesKey,type,displayName,extension});
+  }
   return {message:createWechatIncomingMessage({
     messageId:id,
     userId:raw.from_user_id,

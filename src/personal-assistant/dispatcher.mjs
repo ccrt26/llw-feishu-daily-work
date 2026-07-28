@@ -4,6 +4,7 @@ import {
 } from "../core/security-gate.mjs";
 import {createFeishuIncomingMessage} from "../core/incoming-message.mjs";
 import {handleModelCommand} from "../core/model-command.mjs";
+import {isUnsupportedMediaExtension} from "../core/media-support.mjs";
 import {isConversationCancellation} from "./conversation.mjs";
 import {SourceBurstCollector} from "./source-burst-collector.mjs";
 
@@ -364,11 +365,6 @@ function validTurnShape(message) {
     Array.isArray(message.attachments)&&message.attachments.length<=8;
 }
 
-const UNSUPPORTED_MEDIA_EXTENSIONS=new Set([
-  "aac","aif","aiff","avi","flac","m4a","m4v","mkv",
-  "mov","mp3","mp4","ogg","opus","wav","webm"
-]);
-
 function hasUnsupportedMedia(message) {
   return message.attachments.some(attachment=>{
     if (attachment?.type!=="file") return false;
@@ -380,7 +376,7 @@ function hasUnsupportedMedia(message) {
       :"";
     const extension=(declared||name.split(".").pop()||"")
       .trim().toLowerCase().replace(/^\./u,"");
-    return UNSUPPORTED_MEDIA_EXTENSIONS.has(extension);
+    return isUnsupportedMediaExtension(extension);
   });
 }
 

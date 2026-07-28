@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {createWechatApi} from "../src/adapters/wechat-api.mjs";
 import {startWechatListener} from "../src/adapters/wechat-runtime.mjs";
 import {Dispatcher} from "../src/core/dispatcher.mjs";
+import {PersonalAssistantDispatcher} from "../src/personal-assistant/dispatcher.mjs";
 
 const owner="wx-owner";
 const apiBaseUrl="https://ilinkai.weixin.qq.com";
@@ -364,6 +365,64 @@ test("keeps one image, PDF or Office media reference only in the current in-memo
     assert.match(id,/^wxr_[a-f0-9]{32}$/);
     assert.equal(channelState.resources.get(id).url,mediaUrl);
   }
+});
+
+test("passes declared unsupported media metadata to one deterministic assistant rejection without download",async()=>{
+  const channelState=state();
+  const outcomes=new Map();
+  const sends=[];
+  let coordinatorCalls=0;
+  const dispatcher=new PersonalAssistantDispatcher({
+    binding:{senderId:"feishu-owner",chatId:"feishu-chat"},
+    bindings:{wechat:{userId:owner,conversationId:owner}},
+    state:{
+      hasOutcome:key=>outcomes.has(key),
+      async saveOutcome(key,value){
+        outcomes.set(key,{...structuredClone(value),replied:false});
+      },
+      async markReplied(key){outcomes.get(key).replied=true;}
+    },
+    coordinator:{async handle(){
+      coordinatorCalls+=1;
+      return {status:"committed"};
+    }},
+    modelMode:{},deepseekEnabled:false,
+    messenger:{async send(value){sends.push(structuredClone(value));}}
+  });
+  const replies=[
+    {ret:0,get_updates_buf:"cursor-2",msgs:[{
+      ...baseMessage,message_id:2101,
+      item_list:[{type:4,file_item:{
+        file_name:"LLW_V401_UNSUPPORTED_AUDIO.aiff",
+        media:{
+          full_url:"https://media.weixin.qq.com/must-not-download",
+          aes_key:"MDEyMzQ1Njc4OWFiY2RlZg=="
+        }
+      }}]
+    }]},
+    {ret:1,errcode:-14}
+  ];
+  const listener=await startWechatListener({
+    api:{getUpdates:async()=>replies.shift()},
+    state:channelState,
+    binding:{userId:owner,conversationId:owner},
+    onMessage:message=>dispatcher.acceptIncomingMessage(message),
+    retryDelayMs:0
+  });
+  await listener.done;
+  await dispatcher.flushAcceptedMessages();
+
+  assert.equal(coordinatorCalls,0);
+  assert.equal(outcomes.size,1);
+  const outcome=[...outcomes.values()][0];
+  assert.equal(outcome.status,"rejected");
+  assert.equal(outcome.reasonCode,"unsupported_media");
+  assert.deepEqual(outcome.artifacts,[]);
+  assert.equal(outcome.replied,true);
+  assert.match(outcome.reply,/尚未支持音频或视频/u);
+  assert.equal(sends.length,1);
+  assert.equal(channelState.resources.size,0);
+  assert.deepEqual(channelState.writes,["cursor-2"]);
 });
 
 test("reports a safe reason when a bound WeChat file event cannot enter the assistant",async () => {
