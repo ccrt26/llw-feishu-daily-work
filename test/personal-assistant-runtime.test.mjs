@@ -105,3 +105,73 @@ test("explicit cancellation clears waiting state without preparation, AI or Writ
   assert.equal(saved.noReplyRequired,true);
 });
 
+test("persists a proposed long-term rule only after exact same-entry confirmation",async()=>{
+  const conversations={feishu:null,wechat:null};
+  const outcomes=new Map(),sent=[];
+  let prepares=0,assistantCalls=0,confirmedRule=null;
+  const rule="清晰且符合归档规则的餐饮发票默认归档。";
+  const rulesStore={
+    async load(){return confirmedRule?[confirmedRule]:[];},
+    async confirm(value){
+      assert.equal(value,rule);
+      confirmedRule=value;
+      return {status:"created",rules:[value]};
+    }
+  };
+  const coordinator=new PersonalAssistantCoordinator({
+    prepareSource:async()=>{
+      prepares+=1;
+      return {
+        preparedSource:{},evidence:null,imageFiles:[],cleanup:async()=>{}
+      };
+    },
+    assistant:{async decide(context){
+      assistantCalls+=1;
+      if (assistantCalls===1) {
+        assert.deepEqual(context.confirmedPersonalRules,[]);
+        return {
+          kind:"ask",
+          question:"以后遇到清晰的餐饮发票，都默认归档。确认吗？",
+          waitingType:"waiting_confirmation",preparedTool:null,
+          preparedRule:rule
+        };
+      }
+      assert.deepEqual(context.confirmedPersonalRules,[rule]);
+      return {kind:"reply",text:"规则已在后续任务中生效。"};
+    }},
+    writer:{},dailyWriter:{},invoiceWriter:{},
+    outcomeStore:{
+      async get(key){return outcomes.get(key)||null;},
+      async save(outcome,key){outcomes.set(key,structuredClone(outcome));},
+      async markReplied(){}
+    },
+    messenger:{async send(value){sent.push(structuredClone(value));}},
+    conversationStore:{
+      async get(source){return conversations[source];},
+      async set(source,value){conversations[source]=structuredClone(value);},
+      async clear(source){conversations[source]=null;}
+    },
+    personalRules:[],personalRulesStore:rulesStore,
+    model:"codex",skillVersion:"4.0.1"
+  });
+  const proposed=await coordinator.handle(message({
+    source:"feishu",id:"rule-1",
+    instructionText:"以后清晰的餐饮发票都这样归档"
+  }));
+  assert.equal(proposed.status,"awaiting_clarification");
+  assert.equal(conversations.feishu.confirmed.ruleProposal,rule);
+  const confirmed=await coordinator.handle(message({
+    source:"feishu",id:"rule-2",instructionText:"确认"
+  }));
+  assert.equal(confirmed.status,"committed");
+  assert.equal(confirmedRule,rule);
+  assert.equal(conversations.feishu,null);
+  assert.equal(prepares,1);
+  assert.equal(assistantCalls,1);
+  await coordinator.handle(message({
+    source:"feishu",id:"rule-3",instructionText:"这条规则生效了吗"
+  }));
+  assert.equal(prepares,2);
+  assert.equal(assistantCalls,2);
+  assert.equal(sent.length,3);
+});

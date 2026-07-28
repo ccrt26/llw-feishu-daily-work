@@ -17,6 +17,9 @@ import {
 import {
   KnowledgeWriter
 } from "../src/capabilities/knowledge-ingest/knowledge-writer.mjs";
+import {
+  InvoiceArchiveWriter
+} from "../src/capabilities/invoice/archive-writer.mjs";
 import {createSourceEvidence} from "../src/personal-assistant/source-evidence.mjs";
 import {PersonalAssistantClient} from "../src/personal-assistant/client.mjs";
 import {PersonalAssistantCoordinator} from "../src/personal-assistant/coordinator.mjs";
@@ -247,6 +250,150 @@ test("WeChat waiting_file DOCX travels through real preparation, State, Writer, 
       /source_format: "docx"[\s\S]*交流方案正文/u
     );
     assert.ok(state.getOutcome("wechat:wx-file-2"));
+  } finally {
+    await rm(root,{recursive:true,force:true});
+  }
+});
+
+test("no-text Feishu dining invoice reaches the real archive Writer and one reply",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"llw-v401-invoice-journey-"));
+  try {
+    const image=join(root,"source.png");
+    await writeFile(image,Buffer.from([
+      0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0x00
+    ]),{mode:0o600});
+    const vaultRoot=join(root,"vault");
+    await mkdir(join(vaultRoot,".obsidian"),{recursive:true,mode:0o700});
+    await mkdir(join(vaultRoot,".llw-system"),{recursive:true,mode:0o700});
+    await mkdir(
+      join(vaultRoot,"亚信工作","日常发票","餐饮发票"),
+      {recursive:true,mode:0o700}
+    );
+    await writeFile(
+      join(vaultRoot,".llw-system","SYSTEM_MAP.md"),
+      "# synthetic\n",{mode:0o600}
+    );
+    const state=await StateStore.open(join(root,"state.json"));
+    const extraction={
+      invoice:{
+        invoice_number:"SYNTHETIC-1",issue_date:"2026-07-28",
+        buyer_name:"亚信科技（成都）有限公司",
+        buyer_tax_id:"91510100732356360H",
+        seller_name:"合成测试餐厅",item_name:"餐饮服务",
+        total_with_tax:"100.00"
+      },
+      field_quality:{
+        invoice_number:"clear",issue_date:"clear",buyer_name:"clear",
+        buyer_tax_id:"clear",seller_name:"clear",item_name:"clear",
+        total_with_tax:"clear"
+      },
+      category:"dining",document_verification:"single_invoice"
+    };
+    const assistant=new PersonalAssistantClient({
+      codex:async context=>{
+        assert.equal(context.instructionText,"");
+        assert.equal(context.sourceEvidence.kind,"image");
+        return {
+          type:"tool_call",toolName:"archive_dining_invoice",
+          arguments:{extraction}
+        };
+      },
+      deepseek:async()=>{throw new Error("unexpected");}
+    });
+    const prepareSource=createAssistantSourcePreparer({
+      download:async()=>({file:image,tempDir:root}),
+      inspect:async()=>({
+        kind:"supported_image",format:"png",extension:"png"
+      }),
+      preparePdf:async()=>{throw new Error("unexpected");},
+      prepareOffice:async()=>{throw new Error("unexpected");},
+      prepareTextFile:async()=>{throw new Error("unexpected");},
+      cleanup:async()=>{}
+    });
+    const sent=[];
+    const coordinator=new PersonalAssistantCoordinator({
+      prepareSource,assistant,
+      invoiceWriter:new InvoiceArchiveWriter({vaultRoot,state}),
+      outcomeStore:{
+        get:key=>state.getOutcome(key),
+        save:(outcome,key)=>state.saveOutcome(key,outcome),
+        markReplied:key=>state.markReplied(key)
+      },
+      messenger:{async send(value){sent.push(structuredClone(value));}},
+      personalRules:["清晰且符合归档规则的餐饮发票默认归档。"],
+      model:"codex",skillVersion:"4.0.1"
+    });
+    const outcome=await coordinator.handle(createFeishuIncomingMessage({
+      messageId:"invoice-1",senderId:"owner",chatId:"private-chat",
+      messageType:"image",content:"[Image: img_synthetic]",
+      instructionText:"",createTimeMs:1785196800000
+    }));
+    assert.equal(outcome.status,"committed");
+    assert.equal(outcome.artifacts.length,1);
+    assert.equal(
+      await readFile(join(vaultRoot,outcome.artifacts[0]),"hex"),
+      await readFile(image,"hex")
+    );
+    assert.equal(sent.length,1);
+    assert.equal(state.listInvoiceTransactions().at(-1).status,"published");
+  } finally {
+    await rm(root,{recursive:true,force:true});
+  }
+});
+
+test("same-turn Feishu PDF read-only request reaches Reply with zero Writers",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"llw-v401-pdf-journey-"));
+  try {
+    const pdf=join(root,"source.pdf");
+    await writeFile(pdf,Buffer.from("%PDF-1.7\nsynthetic"),{mode:0o600});
+    let writerCalls=0;
+    const sent=[],saved=[];
+    const coordinator=new PersonalAssistantCoordinator({
+      prepareSource:createAssistantSourcePreparer({
+        download:async()=>({file:pdf,tempDir:root}),
+        inspect:async()=>({kind:"pdf",format:"pdf",extension:"pdf"}),
+        preparePdf:async()=>({
+          originalFile:pdf,detectedFormat:"pdf",archiveExtension:"pdf",
+          pageImages:[join(root,"page-1.png")],
+          extractedText:"这是一份合成验收 PDF。",
+          documentFacts:{pageCount:1,textAvailable:true}
+        }),
+        prepareOffice:async()=>{throw new Error("unexpected");},
+        prepareTextFile:async()=>{throw new Error("unexpected");},
+        cleanup:async()=>{}
+      }),
+      assistant:new PersonalAssistantClient({
+        codex:async context=>{
+          assert.equal(context.instructionText,"总结，不保存");
+          assert.equal(context.sourceEvidence.kind,"pdf");
+          return {type:"reply",text:"这是一份合成 PDF 摘要。"};
+        },
+        deepseek:async()=>{throw new Error("unexpected");}
+      }),
+      writer:{async commit(){writerCalls+=1;}},
+      dailyWriter:{async commit(){writerCalls+=1;}},
+      invoiceWriter:{async archive(){writerCalls+=1;}},
+      artifactGenerator:async()=>{writerCalls+=1;},
+      outcomeStore:{
+        async get(){return null;},
+        async save(outcome){saved.push(structuredClone(outcome));},
+        async markReplied(){}
+      },
+      messenger:{async send(value){sent.push(structuredClone(value));}},
+      personalRules:["普通附件默认保存"],
+      model:"codex",skillVersion:"4.0.1"
+    });
+    const outcome=await coordinator.handle(createFeishuIncomingMessage({
+      messageId:"pdf-read-1",senderId:"owner",chatId:"private-chat",
+      messageType:"file",
+      content:'<file key="file_synthetic" name="材料.pdf"/>',
+      instructionText:"总结，不保存",createTimeMs:1785196800000
+    }));
+    assert.equal(outcome.status,"committed");
+    assert.equal(writerCalls,0);
+    assert.deepEqual(outcome.artifacts,[]);
+    assert.equal(saved.length,1);
+    assert.equal(sent.length,1);
   } finally {
     await rm(root,{recursive:true,force:true});
   }

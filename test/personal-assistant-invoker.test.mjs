@@ -61,6 +61,9 @@ test("invokes one private Skill read-only with bounded context and visual pages"
     assert.match(prompt,/总结，不保存/);
     assert.match(prompt,/save_knowledge/);
     assert.match(prompt,/不得提前宣称工具成功/);
+    assert.match(
+      prompt,
+      /waiting_confirmation.*preparedRule/s
+    );
   } finally { await rm(root,{recursive:true,force:true}); }
 });
-

@@ -12,7 +12,7 @@ export class PersonalAssistantCoordinator {
     prepareSource,assistant,writer,dailyWriter,invoiceWriter,
     documentWorkspace,artifactGenerator,outcomeStore,messenger,
     conversationStore=null,loadDailyCandidates=async()=>[],
-    personalRules,model,selectModel=null,skillVersion
+    personalRules,personalRulesStore=null,model,selectModel=null,skillVersion
   }) {
     this.prepareSource=prepareSource;
     this.assistant=assistant;
@@ -26,6 +26,7 @@ export class PersonalAssistantCoordinator {
     this.conversationStore=conversationStore;
     this.loadDailyCandidates=loadDailyCandidates;
     this.personalRules=[...personalRules];
+    this.personalRulesStore=personalRulesStore;
     this.model=model;
     this.selectModel=selectModel;
     this.skillVersion=skillVersion;
@@ -52,12 +53,31 @@ export class PersonalAssistantCoordinator {
       await this.outcomeStore.save(outcome,key);
       return outcome;
     }
+    if (active?.waitingType==="waiting_confirmation"&&
+        typeof active.confirmed?.ruleProposal==="string"&&
+        isExactConfirmation(message.instructionText)) {
+      return this.confirmPersonalRule({
+        key,message,rule:active.confirmed.ruleProposal
+      });
+    }
     const turnMessage=active?.waitingType==="waiting_file"&&
       message.attachments.length===1&&!message.instructionText.trim()
       ?{...message,instructionText:active.instructionText}
       :message;
     const model=active?.model||
       (this.selectModel?await this.selectModel():this.model);
+    if (model==="deepseek"&&turnMessage.attachments.length) {
+      await this.conversationStore?.clear(message.source);
+      const outcome={
+        status:"rejected",
+        reply:"当前 DeepSeek 仅支持纯文字每日工作；附件任务请先切换为 Codex。",
+        artifacts:[],replyFiles:[],noReplyRequired:false,
+        replyTarget:structuredClone(message.replyTarget)
+      };
+      await this.outcomeStore.save(outcome,key);
+      await this.sendOutcome(key,outcome,message.replyTarget);
+      return outcome;
+    }
     let prepared;
     try {
       prepared=await this.prepareSource(turnMessage);
@@ -71,7 +91,9 @@ export class PersonalAssistantCoordinator {
         message:turnMessage,
         evidence:prepared?.evidence??null,
         conversation:active,
-        personalRules:this.personalRules,
+        personalRules:this.personalRulesStore
+          ?await this.personalRulesStore.load()
+          :this.personalRules,
         model,
         toolDeclarations:getModelToolDeclarations(),
         dailyCandidates:await this.loadDailyCandidates()
@@ -86,7 +108,8 @@ export class PersonalAssistantCoordinator {
         result={
           status:"awaiting_clarification",reply:decision.question,artifacts:[],
           waitingType:decision.waitingType??"waiting_answer",
-          preparedTool:decision.preparedTool??null
+          preparedTool:decision.preparedTool??null,
+          preparedRule:decision.preparedRule??null
         };
       } else if (decision.toolCall.name==="save_knowledge") {
         result=await executeSaveKnowledge({
@@ -136,7 +159,12 @@ export class PersonalAssistantCoordinator {
           question:result.reply,
           instructionText:turnMessage.instructionText,
           preparedTool:result.preparedTool,
-          confirmed:active?.confirmed??{},
+          confirmed:{
+            ...(active?.confirmed??{}),
+            ...(result.preparedRule
+              ?{ruleProposal:result.preparedRule}
+              :{})
+          },
           turns:boundedTurns(active,turnMessage,result.reply),
           model,
           startedAt:active?.startedAt??message.receivedAt,
@@ -172,11 +200,45 @@ export class PersonalAssistantCoordinator {
     });
     await this.outcomeStore.markReplied?.(key);
   }
+
+  async confirmPersonalRule({key,message,rule}) {
+    let result;
+    try {
+      if (!this.personalRulesStore) throw new Error("rules_disabled");
+      const receipt=await this.personalRulesStore.confirm(rule);
+      result={
+        status:receipt.status==="created"?"committed":"existing",
+        reply:receipt.status==="created"
+          ?"长期个人规则已保存。"
+          :"这条长期个人规则已经保存过。",
+        artifacts:[]
+      };
+    } catch {
+      result={
+        status:"failed",
+        reply:"本次长期个人规则没有保存，请稍后重试。",
+        artifacts:[]
+      };
+    }
+    await this.conversationStore?.clear(message.source);
+    const outcome={
+      ...result,replyFiles:[],noReplyRequired:false,
+      replyTarget:structuredClone(message.replyTarget)
+    };
+    await this.outcomeStore.save(outcome,key);
+    await this.sendOutcome(key,outcome,message.replyTarget);
+    return outcome;
+  }
 }
 
 function isCancellation(value) {
   return typeof value==="string"&&
     /^(?:不用了[，,。\s]*)?(?:取消|算了|不用了)[。！!\s]*$/u.test(value.trim());
+}
+
+function isExactConfirmation(value) {
+  return typeof value==="string"&&
+    /^确认(?:保存(?:为长期规则)?)?[。！!\s]*$/u.test(value.trim());
 }
 
 function boundedTurns(active,message,reply) {

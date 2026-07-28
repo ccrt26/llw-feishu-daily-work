@@ -13,8 +13,14 @@ test("version 6 enters one personal-assistant composition before legacy routing"
   for (const expected of [
     "PersonalAssistantClient","createAssistantSourcePreparer",
     "PersonalAssistantCoordinator","PersonalAssistantDispatcher",
-    "invokePersonalAssistantCodex","invokePersonalAssistantDeepSeek"
+    "invokePersonalAssistantCodex","invokePersonalAssistantDeepSeek",
+    "PersonalRulesStore"
   ]) assert.equal(source.includes(expected),true);
+  assert.match(
+    source,
+    /config\.personalAssistant\.personalRulesFile\s*\?\s*await PersonalRulesStore\.open/
+  );
+  assert.match(source,/personalRulesStore,\s*\n\s*selectModel:/);
   const {V6_PRIVATE_SKILL_ALLOWLIST}=await import("../src/main.mjs");
   assert.deepEqual(V6_PRIVATE_SKILL_ALLOWLIST,[{
     name:"llw-personal-assistant",

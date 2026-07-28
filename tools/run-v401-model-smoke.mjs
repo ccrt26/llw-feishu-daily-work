@@ -49,6 +49,17 @@ export async function runV401ModelSmoke({
       jobRef:"source.txt"
     }
   };
+  const codexRuleContext={
+    ...common,model:"codex",entry:"feishu",
+    instructionText:"以后清晰且符合归档规则的餐饮发票都默认归档。",
+    sourceEvidence:{
+      kind:"text",displayName:"message.txt",byteSize:72,
+      sha256:"c".repeat(64),
+      text:"以后清晰且符合归档规则的餐饮发票都默认归档。",
+      structure:[],integrity:"complete",limitations:[],
+      jobRef:"source.txt"
+    }
+  };
   const client=new PersonalAssistantClient({
     codex:context=>codexInvoke({
       codexPath:config.codexPath,workspaceRoot:config.vaultRoot,
@@ -62,20 +73,28 @@ export async function runV401ModelSmoke({
     })
   });
   const codex=await client.decide(codexContext);
+  const codexRule=await client.decide(codexRuleContext);
   const deepseek=config.deepseekEnabled
     ?await client.decide(deepseekContext)
     :null;
   return {
     rawInputsIncluded:false,rawOutputsIncluded:false,
     codex:safeDecision(codex),
+    codexRule:safeDecision(codexRule),
     deepseek:deepseek?safeDecision(deepseek):{skipped:true}
   };
 }
 
 function safeDecision(value) {
-  return value.kind==="tool"
-    ?{kind:"tool",toolName:value.toolCall.name}
-    :{kind:value.kind};
+  if (value.kind==="tool") {
+    return {kind:"tool",toolName:value.toolCall.name};
+  }
+  if (value.kind==="ask") {
+    return {
+      kind:"ask",hasPreparedRule:typeof value.preparedRule==="string"
+    };
+  }
+  return {kind:value.kind};
 }
 
 if (process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)) {

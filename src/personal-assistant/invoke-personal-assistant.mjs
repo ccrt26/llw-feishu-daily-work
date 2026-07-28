@@ -28,7 +28,7 @@ export async function invokePersonalAssistantCodex({
       "使用 $llw-personal-assistant。",
       "严格根据下面的主 Skill、references、CONTEXT_JSON 和其中唯一工具定义，选择一次直接回复、一次询问或一个工具调用。",
       "直接回复：{\"type\":\"reply\",\"text\":\"...\"}",
-      "询问：{\"type\":\"ask\",\"question\":\"...\",\"waitingType\":\"waiting_answer|waiting_file|waiting_confirmation\",\"preparedTool\":null}",
+      "询问：{\"type\":\"ask\",\"question\":\"...\",\"waitingType\":\"waiting_answer|waiting_file|waiting_confirmation\",\"preparedTool\":null,\"preparedRule\":null}；只有复述待确认的长期规则时，waitingType 使用 waiting_confirmation 且 preparedRule 填写一句安全、可读规则。",
       "工具：{\"type\":\"tool_call\",\"toolName\":\"registered_name\",\"arguments\":{...}}",
       "只输出一个 JSON 对象；不得输出旧 Router/Capability 包装；不得提前宣称工具成功。",
       "SKILL_BUNDLE:",

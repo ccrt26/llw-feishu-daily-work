@@ -64,6 +64,7 @@ import {
 import {
   PersonalAssistantDispatcher
 } from "./personal-assistant/dispatcher.mjs";
+import {PersonalRulesStore} from "./personal-assistant/personal-rules.mjs";
 
 const run=promisify(execFile);
 export const PRIVATE_SKILL_ALLOWLIST=[
@@ -157,6 +158,11 @@ async function runPersonalAssistantMain(config) {
     privateSkillCatalog,config.personalAssistant.skillName
   );
   await validatePdfiumRuntime(invoiceConfig.pdfProcessorPath);
+  const personalRulesStore=config.personalAssistant.personalRulesFile
+    ?await PersonalRulesStore.open(
+      config.personalAssistant.personalRulesFile
+    )
+    :null;
   const state=await StateStore.open(config.stateFile);
   const modelMode=new ModelMode(config.modelStateFile);
   const binding={senderId:config.senderId,chatId:config.chatId};
@@ -276,6 +282,7 @@ async function runPersonalAssistantMain(config) {
     },
     loadDailyCandidates:()=>dailyCatalog.list({limit:20}).catch(()=>[]),
     personalRules:[],
+    personalRulesStore,
     selectModel:async()=>effectiveModel(
       await modelMode.read(),config.deepseekEnabled
     ),

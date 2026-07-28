@@ -1,3 +1,5 @@
+import {validatePersonalRule} from "./personal-rules.mjs";
+
 export function adaptProviderResult({provider,raw}) {
   try {
     if (!new Set(["codex","deepseek"]).has(provider)||
@@ -8,11 +10,21 @@ export function adaptProviderResult({provider,raw}) {
     if ((raw.type==="ask"||raw.action==="ask")&&safeText(raw.question,1000)) {
       const waitingType=raw.waitingType??"waiting_answer";
       const preparedTool=raw.preparedTool??null;
+      const preparedRule=raw.preparedRule??null;
       if (!new Set([
         "waiting_answer","waiting_file","waiting_confirmation"
       ]).has(waitingType)||
-          (preparedTool!==null&&!safeName(preparedTool))) reject();
-      return {kind:"ask",question:raw.question,waitingType,preparedTool};
+          (preparedTool!==null&&!safeName(preparedTool))||
+          (preparedRule!==null&&(
+            waitingType!=="waiting_confirmation"||
+            preparedTool!==null
+          ))) reject();
+      return {
+        kind:"ask",question:raw.question,waitingType,preparedTool,
+        ...(preparedRule===null
+          ?{}
+          :{preparedRule:validatePersonalRule(preparedRule)})
+      };
     }
     if ((raw.type==="tool_call"||raw.action==="tool_call")&&
         safeName(raw.toolName||raw.name)&&
