@@ -287,22 +287,17 @@ test("no-text Feishu dining invoice reaches the real archive Writer and one repl
     const assistant=new PersonalAssistantClient({
       codex:async context=>{
         assert.equal(context.instructionText,"");
-        assert.equal(context.sourceEvidence.kind,"image");
+        assert.equal(context.sources[0].mediaClass,"image");
         return {
           type:"tool_call",toolName:"archive_dining_invoice",
-          arguments:{extraction}
+          arguments:{items:[{sourceId:"source-001",extraction}]}
         };
       },
       deepseek:async()=>{throw new Error("unexpected");}
     });
     const prepareSource=createAssistantSourcePreparer({
+      tempRoot:join(root,"intake"),
       download:async()=>({file:image,tempDir:root}),
-      inspect:async()=>({
-        kind:"supported_image",format:"png",extension:"png"
-      }),
-      preparePdf:async()=>{throw new Error("unexpected");},
-      prepareOffice:async()=>{throw new Error("unexpected");},
-      prepareTextFile:async()=>{throw new Error("unexpected");},
       cleanup:async()=>{}
     });
     const sent=[];
@@ -345,22 +340,14 @@ test("split same-turn Feishu PDF request is coalesced before preparation and rea
     const sent=[],outcomes=new Map();
     const coordinator=new PersonalAssistantCoordinator({
       prepareSource:createAssistantSourcePreparer({
+        tempRoot:join(root,"intake"),
         download:async()=>({file:pdf,tempDir:root}),
-        inspect:async()=>({kind:"pdf",format:"pdf",extension:"pdf"}),
-        preparePdf:async()=>({
-          originalFile:pdf,detectedFormat:"pdf",archiveExtension:"pdf",
-          pageImages:[join(root,"page-1.png")],
-          extractedText:"这是一份合成验收 PDF。",
-          documentFacts:{pageCount:1,textAvailable:true}
-        }),
-        prepareOffice:async()=>{throw new Error("unexpected");},
-        prepareTextFile:async()=>{throw new Error("unexpected");},
         cleanup:async()=>{}
       }),
       assistant:new PersonalAssistantClient({
         codex:async context=>{
           assert.equal(context.instructionText,"总结，不保存");
-          assert.equal(context.sourceEvidence.kind,"pdf");
+          assert.equal(context.sources[0].format,"pdf");
           return {type:"reply",text:"这是一份合成 PDF 摘要。"};
         },
         deepseek:async()=>{throw new Error("unexpected");}
@@ -413,7 +400,7 @@ test("split same-turn Feishu PDF request is coalesced before preparation and rea
     assert.equal(sent.length,1);
     assert.equal(
       outcomes.get("feishu:pdf-text-2").reasonCode,
-      "coalesced_into_attachment"
+      "coalesced_into_turn"
     );
   } finally {
     await rm(root,{recursive:true,force:true});

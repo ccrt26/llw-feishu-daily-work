@@ -15,6 +15,10 @@ test("creates daily work once with Beijing-time facts and Writer receipt",async(
       operation:"create",targetRecordId:"",records:[record]
     }},
     messageId:"m1",createTime:1785196800000,
+    sourceBindings:[
+      {handle:{sourceId:"source-001"}},
+      {handle:{sourceId:"source-002"}}
+    ],
     writer:{async create(input){
       calls.push(input);
       return {files:["亚信工作/每日工作/2026年07月28日/工作记录.md"]};

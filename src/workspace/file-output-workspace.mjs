@@ -47,10 +47,10 @@ export class FileOutputWorkspace {
   }
 
   async generate({
-    sessionId,draftVersion,kind,displayName,draftText,generate
+    sessionId,draftVersion,kind,displayName,draftText,sources=[],generate
   }) {
     validateRequest({
-      sessionId,draftVersion,kind,displayName,draftText,generate
+      sessionId,draftVersion,kind,displayName,draftText,sources,generate
     });
     await ensurePrivateDirectory(this.tempRoot);
     await ensurePrivateDirectory(this.outputRoot);
@@ -69,10 +69,31 @@ export class FileOutputWorkspace {
       await mkdir(deliverable,{mode:0o700});
       const draftFile=join(jobRoot,"current-draft.md");
       await writeFile(draftFile,draftText,{encoding:"utf8",mode:0o600,flag:"wx"});
+      const sourceFiles=[];
+      if (sources.length) {
+        const sourceRoot=join(jobRoot,"sources");
+        await mkdir(sourceRoot,{mode:0o700});
+        for (const source of sources) {
+          await verifyGenerationSource(source);
+          const name=`${source.sourceId}.${source.format}`;
+          const destination=join(sourceRoot,name);
+          await copyFile(
+            source.absolutePath,destination,fsConstants.COPYFILE_EXCL
+          );
+          await chmod(destination,0o600);
+          const copied=await readFile(destination);
+          if (copied.length!==source.byteSize||
+              createHash("sha256").update(copied).digest("hex")!==
+                source.sha256) {
+            throw new Error("file_output_invalid");
+          }
+          sourceFiles.push(`sources/${name}`);
+        }
+      }
       const outputFile=join(deliverable,`output.${kind}`);
       await generate({
         jobRoot,draftFile,outputFile,kind,displayName,
-        sessionId,draftVersion
+        sessionId,draftVersion,sourceFiles
       });
       const entries=await readdir(deliverable,{withFileTypes:true});
       if (entries.length!==1||entries[0].name!==basename(outputFile)||
@@ -106,6 +127,30 @@ export class FileOutputWorkspace {
       throw new Error("file_output_invalid");
     } finally {
       await rm(jobRoot,{recursive:true,force:true}).catch(()=>{});
+    }
+  }
+
+  async verifyPublished(artifact) {
+    try {
+      if (!artifact||typeof artifact!=="object"||
+          !KINDS.has(artifact.kind)||
+          typeof artifact.path!=="string"||
+          typeof artifact.displayName!=="string") {
+        return false;
+      }
+      await ensurePrivateDirectory(this.outputRoot);
+      const root=resolve(this.outputRoot);
+      const path=resolve(artifact.path);
+      const child=relative(root,path);
+      if (!child||child.startsWith("..")||isAbsolute(child)) return false;
+      const verified=await inspectArtifact(path,{
+        kind:artifact.kind,displayName:artifact.displayName,
+        maxBytes:this.maxOutputBytes
+      });
+      return verified.sha256===artifact.sha256&&
+        verified.size===artifact.size;
+    } catch {
+      return false;
     }
   }
 
@@ -258,6 +303,7 @@ function validateRequest(value) {
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(value.sessionId)||
       !Number.isInteger(value.draftVersion)||value.draftVersion<1||
       value.draftVersion>1_000_000||!KINDS.has(value.kind)||
+      !Array.isArray(value.sources)||value.sources.length>8||
       typeof value.displayName!=="string"||
       value.displayName!==value.displayName.trim()||
       [...value.displayName].length<1||[...value.displayName].length>160||
@@ -266,6 +312,30 @@ function validateRequest(value) {
       typeof value.draftText!=="string"||!value.draftText.trim()||
       Buffer.byteLength(value.draftText,"utf8")>1024*1024||
       typeof value.generate!=="function") {
+    throw new Error("file_output_invalid");
+  }
+}
+
+async function verifyGenerationSource(source) {
+  if (!source||typeof source!=="object"||
+      !/^source-00[1-8]$/u.test(source.sourceId||"")||
+      !/^[a-z0-9]+$/u.test(source.format||"")||
+      !isAbsolute(source.absolutePath||"")||
+      basename(source.absolutePath)!==
+        `${source.sourceId}.${source.format}`||
+      !Number.isSafeInteger(source.byteSize)||source.byteSize<1||
+      source.byteSize>20*1024*1024||
+      !/^[a-f0-9]{64}$/u.test(source.sha256||"")) {
+    throw new Error("file_output_invalid");
+  }
+  const metadata=await lstat(source.absolutePath);
+  if (!metadata.isFile()||metadata.isSymbolicLink()||
+      metadata.uid!==process.getuid()||metadata.size!==source.byteSize||
+      (metadata.mode&0o077)!==0) {
+    throw new Error("file_output_invalid");
+  }
+  const bytes=await readFile(source.absolutePath);
+  if (createHash("sha256").update(bytes).digest("hex")!==source.sha256) {
     throw new Error("file_output_invalid");
   }
 }

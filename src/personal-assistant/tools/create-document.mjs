@@ -1,19 +1,35 @@
 import {validateToolCall} from "../tool-definitions.mjs";
+import {createSourceHandle} from "../source-handle.mjs";
 
 export async function executeCreateDocument({
-  toolCall,sessionId,draftVersion,workspace,generate
+  toolCall,sourceBindings,sessionId,draftVersion,workspace,generate
 }) {
   const call=validateToolCall(toolCall);
   if (call.name!=="create_document") throw new Error("tool_call_invalid");
-  const {format,title,content}=call.arguments;
+  const {format,title,content,sourceIds}=call.arguments;
   if (!safeTitle(title)) throw new Error("tool_call_invalid");
+  const bindings=bindingMap(sourceBindings);
+  const sources=sourceIds.map(sourceId=>{
+    const binding=bindings.get(sourceId);
+    if (!binding) throw new Error("tool_call_invalid");
+    return {
+      sourceId,
+      displayName:binding.handle.displayName,
+      format:binding.handle.format,
+      absolutePath:binding.absolutePath,
+      byteSize:binding.handle.byteSize,
+      sha256:binding.handle.sha256
+    };
+  });
   const displayName=`${title}.${format}`;
   try {
     const artifact=await workspace.generate({
       sessionId,draftVersion,kind:format,displayName,
-      draftText:content,generate
+      draftText:content,sources,generate
     });
-    if (!verifiedArtifact(artifact,format,displayName)) {
+    if (!verifiedArtifact(artifact,format,displayName)||
+        typeof workspace.verifyPublished!=="function"||
+        await workspace.verifyPublished(artifact)!==true) {
       throw new Error("artifact_invalid");
     }
     return {
@@ -32,6 +48,22 @@ export async function executeCreateDocument({
       artifacts:[]
     };
   }
+}
+
+function bindingMap(sourceBindings) {
+  if (!Array.isArray(sourceBindings)||sourceBindings.length>8) {
+    throw new Error("tool_call_invalid");
+  }
+  const result=new Map();
+  for (const binding of sourceBindings) {
+    if (!binding||typeof binding.absolutePath!=="string") {
+      throw new Error("tool_call_invalid");
+    }
+    const handle=createSourceHandle(binding.handle??binding);
+    if (result.has(handle.sourceId)) throw new Error("tool_call_invalid");
+    result.set(handle.sourceId,{...binding,handle});
+  }
+  return result;
 }
 
 function safeTitle(value) {

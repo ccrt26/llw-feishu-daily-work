@@ -135,16 +135,15 @@ export class PersonalAssistantCoordinator {
       } else if (decision.toolCall.name==="archive_dining_invoice") {
         result=await executeArchiveDiningInvoice({
           toolCall:decision.toolCall,
-          analysisInput:prepared.analysisInput,
-          transactionId:createHash("sha256")
-            .update(`invoice:${turnMessage.source}:${turnMessage.sourceMessageId}`)
-            .digest("hex").slice(0,32),
+          sourceBindings:prepared.sources,
+          taskKey:key,
           writer:this.invoiceWriter,
           currentInstruction:turnMessage.instructionText
         });
       } else if (decision.toolCall.name==="create_document") {
         result=await executeCreateDocument({
           toolCall:decision.toolCall,
+          sourceBindings:prepared.sources,
           sessionId:createHash("sha256")
             .update(`document:${turnMessage.source}:${turnMessage.sourceMessageId}`)
             .digest("hex").slice(0,32),
