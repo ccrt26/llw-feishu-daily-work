@@ -45,109 +45,137 @@ const KNOWLEDGE_SECTIONS={
 };
 
 test("Feishu text travels through real preparation, one assistant, tool, Writer, Outcome and Reply",async() => {
-  const order=[];
-  let assistantCalls=0,writerCalls=0;
-  const toolArguments={
-    libraryKey:"personal-knowledge",folderSegments:["学习资料"],
-    title:"交流准备",summary:"交流前的准备资料。",tags:["交流"],
-    sourceIds:[],
-    knowledgeSections:{
-      keyFacts:["先确认交流目标。"],
-      structureAndMainContent:"资料说明目标、对象和后续动作。",
-      reusableContent:["交流前确认目标。"],
-      sourceNotes:"根据完整文字来源忠实整理。",
-      contentIndex:"来源共一段。"
-    }
-  };
-  const assistant=new PersonalAssistantClient({
-    codex:async context=>{
-      assistantCalls+=1;
-      order.push("assistant");
-      assert.deepEqual(context.sources,[]);
-      assert.equal(context.instructionText.includes("保存到日常生活"),true);
-      return {type:"tool_call",toolName:"save_knowledge",arguments:toolArguments};
-    },
-    deepseek:async()=>{ throw new Error("unexpected"); }
-  });
-  const saved=[],outcomes=new Map();
-  const sent=[];
-  const state={
-    hasOutcome:key=>outcomes.has(key),
-    getOutcome:key=>outcomes.get(key)??null,
-    async saveOutcome(key,outcome){
-      outcomes.set(key,{...structuredClone(outcome),replied:false});
-    },
-    async markReplied(key){
-      outcomes.get(key).replied=true;
-    }
-  };
-  const coordinator=new PersonalAssistantCoordinator({
-    prepareSource:async message=>{
-      order.push("prepare");
-      return {
-        workspaceDir:"/private/tmp/llw-turn-text",
-        sources:[],cleanup:async()=>{}
-      };
-    },
-    assistant,
-    writer:{
-      async commit(input) {
-        writerCalls+=1;
-        order.push("writer");
-        assert.deepEqual(input.sources,[]);
-        assert.match(input.sourceSetDigest,/^[a-f0-9]{64}$/u);
-        return {
-          status:"created",knowledgeId:"k1",libraryKey:"personal-knowledge",
-          relativePath:"日常生活/学习资料/交流准备",
-          files:["日常生活/学习资料/交流准备/knowledge.md"]
-        };
-      }
-    },
-    outcomeStore:{
-      get:key=>state.getOutcome(key),
-      async save(outcome,key) {
-        order.push("outcome");
-        saved.push(outcome);
-        await state.saveOutcome(key,outcome);
+  const root=await mkdtemp(join(tmpdir(),"llw-v401-feishu-text-"));
+  try {
+    const vaultRoot=join(root,"vault");
+    const libraryRoot=join(vaultRoot,"personal-library");
+    await mkdir(join(vaultRoot,".obsidian"),{recursive:true,mode:0o700});
+    await mkdir(join(vaultRoot,".llw-system"),{recursive:true,mode:0o700});
+    await mkdir(libraryRoot,{recursive:true,mode:0o700});
+    await writeFile(
+      join(vaultRoot,".llw-system","SYSTEM_MAP.md"),
+      "# synthetic\n",{mode:0o600}
+    );
+    const order=[];
+    let assistantCalls=0,writerCalls=0;
+    const toolArguments={
+      libraryKey:"personal-knowledge",folderSegments:["学习资料"],
+      title:"交流准备",summary:"交流前的准备资料。",tags:["交流"],
+      sourceIds:[],
+      knowledgeSections:{
+        keyFacts:["先确认交流目标。"],
+        structureAndMainContent:"资料说明目标、对象和后续动作。",
+        reusableContent:["交流前确认目标。"],
+        sourceNotes:"根据完整文字来源忠实整理。",
+        contentIndex:"来源共一段。"
       },
-      markReplied:key=>state.markReplied(key)
-    },
-    messenger:{
-      async send(target,reply) { order.push("reply"); sent.push({target,reply}); }
-    },
-    personalRules:[],
-    selectModel:createPersonalAssistantModelSelector({
+    };
+    const assistant=new PersonalAssistantClient({
+      codex:async context=>{
+        assistantCalls+=1;
+        order.push("assistant");
+        assert.deepEqual(context.sources,[]);
+        assert.equal(context.instructionText.includes("保存到日常生活"),true);
+        return {
+          type:"tool_call",toolName:"save_knowledge",
+          arguments:toolArguments
+        };
+      },
+      deepseek:async()=>{ throw new Error("unexpected"); }
+    });
+    const realPrepareSource=createAssistantSourcePreparer({
+      tempRoot:join(root,"intake"),
+      download:async()=>{throw new Error("unexpected_download");}
+    });
+    const realWriter=new KnowledgeWriter({
+      vaultRoot,
+      libraries:[{
+        libraryKey:"personal-knowledge",displayName:"Synthetic",
+        aliases:[],root:libraryRoot
+      }]
+    });
+    const saved=[],outcomes=new Map();
+    const sent=[];
+    const state={
+      hasOutcome:key=>outcomes.has(key),
+      getOutcome:key=>outcomes.get(key)??null,
+      async saveOutcome(key,outcome){
+        outcomes.set(key,{...structuredClone(outcome),replied:false});
+      },
+      async markReplied(key){
+        outcomes.get(key).replied=true;
+      }
+    };
+    const coordinator=new PersonalAssistantCoordinator({
+      prepareSource:async message=>{
+        order.push("prepare");
+        return realPrepareSource(message);
+      },
+      assistant,
+      writer:{
+        async commit(input) {
+          writerCalls+=1;
+          order.push("writer");
+          assert.deepEqual(input.sources,[]);
+          assert.match(input.sourceSetDigest,/^[a-f0-9]{64}$/u);
+          return realWriter.commit(input);
+        }
+      },
+      outcomeStore:{
+        get:key=>state.getOutcome(key),
+        async save(outcome,key) {
+          order.push("outcome");
+          saved.push(outcome);
+          await state.saveOutcome(key,outcome);
+        },
+        markReplied:key=>state.markReplied(key)
+      },
+      messenger:{
+        async send(value) {
+          order.push("reply");
+          sent.push(structuredClone(value));
+        }
+      },
+      personalRules:[],
+      selectModel:createPersonalAssistantModelSelector({
+        modelMode:{async read(){return "codex";}},
+        deepseekEnabled:true
+      }),
+      model:"codex",
+      skillVersion:"4.0.1"
+    });
+    const dispatcher=new PersonalAssistantDispatcher({
+      binding:{senderId:"owner",chatId:"private-chat"},
+      bindings:{
+        feishu:{userId:"owner",conversationId:"private-chat"}
+      },
+      state,coordinator,
       modelMode:{async read(){return "codex";}},
-      deepseekEnabled:true
-    }),
-    model:"codex",
-    skillVersion:"4.0.1"
-  });
-  const dispatcher=new PersonalAssistantDispatcher({
-    binding:{senderId:"owner",chatId:"private-chat"},
-    bindings:{
-      feishu:{userId:"owner",conversationId:"private-chat"}
-    },
-    state,coordinator,
-    modelMode:{async read(){return "codex";}},
-    deepseekEnabled:true,
-    messenger:{async send(){}}
-  });
-  const message=createFeishuIncomingMessage({
-    messageId:"m-v401",senderId:"owner",chatId:"private-chat",
-    messageType:"text",
-    content:"把交流目标、对象和后续动作保存到日常生活/学习资料",
-    createTimeMs:1785196800000
-  });
-  const handled=await dispatcher.handleIncomingMessage(message);
-  const outcome=state.getOutcome("feishu:m-v401");
-  assert.deepEqual(order,["prepare","assistant","writer","outcome","reply"]);
-  assert.deepEqual(handled,{handled:true,status:"committed"});
-  assert.equal(assistantCalls,1);
-  assert.equal(writerCalls,1);
-  assert.equal(saved.length,1);
-  assert.equal(sent.length,1);
-  assert.equal(outcome.status,"committed");
+      deepseekEnabled:true,
+      messenger:{async send(){}}
+    });
+    const message=createFeishuIncomingMessage({
+      messageId:"m-v401",senderId:"owner",chatId:"private-chat",
+      messageType:"text",
+      content:"把交流目标、对象和后续动作保存到日常生活/学习资料",
+      createTimeMs:1785196800000
+    });
+    const handled=await dispatcher.handleIncomingMessage(message);
+    const outcome=state.getOutcome("feishu:m-v401");
+    assert.deepEqual(order,["prepare","assistant","writer","outcome","reply"]);
+    assert.deepEqual(handled,{handled:true,status:"committed"});
+    assert.equal(assistantCalls,1);
+    assert.equal(writerCalls,1);
+    assert.equal(saved.length,1);
+    assert.equal(sent.length,1);
+    assert.equal(outcome.status,"committed");
+    assert.match(
+      await readFile(join(vaultRoot,outcome.artifacts[0]),"utf8"),
+      /library_key: "personal-knowledge"[\s\S]*# 交流准备/u
+    );
+  } finally {
+    await rm(root,{recursive:true,force:true});
+  }
 });
 
 test("reply recovery reuses Outcome without rerunning assistant or Writer",async() => {
