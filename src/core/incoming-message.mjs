@@ -50,6 +50,14 @@ export function createWechatIncomingMessage(event) {
   if (event.type==="text") {
     return withLegacyText({...base,instructionText:event.text,attachments:[],replyTarget});
   }
+  if (event.type==="files") {
+    return withLegacyText({
+      ...base,
+      instructionText:optionalInstruction(event.instructionText),
+      attachments:event.attachments.map(attachment=>({...attachment})),
+      replyTarget
+    });
+  }
   return withLegacyText({
     ...base,
     instructionText:optionalInstruction(event.instructionText),
@@ -93,7 +101,7 @@ function validateWechatEvent(event) {
   const common=["messageId","userId","conversationId","createTimeMs","type","contextToken"];
   const allowed=new Set([
     ...common,
-    event.type==="text"?"text":"attachment",
+    event.type==="text"?"text":event.type==="files"?"attachments":"attachment",
     ...(event.type==="text"?[]:["instructionText"])
   ]);
   if (Object.keys(event).some(field=>!allowed.has(field))) throw new Error("invalid_incoming_message");
@@ -101,17 +109,38 @@ function validateWechatEvent(event) {
   for (const field of ["messageId","userId","conversationId"]) if (!bounded(event[field],512)) throw new Error("invalid_incoming_message");
   if (!bounded(event.contextToken,4096)) throw new Error("invalid_incoming_message");
   if (!Number.isFinite(event.createTimeMs)||event.createTimeMs<=0||Number.isNaN(new Date(event.createTimeMs).getTime())) throw new Error("invalid_incoming_message");
-  if (!new Set(["text","image","file"]).has(event.type)) throw new Error("invalid_incoming_message");
+  if (!new Set(["text","image","file","files"]).has(event.type)) throw new Error("invalid_incoming_message");
   if (event.type==="text") {
     if (!bounded(event.text,32_768)) throw new Error("invalid_incoming_message");
     return;
   }
-  const attachment=event.attachment;
-  if (!attachment||typeof attachment!=="object"||Array.isArray(attachment)) throw new Error("invalid_incoming_message");
-  if (Object.keys(attachment).some(field=>!new Set(["type","sourceAttachmentId","displayName","extension"]).has(field))) throw new Error("invalid_incoming_message");
-  if (attachment.type!==event.type||!bounded(attachment.sourceAttachmentId,512)||!bounded(attachment.displayName,255)||typeof attachment.extension!=="string"||Buffer.byteLength(attachment.extension,"utf8")>20) throw new Error("invalid_incoming_message");
   if (event.instructionText!==undefined&&
       !optionalBounded(event.instructionText,32_768)) {
+    throw new Error("invalid_incoming_message");
+  }
+  if (event.type==="files") {
+    if (!Array.isArray(event.attachments)||
+        event.attachments.length<1||
+        event.attachments.length>8) {
+      throw new Error("invalid_incoming_message");
+    }
+    for (const attachment of event.attachments) {
+      validateWechatAttachment(attachment);
+    }
+    return;
+  }
+  validateWechatAttachment(event.attachment,event.type);
+}
+
+function validateWechatAttachment(attachment,expectedType) {
+  if (!attachment||typeof attachment!=="object"||Array.isArray(attachment)) throw new Error("invalid_incoming_message");
+  if (Object.keys(attachment).some(field=>!new Set(["type","sourceAttachmentId","displayName","extension"]).has(field))) throw new Error("invalid_incoming_message");
+  if (!new Set(["image","file"]).has(attachment.type)||
+      (expectedType!==undefined&&attachment.type!==expectedType)||
+      !bounded(attachment.sourceAttachmentId,512)||
+      !bounded(attachment.displayName,255)||
+      typeof attachment.extension!=="string"||
+      Buffer.byteLength(attachment.extension,"utf8")>20) {
     throw new Error("invalid_incoming_message");
   }
 }

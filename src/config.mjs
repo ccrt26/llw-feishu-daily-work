@@ -12,7 +12,9 @@ const V5_TOP_FIELDS=new Set([...V4_TOP_FIELDS,"privateSkills"]);
 const V6_TOP_FIELDS=new Set([...V5_TOP_FIELDS,"personalAssistant"]);
 const PRIVATE_SKILLS_FIELDS=new Set(["root","manifestPath","expectedManifestSha256"]);
 const PERSONAL_ASSISTANT_FIELDS=new Set([
-  "enabled","skillName","aiTimeoutMs","maxContextBytes","personalRulesFile"
+  "enabled","skillName","aiTimeoutMs","maxContextBytes",
+  "maxSourcesPerTurn","maxSourceFileBytes","maxTurnSourceBytes",
+  "sourceBurstQuietMs","sourceBurstMaxMs","personalRulesFile"
 ]);
 const DEEPSEEK_MODELS=new Set(["deepseek-v4-pro"]);
 const DAILY_FIELDS=new Set(["enabled","skillRoot"]);
@@ -152,7 +154,12 @@ function validatePersonalAssistantConfig(value,vaultRoot) {
   if (value.enabled!==true||
       value.skillName!=="llw-personal-assistant"||
       value.aiTimeoutMs!==120_000||
-      value.maxContextBytes!==512*1024) {
+      value.maxContextBytes!==512*1024||
+      value.maxSourcesPerTurn!==8||
+      value.maxSourceFileBytes!==20*1024*1024||
+      value.maxTurnSourceBytes!==80*1024*1024||
+      value.sourceBurstQuietMs!==3_000||
+      value.sourceBurstMaxMs!==15_000) {
     throw new Error("invalid_personal_assistant");
   }
   if (value.personalRulesFile!==null) {

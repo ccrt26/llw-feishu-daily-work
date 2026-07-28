@@ -26,6 +26,11 @@ try {
         skillName:"llw-personal-assistant",
         aiTimeoutMs:120_000,
         maxContextBytes:512*1024,
+        maxSourcesPerTurn:8,
+        maxSourceFileBytes:20*1024*1024,
+        maxTurnSourceBytes:80*1024*1024,
+        sourceBurstQuietMs:3_000,
+        sourceBurstMaxMs:15_000,
         personalRulesFile:null
       }
     });

@@ -29,6 +29,9 @@ test("atomically upgrades exact version 5 and replaces only the manifest hash",a
       personalAssistant:{
         enabled:true,skillName:"llw-personal-assistant",
         aiTimeoutMs:120000,maxContextBytes:524288,
+        maxSourcesPerTurn:8,maxSourceFileBytes:20971520,
+        maxTurnSourceBytes:83886080,
+        sourceBurstQuietMs:3000,sourceBurstMaxMs:15000,
         personalRulesFile:null
       }
     });
@@ -166,6 +169,9 @@ function v6() {
     personalAssistant:{
       enabled:true,skillName:"llw-personal-assistant",
       aiTimeoutMs:120000,maxContextBytes:524288,
+      maxSourcesPerTurn:8,maxSourceFileBytes:20971520,
+      maxTurnSourceBytes:83886080,
+      sourceBurstQuietMs:3000,sourceBurstMaxMs:15000,
       personalRulesFile:null
     }
   };

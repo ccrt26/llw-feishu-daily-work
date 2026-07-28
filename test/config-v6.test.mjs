@@ -29,6 +29,9 @@ function v6(overrides={}) {
     personalAssistant:{
       enabled:true,skillName:"llw-personal-assistant",
       aiTimeoutMs:120000,maxContextBytes:524288,
+      maxSourcesPerTurn:8,maxSourceFileBytes:20971520,
+      maxTurnSourceBytes:83886080,
+      sourceBurstQuietMs:3000,sourceBurstMaxMs:15000,
       personalRulesFile:null
     },
     capabilities:{
@@ -87,6 +90,11 @@ test("version 6 requires exactly one enabled personal assistant and defers rules
       {...v6().personalAssistant,skillName:"router"},
       {...v6().personalAssistant,aiTimeoutMs:30000},
       {...v6().personalAssistant,maxContextBytes:262144},
+      {...v6().personalAssistant,maxSourcesPerTurn:9},
+      {...v6().personalAssistant,maxSourceFileBytes:1},
+      {...v6().personalAssistant,maxTurnSourceBytes:1},
+      {...v6().personalAssistant,sourceBurstQuietMs:1},
+      {...v6().personalAssistant,sourceBurstMaxMs:1},
       {...v6().personalAssistant,personalRulesFile:"relative"},
       {...v6().personalAssistant,extra:true}
     ]) {
@@ -103,4 +111,3 @@ test("version 6 requires exactly one enabled personal assistant and defers rules
     })));
   } finally { await rm(dir,{recursive:true,force:true}); }
 });
-

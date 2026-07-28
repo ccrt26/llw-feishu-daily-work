@@ -55,6 +55,31 @@ test("keeps one same-turn instruction and attachment in one IncomingMessage",() 
   assert.equal(wechat.attachments.length,1);
 });
 
+test("accepts one normalized WeChat turn containing up to eight files",() => {
+  const attachments=[
+    {type:"file",sourceAttachmentId:"media-a",displayName:"方案.docx",extension:"docx"},
+    {type:"file",sourceAttachmentId:"media-b",displayName:"附件.pdf",extension:"pdf"}
+  ];
+  const message=createWechatIncomingMessage({
+    messageId:"1003",userId:"wx-owner",conversationId:"wx-owner",
+    createTimeMs:1784851200000,type:"files",instructionText:"比较后总结",
+    attachments,
+    contextToken:"test-context"
+  });
+  assert.equal(message.instructionText,"比较后总结");
+  assert.deepEqual(message.attachments,attachments);
+  assert.notEqual(message.attachments,attachments);
+  assert.throws(()=>createWechatIncomingMessage({
+    messageId:"1004",userId:"wx-owner",conversationId:"wx-owner",
+    createTimeMs:1784851200000,type:"files",instructionText:"",
+    attachments:Array.from({length:9},(_,index)=>({
+      type:"file",sourceAttachmentId:`media-${index}`,
+      displayName:`${index}.pdf`,extension:"pdf"
+    })),
+    contextToken:"test-context"
+  }),/invalid_incoming_message/);
+});
+
 test("accepts the current lark-cli image marker without widening the resource key boundary",() => {
   assert.deepEqual(createFeishuIncomingMessage({...event,content:"[Image: img_current-123]"}).attachments,[
     {type:"image",sourceAttachmentId:"img_current-123",displayName:"飞书图片",extension:""}
