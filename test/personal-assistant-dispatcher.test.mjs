@@ -149,6 +149,30 @@ test("reports only a bounded coordinator phase for unknown internal errors",asyn
   assert.deepEqual(failures,["save_knowledge_execution_failed"]);
 });
 
+test("prefers a bounded phase over a generic error message",async()=>{
+  const saved=[],failures=[];
+  const dispatcher=new PersonalAssistantDispatcher({
+    binding:{senderId:"owner",chatId:"private"},
+    bindings:{feishu:{userId:"owner",conversationId:"private"}},
+    state:{
+      hasOutcome:()=>false,
+      async saveOutcome(_key,outcome){saved.push(outcome);},
+      async markReplied(){}
+    },
+    coordinator:{async handle(){
+      const error=new Error("tool_execution_failed");
+      error.failurePhase="assistant_model_failed";
+      throw error;
+    }},
+    modelMode:{},deepseekEnabled:false,
+    messenger:{async send(){}},
+    onFailure:code=>failures.push(code)
+  });
+  await dispatcher.handleIncomingMessage(incoming());
+  assert.equal(saved[0].reasonCode,"assistant_model_failed");
+  assert.deepEqual(failures,["assistant_model_failed"]);
+});
+
 test("coalesces an attachment-first split turn into one assistant task and one reply target",async()=>{
   const handled=[],saved=[];
   const dispatcher=new PersonalAssistantDispatcher({

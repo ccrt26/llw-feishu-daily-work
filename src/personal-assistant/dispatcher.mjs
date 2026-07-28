@@ -276,8 +276,12 @@ const SAFE_FAILURE_CODES=new Set([
   "reply_delivery_failed"
 ]);
 const SAFE_FAILURE_PHASES=new Set([
-  "source_preparation_failed","personal_rules_load_failed",
-  "daily_candidates_load_failed","save_knowledge_execution_failed",
+  "outcome_lookup_failed","reply_recovery_failed",
+  "conversation_lookup_failed","personal_rule_confirmation_failed",
+  "model_selection_failed","source_preparation_failed",
+  "content_safety_rejected","personal_rules_load_failed",
+  "daily_candidates_load_failed","agent_turn_context_invalid",
+  "assistant_model_failed","save_knowledge_execution_failed",
   "record_daily_work_execution_failed",
   "archive_dining_invoice_execution_failed",
   "create_document_execution_failed","conversation_state_failed",
@@ -285,10 +289,10 @@ const SAFE_FAILURE_PHASES=new Set([
 ]);
 
 function boundedFailureCode(error) {
-  if (SAFE_FAILURE_CODES.has(error?.message)) return error.message;
   if (SAFE_FAILURE_PHASES.has(error?.failurePhase)) {
     return error.failurePhase;
   }
+  if (SAFE_FAILURE_CODES.has(error?.message)) return error.message;
   if (error?.message==="assistant_source_invalid") {
     return "source_security_rejected";
   }

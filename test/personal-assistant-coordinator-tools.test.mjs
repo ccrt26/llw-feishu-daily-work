@@ -62,3 +62,21 @@ test("labels an unknown post-decision failure with its bounded phase",async()=>{
       error.failurePhase==="conversation_state_failed"
   );
 });
+
+test("labels an unknown model-selection failure before source preparation",async()=>{
+  const coordinator=new PersonalAssistantCoordinator({
+    prepareSource:async()=>{throw new Error("must_not_prepare");},
+    assistant:{async decide(){throw new Error("must_not_decide");}},
+    writer:{},dailyWriter:{},invoiceWriter:{},
+    outcomeStore:{async get(){return null;},async save(){}},
+    messenger:{async send(){}},
+    conversationStore:{async get(){return null;}},
+    selectModel:async()=>{throw new Error("private_model_state_detail");},
+    personalRules:[],model:"codex",skillVersion:"4.0.1"
+  });
+  await assert.rejects(
+    coordinator.handle(base),
+    error=>error.message==="private_model_state_detail"&&
+      error.failurePhase==="model_selection_failed"
+  );
+});

@@ -35,49 +35,67 @@ export class PersonalAssistantCoordinator {
 
   async handle(message) {
     const key=`${message.source}:${message.sourceMessageId}`;
-    const existing=await this.outcomeStore.get(key);
-    if (existing) {
-      if (existing.reply&&existing.replied!==true) {
-        await this.sendOutcome(key,existing,message.replyTarget);
+    let active,turnMessage,model;
+    let preflightPhase="outcome_lookup_failed";
+    try {
+      const existing=await this.outcomeStore.get(key);
+      if (existing) {
+        if (existing.reply&&existing.replied!==true) {
+          preflightPhase="reply_recovery_failed";
+          await this.sendOutcome(key,existing,message.replyTarget);
+        }
+        return existing;
       }
-      return existing;
-    }
-    const active=await this.conversationStore?.get(
-      message.source,message.receivedAt
-    )??null;
-    if (isConversationCancellation(message.instructionText)) {
-      await this.conversationStore?.clear(message.source);
-      const outcome={
-        status:"ignored",reply:null,artifacts:[],noReplyRequired:true,
-        replyTarget:structuredClone(message.replyTarget)
-      };
-      await this.outcomeStore.save(outcome,key);
-      return outcome;
-    }
-    if (active?.waitingType==="waiting_confirmation"&&
-        typeof active.confirmed?.ruleProposal==="string"&&
-        isExactConfirmation(message.instructionText)) {
-      return this.confirmPersonalRule({
-        key,message,rule:active.confirmed.ruleProposal
-      });
-    }
-    const turnMessage=active?.waitingType==="waiting_file"&&
-      message.attachments.length>=1&&!message.instructionText.trim()
-      ?{...message,instructionText:active.instructionText}
-      :message;
-    const model=active?.model||
-      (this.selectModel?await this.selectModel():this.model);
-    if (model==="deepseek"&&turnMessage.attachments.length) {
-      await this.conversationStore?.clear(message.source);
-      const outcome={
-        status:"rejected",
-        reply:"当前 DeepSeek 仅支持纯文字每日工作；附件任务请先切换为 Codex。",
-        artifacts:[],replyFiles:[],noReplyRequired:false,
-        replyTarget:structuredClone(message.replyTarget)
-      };
-      await this.outcomeStore.save(outcome,key);
-      await this.sendOutcome(key,outcome,message.replyTarget);
-      return outcome;
+      preflightPhase="conversation_lookup_failed";
+      active=await this.conversationStore?.get(
+        message.source,message.receivedAt
+      )??null;
+      if (isConversationCancellation(message.instructionText)) {
+        preflightPhase="conversation_state_failed";
+        await this.conversationStore?.clear(message.source);
+        const outcome={
+          status:"ignored",reply:null,artifacts:[],noReplyRequired:true,
+          replyTarget:structuredClone(message.replyTarget)
+        };
+        preflightPhase="outcome_persist_failed";
+        await this.outcomeStore.save(outcome,key);
+        return outcome;
+      }
+      if (active?.waitingType==="waiting_confirmation"&&
+          typeof active.confirmed?.ruleProposal==="string"&&
+          isExactConfirmation(message.instructionText)) {
+        preflightPhase="personal_rule_confirmation_failed";
+        return await this.confirmPersonalRule({
+          key,message,rule:active.confirmed.ruleProposal
+        });
+      }
+      turnMessage=active?.waitingType==="waiting_file"&&
+        message.attachments.length>=1&&!message.instructionText.trim()
+        ?{...message,instructionText:active.instructionText}
+        :message;
+      preflightPhase="model_selection_failed";
+      model=active?.model||
+        (this.selectModel?await this.selectModel():this.model);
+      if (model==="deepseek"&&turnMessage.attachments.length) {
+        preflightPhase="conversation_state_failed";
+        await this.conversationStore?.clear(message.source);
+        const outcome={
+          status:"rejected",
+          reply:"当前 DeepSeek 仅支持纯文字每日工作；附件任务请先切换为 Codex。",
+          artifacts:[],replyFiles:[],noReplyRequired:false,
+          replyTarget:structuredClone(message.replyTarget)
+        };
+        preflightPhase="outcome_persist_failed";
+        await this.outcomeStore.save(outcome,key);
+        preflightPhase="reply_delivery_failed";
+        await this.sendOutcome(key,outcome,message.replyTarget);
+        return outcome;
+      }
+    } catch (error) {
+      if (error&&typeof error==="object") {
+        error.failurePhase=preflightPhase;
+      }
+      throw error;
     }
     let prepared,failurePhase="source_preparation_failed";
     try {
