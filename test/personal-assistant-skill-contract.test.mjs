@@ -41,6 +41,8 @@ test("references bind business decisions to selected sourceIds, not prepared evi
   assert.match(conversation,/quiet window|静默窗口/i);
   assert.match(knowledge,/sourceIds/);
   assert.match(knowledge,/多个原始来源/);
+  assert.match(knowledge,/personal-knowledge.*日常生活/s);
+  assert.match(knowledge,/work-knowledge.*亚信工作/s);
   assert.match(invoice,/items/);
   assert.match(invoice,/一到八张/);
   assert.match(document,/sourceIds/);

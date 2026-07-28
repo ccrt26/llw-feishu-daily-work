@@ -91,7 +91,10 @@ const definitions={
         "knowledgeSections"
       ],
       properties:{
-        libraryKey:{type:"string",pattern:"^[a-z][a-z0-9_-]{0,63}$"},
+        libraryKey:{
+          type:"string",
+          enum:["work-knowledge","personal-knowledge"]
+        },
         folderSegments:stringArray(5,64),
         title:string(200),
         summary:string(2_000),

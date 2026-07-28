@@ -6,7 +6,7 @@ import {
 
 function knowledge(sourceIds=["source-001","source-002"]) {
   return {
-    libraryKey:"personal",
+    libraryKey:"personal-knowledge",
     folderSegments:["学习资料"],
     title:"交流方法",
     summary:"整理交流前的准备方法。",
@@ -47,6 +47,10 @@ test("uses the same frozen definition objects for model declarations and executi
 });
 
 test("accepts one business-only save_knowledge call",() => {
+  assert.deepEqual(
+    TOOL_DEFINITIONS.save_knowledge.parameters.properties.libraryKey.enum,
+    ["work-knowledge","personal-knowledge"]
+  );
   assert.deepEqual(validateToolCall({
     name:"save_knowledge",
     arguments:knowledge()
@@ -54,6 +58,15 @@ test("accepts one business-only save_knowledge call",() => {
     name:"save_knowledge",
     arguments:knowledge()
   });
+});
+
+test("rejects guessed knowledge library keys before Writer execution",() => {
+  for (const libraryKey of ["daily_life","personal","work"]) {
+    assert.throws(()=>validateToolCall({
+      name:"save_knowledge",
+      arguments:{...knowledge(),libraryKey}
+    }),/tool_call_invalid/);
+  }
 });
 
 test("binds knowledge, documents and invoice batches to unique current source IDs",() => {

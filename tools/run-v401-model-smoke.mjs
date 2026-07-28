@@ -92,6 +92,7 @@ export async function runV401ModelSmoke({
     );
     if (codexDocx.kind!=="tool"||
         codexDocx.toolCall.name!=="save_knowledge"||
+        codexDocx.toolCall.arguments.libraryKey!=="personal-knowledge"||
         JSON.stringify(codexDocx.toolCall.arguments.sourceIds)!==
           JSON.stringify(["source-001"])) {
       throw new Error("model_smoke_unexpected");
@@ -117,7 +118,8 @@ export async function runV401ModelSmoke({
       tokens:{input:null,output:null,available:false},
       codexDocx:{
         ...safeDecision(codexDocx),
-        selectedSourceIds:["source-001"],writerCalls:0
+        selectedSourceIds:["source-001"],
+        selectedLibraryKey:"personal-knowledge",writerCalls:0
       },
       codexMulti:{
         ...safeDecision(codexMulti),

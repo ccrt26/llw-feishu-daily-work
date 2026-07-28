@@ -23,6 +23,11 @@ test("reports only bounded decision kinds for the representative model smoke",as
         assert.equal(workspaceRoot,undefined);
         assert.ok(Array.isArray(context.sources));
         assert.equal("sourceEvidence" in context,false);
+        assert.deepEqual(
+          context.tools.find(tool=>tool.name==="save_knowledge")
+            .parameters.properties.libraryKey.enum,
+          ["work-knowledge","personal-knowledge"]
+        );
         if (context.sources.length===1) {
           assert.equal(
             (await readFile(`${workspaceDir}/source-001.docx`))
@@ -75,7 +80,8 @@ test("reports only bounded decision kinds for the representative model smoke",as
       tokens:{input:null,output:null,available:false},
       codexDocx:{
         kind:"tool",toolName:"save_knowledge",
-        selectedSourceIds:["source-001"],writerCalls:0
+        selectedSourceIds:["source-001"],
+        selectedLibraryKey:"personal-knowledge",writerCalls:0
       },
       codexMulti:{
         kind:"reply",sourceCount:2,writerCalls:0,zeroWrite:true
