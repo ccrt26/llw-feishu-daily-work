@@ -279,6 +279,7 @@ async function runPersonalAssistantMain(config) {
     onFailure:createPersonalAssistantFailureLogger(),
     sourceBurstQuietMs:config.personalAssistant.sourceBurstQuietMs,
     sourceBurstMaxMs:config.personalAssistant.sourceBurstMaxMs,
+    sourceBurstAttachmentQuietMs:config.personalAssistant.sourceBurstMaxMs,
     maxSourcesPerTurn:config.personalAssistant.maxSourcesPerTurn
   });
   await scavengeInvoiceTempRoot(invoiceConfig.tempRoot);

@@ -1,11 +1,13 @@
 export class SourceBurstCollector {
   constructor({
-    quietMs,maxMs,maxSources,now=Date.now,
+    quietMs,attachmentQuietMs=quietMs,maxMs,maxSources,now=Date.now,
     setTimer=globalThis.setTimeout,
     clearTimer=globalThis.clearTimeout,
     onReady
   }) {
     if (!Number.isSafeInteger(quietMs)||quietMs<1||quietMs>5_000||
+        !Number.isSafeInteger(attachmentQuietMs)||
+        attachmentQuietMs<quietMs||attachmentQuietMs>maxMs||
         !Number.isSafeInteger(maxMs)||maxMs<quietMs||maxMs>15_000||
         !Number.isSafeInteger(maxSources)||maxSources<1||maxSources>8||
         typeof now!=="function"||typeof setTimer!=="function"||
@@ -13,6 +15,7 @@ export class SourceBurstCollector {
       throw new Error("source_burst_collector_invalid");
     }
     this.quietMs=quietMs;
+    this.attachmentQuietMs=attachmentQuietMs;
     this.maxMs=maxMs;
     this.maxSources=maxSources;
     this.now=now;
@@ -87,8 +90,11 @@ export class SourceBurstCollector {
 
   schedule(key,collection) {
     if (collection.timer!==null) this.clearTimer(collection.timer);
+    const quietMs=collection.sourceCount
+      ?this.attachmentQuietMs
+      :this.quietMs;
     const deadline=Math.min(
-      collection.lastAt+this.quietMs,collection.hardAt
+      collection.lastAt+quietMs,collection.hardAt
     );
     collection.timer=this.setTimer(()=>{
       if (this.collections.get(key)!==collection) return;

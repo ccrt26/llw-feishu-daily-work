@@ -59,6 +59,48 @@ test("coalesces text then DOCX then PDF after the quiet deadline",() => {
   assert.equal(ready[0].message.replyTarget.sourceMessageId,"pdf");
 });
 
+test("holds a fragmented WeChat multi-file upload until the hard window",() => {
+  const clock=new FakeClock(),ready=[];
+  const collector=new SourceBurstCollector({
+    quietMs:3000,attachmentQuietMs:15000,maxMs:15000,maxSources:8,
+    now:()=>clock.now,
+    setTimer:(callback,delay)=>clock.setTimer(callback,delay),
+    clearTimer:id=>clock.clearTimer(id),
+    onReady:value=>ready.push(value)
+  });
+  collector.accept(message("text",{
+    source:"wechat",userId:"wx",conversationId:"wx",
+    instructionText:"把这三份材料保存到日常生活"
+  }));
+  clock.advance(2000);
+  collector.accept(message("pdf",{
+    source:"wechat",userId:"wx",conversationId:"wx",
+    attachments:[file("c","pdf")]
+  }));
+  clock.advance(4000);
+  assert.equal(ready.length,0);
+  collector.accept(message("docx-b",{
+    source:"wechat",userId:"wx",conversationId:"wx",
+    attachments:[file("b")]
+  }));
+  clock.advance(4000);
+  assert.equal(ready.length,0);
+  collector.accept(message("docx-a",{
+    source:"wechat",userId:"wx",conversationId:"wx",
+    attachments:[file("a")]
+  }));
+  clock.advance(4999);
+  assert.equal(ready.length,0);
+  clock.advance(1);
+  assert.equal(ready.length,1);
+  assert.equal(ready[0].message.instructionText,
+    "把这三份材料保存到日常生活");
+  assert.deepEqual(
+    ready[0].message.attachments.map(value=>value.displayName),
+    ["c.pdf","b.docx","a.docx"]
+  );
+});
+
 test("coalesces DOCX then PDF then text and accepts three same-event files",() => {
   const {clock,ready,collector}=harness();
   collector.accept(message("docx",{attachments:[file("a")]}));

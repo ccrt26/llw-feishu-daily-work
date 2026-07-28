@@ -13,6 +13,7 @@ export class PersonalAssistantDispatcher {
     onFailure=()=>{},coalesceWindowMs=0,
     sourceBurstQuietMs=coalesceWindowMs,
     sourceBurstMaxMs=sourceBurstQuietMs?15_000:0,
+    sourceBurstAttachmentQuietMs=sourceBurstQuietMs,
     maxSourcesPerTurn=8,
     now=Date.now,setTimer=globalThis.setTimeout,
     clearTimer=globalThis.clearTimeout
@@ -27,7 +28,14 @@ export class PersonalAssistantDispatcher {
     this.onFailure=typeof onFailure==="function"?onFailure:()=>{};
     if (!Number.isSafeInteger(sourceBurstQuietMs)||
         sourceBurstQuietMs<0||sourceBurstQuietMs>5_000||
-        (sourceBurstQuietMs===0&&sourceBurstMaxMs!==0)) {
+        !Number.isSafeInteger(sourceBurstAttachmentQuietMs)||
+        (sourceBurstQuietMs===0&&(
+          sourceBurstMaxMs!==0||sourceBurstAttachmentQuietMs!==0
+        ))||
+        (sourceBurstQuietMs>0&&(
+          sourceBurstAttachmentQuietMs<sourceBurstQuietMs||
+          sourceBurstAttachmentQuietMs>sourceBurstMaxMs
+        ))) {
       throw new Error("invalid_coalesce_window");
     }
     this.acceptedTasks=new Set();
@@ -35,7 +43,9 @@ export class PersonalAssistantDispatcher {
     this.queue=Promise.resolve();
     this.sourceCollector=sourceBurstQuietMs
       ?new SourceBurstCollector({
-        quietMs:sourceBurstQuietMs,maxMs:sourceBurstMaxMs,
+        quietMs:sourceBurstQuietMs,
+        attachmentQuietMs:sourceBurstAttachmentQuietMs,
+        maxMs:sourceBurstMaxMs,
         maxSources:maxSourcesPerTurn,now,setTimer,clearTimer,
         onReady:({message,aliases})=>this.scheduleAccepted(message,aliases)
       })

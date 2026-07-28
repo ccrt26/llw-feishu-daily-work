@@ -27,7 +27,8 @@ test("version 6 enters one personal-assistant composition before legacy routing"
     "maxTurnSourceBytes:config.personalAssistant.maxTurnSourceBytes",
     "workspaceDir",
     "sourceBurstQuietMs:config.personalAssistant.sourceBurstQuietMs",
-    "sourceBurstMaxMs:config.personalAssistant.sourceBurstMaxMs"
+    "sourceBurstMaxMs:config.personalAssistant.sourceBurstMaxMs",
+    "sourceBurstAttachmentQuietMs:config.personalAssistant.sourceBurstMaxMs"
   ]) assert.equal(source.includes(expected),true);
   const v6Start=source.indexOf("async function runPersonalAssistantMain");
   const v6=source.slice(
