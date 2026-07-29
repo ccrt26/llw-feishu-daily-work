@@ -2,12 +2,15 @@
 
 LLW 私人助手是一个本机优先、双入口、AI-first 的个人工作流系统。飞书和微信只负责接收自然语言与文件、把结果送回原会话；两边共用同一个 LLW Personal Assistant、同一组安全工具、Writer、Outcome 和恢复逻辑。
 
-当前生产版本为 V4.0.1。
+当前生产版本为 V4.1.0。
 
 ## 当前能力
 
 - 自然语言直接回复、总结、比较和提取信息；
 - 自然语言加 0–8 个文件组成一个任务；
+- 飞书和微信各有一个独立、可持续的当前 Task Session；
+- 同通道后续文字、文件、补充、回答和修正继续加入当前任务；
+- 普通来源保留到明确结束、取消、替换或 24 小时不活动；
 - TXT、Markdown、DOCX、PPTX、XLSX、PDF 和安全图片；
 - 每日工作记录；
 - 单张或多张餐饮发票归档；
@@ -16,29 +19,33 @@ LLW 私人助手是一个本机优先、双入口、AI-first 的个人工作流�
 - 飞书和微信同一核心、同一幂等与回复恢复；
 - Codex 为主，DeepSeek 只保留已批准的纯文字每日工作子集。
 
-音频和视频在 V4.0.1 中明确不支持。系统会在下载、AI 和 Writer 之前返回具体的“不支持”结果，不会假装已理解。
+音频和视频在 V4.1.0 中仍未启用，当前决策为 `STOP_AFTER_FOUNDATION`。系统会返回明确的“不支持”结果，不会假装已理解，也没有安装新的媒体运行件。
 
 飞书云文档的只读快照链已经实现，但真实生产验收因企业审批权限暂缓；它不是当前已验收能力。普通上传文件不受此遗留项影响。
 
-## 一轮消息如何处理
+## 一个任务如何处理
 
 ```mermaid
 flowchart LR
   F["Feishu thin entry"] --> I["IncomingMessage"]
   W["WeChat thin entry"] --> I
   I --> S["Binding, idempotency, source safety"]
-  S --> A["One LLW Personal Assistant"]
+  S --> TS["Independent Task Session per entry"]
+  TS --> A["One LLW Personal Assistant"]
   A --> R["Direct reply or one question"]
   A --> T["At most one side-effect tool"]
   T --> X["Deterministic validator and Writer"]
   X --> O["Persist Outcome before reply"]
   R --> O
+  O --> TS
   O --> P["Reply through original entry"]
 ```
 
-附件是 AI 的处理对象，当前自然语言是“要做什么”。附件中的文字属于不可信数据，不能冒充用户命令。
+附件是 AI 的处理对象，自然语言是“要做什么”。微信或飞书把文字和文件拆成相邻事件时，静默窗口只负责安排何时开始处理，不决定它们属于哪个任务。每条同通道输入先持久增加任务 revision；AI 的追问、阶段性回复或失败都不会关闭任务。
 
-Codex 在当前私有任务目录中以只读模式查看原始文件。程序在 AI 前只做来源取得、格式与资源安全检查，不先替 AI 做业务解释。模型只能返回直接回复、一个问题或一个工具调用；它不能直接写资料库，也不能提前宣称成功。
+Codex 在当前私有任务目录中以只读模式查看原始文件。普通来源在任务期间保持相同 SHA-256，用户无需因为追问、补充或重试重新发送。程序在 AI 前只做来源取得、格式与资源安全检查，不先替 AI 做业务解释。模型只能返回直接回复、一个问题或一个工具调用；它不能直接写资料库，也不能提前宣称成功。
+
+明确的“暂停”“结束当前任务”“取消当前任务”“开始新任务”或 24 小时不活动才改变任务边界。飞书任务不会改变微信任务，反之亦然。
 
 ## 四个副作用工具
 
@@ -60,7 +67,8 @@ Codex 在当前私有任务目录中以只读模式查看原始文件。程序�
 - AI 只得到有界指令、相对文件句柄和允许的工具定义；
 - 写入器使用白名单、SHA-256、排他创建、事务、原子发布与无覆盖规则；
 - Outcome 在回复前保存，支持服务重启后的安全恢复；
-- 临时任务目录在成功、失败、取消和启动恢复时清理；
+- 任务来源目录为所有者私有；在当前任务中保留，并在结束、取消、替换或过期后清理；
+- 回复和 Writer 前复核 `taskId + revision`，运行中补充会阻止旧结果回复或写入；
 - 生产 V6 主入口不静态加载旧 Router、Capability registry 或候选 normalizer。
 
 ## 模型边界
@@ -68,11 +76,11 @@ Codex 在当前私有任务目录中以只读模式查看原始文件。程序�
 - Codex：文字、图片、PDF、Office、多来源、工具选择和文件生成；
 - DeepSeek：仅已批准的纯文字每日工作子集；
 - 不自动在模型之间回退；
-- 不为 V4.0.1 安装 Office、WPS AI、新 AI 插件、音频转写或视频处理软件。
+- 不为 V4.1.0 安装 Office、WPS AI、新 AI 插件、音频转写或视频处理软件。
 
 ## 仓库导航
 
-- [`src/personal-assistant/`](src/personal-assistant/)：单一助手、来源、对话和四个工具；
+- [`src/personal-assistant/`](src/personal-assistant/)：单一助手、Task Session、任务来源和四个工具；
 - [`src/core/`](src/core/)：入口合同、幂等、模型和共享安全边界；
 - [`src/adapters/`](src/adapters/)：飞书/微信下载、监听和回复适配；
 - [`src/capabilities/`](src/capabilities/)：复用的 Writer、PDFium、Office 和历史回滚资产；
@@ -91,6 +99,6 @@ Codex 在当前私有任务目录中以只读模式查看原始文件。程序�
 npm test
 ```
 
-V4.0.1 最终收口回归为 591/591。回归包括真实 `IncomingMessage → Source Intake → Personal Assistant → Tool Definition → Writer → Outcome → Reply` 纵向测试，不用旧手工业务夹具替代生产入口。
+V4.1.0 最终候选完整回归为 675/675，生产目录聚焦回归为 98/98。主要发布证据是 11 条完整纵向旅程、一次真实隔离 Codex 冒烟，以及一次真实微信“文件单独发送 → 追问用途 → 后续指令 → 同一来源 → 直接回复、零 Writer”验收；测试数量只用于防止历史能力退化。
 
 具体生产提交、部署、回滚点、真实双入口验收和飞书云文档审批状态由私有系统地图维护，不把身份或本机业务路径写入仓库。

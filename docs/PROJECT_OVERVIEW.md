@@ -1,18 +1,19 @@
-# LLW Personal Assistant V4.0.1 Project Overview
+# LLW Personal Assistant V4.1.0 Project Overview
 
 日期：2026-07-29
 
-状态：V4.0.1 核心已实现、部署并完成除飞书云文档外的真实双入口验收
+状态：V4.1.0 持续任务已实现、部署并完成真实微信纵向验收；媒体保持关闭
 
 用途：供项目所有者、开发者和 AI 评审者理解当前生产架构
 
 ## 1. 目标与原则
 
-V4.0.1 把历史上“公共 Router → Capability registry → 各业务 AI → 公共 normalizer”的多层语义链，收敛为一个 LLW Personal Assistant：
+V4.0.1 把历史上的多层语义链收敛为一个 LLW Personal Assistant；V4.1.0 在不增加第二个助手或任务平台的前提下，把短消息轮次升级为每通道一个持续 Task Session：
 
 ```text
 飞书 / 微信薄入口
   → 绑定、幂等和来源安全
+  → 飞书/微信各自的当前 Task Session
   → 一个 Personal Assistant
   → 直接回复 / 询问一次 / 调用一个安全工具
   → Writer
@@ -22,12 +23,12 @@ V4.0.1 把历史上“公共 Router → Capability registry → 各业务 AI →
 
 核心原则：
 
-1. 自然语言是当前任务，文件是处理对象；两者必须联合交给同一个 AI 回合。
+1. 自然语言表达任务要求，文件是处理对象；同通道后续输入持续加入当前任务。
 2. 程序在 AI 前只处理传输与安全，不提前替 AI 做业务语义判断。
 3. 一轮可以查看多个来源，但最多执行一个副作用工具。
 4. 工具参数定义只有一份，同时用于模型声明、执行校验和测试。
 5. Writer 是唯一业务持久化者；AI 不能提前宣称写入成功。
-6. 飞书和微信只是入口，不各自建立业务系统。
+6. 飞书和微信只是入口，各自保存一个独立当前任务，不各自建立业务系统。
 7. 失败关闭、最小数据、可恢复、可回滚。
 
 ## 2. 当前生产架构
@@ -41,7 +42,8 @@ flowchart TD
   F --> I["IncomingMessage: instruction + 0..8 attachments"]
   W --> I
   I --> B["Binding, queue, idempotency, burst collection"]
-  B --> S["Source Intake and Content Safety"]
+  B --> TS["Durable per-entry Task Session + revision"]
+  TS --> S["Retained Source Intake and Content Safety"]
   S --> A["LLW Personal Assistant"]
   A --> R["Direct reply / one question"]
   A --> T{"One tool call"}
@@ -54,6 +56,7 @@ flowchart TD
   K --> O
   D --> O
   R --> O
+  O --> TS
   O --> P["Reply recovery and original-entry reply"]
 ```
 
@@ -67,7 +70,7 @@ flowchart TD
 - 0–8 个附件；
 - 原入口的最小 `ReplyTarget`。
 
-飞书或微信把文字与文件拆成相邻事件时，入口内的有界 burst collector 会把它们组合为一轮；不会跨入口、跨用户或跨会话消费。
+飞书或微信把文字与文件拆成相邻事件时，有界 burst collector 只决定何时启动一次处理，不决定任务边界。每条安全输入先持久增加当前通道任务的 `revision`；超过 15 秒、AI 已回复、AI 追问或一次处理失败，都不会让后续输入脱离当前任务。
 
 首批资源限制：
 
@@ -79,6 +82,8 @@ flowchart TD
 - 多个互不相关任务只问一次“合并还是拆分”，不自动调用多个工具。
 
 当前用户要求优先于文件名和附件内容。例如“总结，不保存”必须零 Writer；附件正文即使含有命令式文字，也只被视为数据。
+
+普通来源进入任务级只读工作区后保持到任务结束、取消、替换或 24 小时不活动。Writer 和回复前都复核 `taskId + revision`；运行中补充会让旧快照失效，旧结果不得写入或回复。
 
 ## 4. AI-first 原文件理解
 
@@ -134,7 +139,18 @@ Provider adapter 只转换工具调用外壳，不理解业务、不做第二次
 
 ## 7. 已验证的真实业务旅程
 
-V4.0.1 已完成以下生产验收：
+V4.0.1 已完成的业务验收继续有效。V4.1.0 新增并完成了真实微信持续任务验收：
+
+- 先明确结束旧微信任务；
+- 单独发送一份不含隐私的合成 TXT，助手追问用途；
+- 稍后发送“总结，不保存、不生成文件”；
+- 新任务最终为 revision 2 / resolvedRevision 2，保留同一份来源；
+- 来源 SHA-256 与发送前合成文件完全一致；
+- 两次阶段 Outcome 都已先持久化并回复；
+- 最终直接回复，零工件、零回复文件、零知识库写入；
+- 飞书当前任务保持为空，两个入口没有串扰。
+
+既有生产验收还包括：
 
 - 飞书文字知识保存；
 - 微信“先发要求、后发三份文件”，合并为一个知识项并保留三个原件；
@@ -173,7 +189,7 @@ V4.0.1 已完成以下生产验收：
 
 ## 9. 音频与视频边界
 
-AIFF 是音频格式，但 V4.0.1 不包含音频或视频理解。当前只把已知音视频元数据送到确定性拒绝路径：
+AIFF 是音频格式，但 V4.1.0 仍未启用音频或视频理解，决策为 `STOP_AFTER_FOUNDATION`。当前只把已知音视频元数据送到确定性拒绝路径：
 
 - 不下载；
 - 不调用 AI；
@@ -186,9 +202,11 @@ AIFF 是音频格式，但 V4.0.1 不包含音频或视频理解。当前只把�
 ## 10. 安全、状态与恢复
 
 - 配置 version 6，状态继续使用已验证的 version 4 持久结构；
-- 飞书和微信各最多一个 24 小时短期 Conversation；
-- 只保存等待类型、有限摘要、准备工具、安全确认、模型和时间；
-- 不保存附件字节、token、完整模型输出、绝对来源路径或整个 Vault；
+- 飞书和微信各最多一个 24 小时 Task Session，任务身份和来源完全隔离；
+- 保存有界目标、阶段摘要、最近轮次、来源 ID、等待状态、revision 和 Writer checkpoint；
+- 保护性 pending input 可保存最小通道回执目标，但不进入模型上下文；
+- 任务工作区保留普通来源字节，状态只保存不透明来源 ID，不保存绝对来源路径；
+- 不保存 token、完整模型输出或整个 Vault；
 - 每个副作用先写真实 Writer，再由程序生成成功回执；
 - Outcome 在回复前持久化；
 - Writer 重试不重调 AI，回复重试不重做业务；
@@ -199,14 +217,16 @@ AIFF 是音频格式，但 V4.0.1 不包含音频或视频理解。当前只把�
 
 ## 11. 验证基线
 
-最终收口完整回归：591/591。
+V4.1.0 最终候选完整回归：675/675；生产目录聚焦回归：98/98。
 
 回归不仅统计单元数量，还包含完整纵向旅程：
 
 ```text
 IncomingMessage
 → binding / idempotency / burst collection
+→ durable per-entry Task Session revision
 → real Source Intake
+→ retained task source workspace
 → Content Safety
 → Personal Assistant
 → frozen Tool Definition
@@ -215,6 +235,6 @@ IncomingMessage
 → Reply / recovery
 ```
 
-部署后另运行 19 条启动组合与纵向旅程测试，全部通过。生产健康检查确认心跳推进、待回复为零、活动对话为零、未完成归档事务为零、临时工作区为空。
+主要发布证据为 11 条真实形态纵向旅程，覆盖文件晚到指令、运行中补充、双通道隔离、重启、AI/Writer/回复失败、取消、Writer 不可撤回点、24 小时过期、暂停和新任务；另有一次真实隔离 Codex 冒烟和上述真实微信验收。生产健康检查确认一个 Node 主进程、一个直属飞书消费者、心跳推进、Skill 清单一致；当前微信测试任务保留一份已验证来源，飞书任务为空。
 
 准确的生产/远端 Git 提交、回滚目录和审批进度由工作区私有 `SYSTEM_MAP.md` 维护，不把本机身份或业务路径写进仓库文档。
