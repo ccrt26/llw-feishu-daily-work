@@ -396,6 +396,9 @@ async function taskHarness() {
 
 function createTaskCoordinator(h,overrides={}) {
   const taskWorkspace={
+    async ensure(){
+      return {workspaceDir:"/private/task",sources:[]};
+    },
     async load(){
       return {workspaceDir:null,sources:[]};
     },

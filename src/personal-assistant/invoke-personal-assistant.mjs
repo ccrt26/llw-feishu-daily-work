@@ -38,6 +38,7 @@ export async function invokePersonalAssistantCodex({
       "Return exactly one reply, ask, or registered tool call.",
       "直接回复：{\"type\":\"reply\",\"text\":\"...\"}",
       "询问：{\"type\":\"ask\",\"question\":\"...\",\"waitingType\":\"waiting_answer|waiting_file|waiting_confirmation\",\"preparedTool\":null,\"preparedRule\":null}；只有复述待确认的长期规则时，waitingType 使用 waiting_confirmation 且 preparedRule 填写一句安全、可读规则。",
+      "直接回复、询问或工具调用可附带同一个可选字段：\"taskUpdate\":{\"workingSummary\":\"...\",\"confirmedRequirements\":[],\"rejectedDirections\":[]}。它只更新任务连续性，不是第二个动作；不得放入路径、工具、来源、收件人、模型或权限。",
       "如 CONTEXT_JSON 中已有 audio/video SourceHandle，但当前观察不足，可返回：{\"type\":\"source_read_request\",\"requests\":[{\"sourceId\":\"source-001\",\"view\":\"probe_media|read_existing_subtitles|transcribe_audio|build_navigation_overview|inspect_time_range\",\"startMs\":0,\"endMs\":60000}]}。这只是请求 Controller 提供只读观察，不是工具调用；inspect_time_range 才能带 startMs/endMs。",
       "工具：{\"type\":\"tool_call\",\"toolName\":\"registered_name\",\"arguments\":{...}}",
       "只输出一个 JSON 对象；不得输出旧 Router/Capability 包装；不得提前宣称工具成功。",

@@ -26,6 +26,36 @@ export class TaskSourceWorkspace {
     this.now=now;
   }
 
+  async ensure({session}) {
+    const current=validateTaskSession(session);
+    await this.ensureRoot();
+    try {
+      return await this.load({
+        taskId:current.taskId,
+        expectedSourceIds:current.sourceIds
+      });
+    } catch (error) {
+      if (error?.code!=="ENOENT") throw error;
+    }
+    if (current.sourceIds.length) {
+      throw new Error("task_source_workspace_invalid");
+    }
+    const workspaceDir=this.workspace(current.taskId);
+    await mkdir(workspaceDir,{mode:0o700});
+    await chmod(workspaceDir,0o700);
+    await this.writeManifest({
+      version:1,
+      taskId:current.taskId,
+      createdAt:current.startedAt,
+      updatedAt:current.updatedAt,
+      sources:[]
+    });
+    return this.load({
+      taskId:current.taskId,
+      expectedSourceIds:current.sourceIds
+    });
+  }
+
   async prepareAndMerge({session,message}) {
     const current=validateTaskSession(session);
     if (!message||message.source!==current.source) {

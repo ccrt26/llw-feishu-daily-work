@@ -92,7 +92,7 @@ export class PersonalAssistantCoordinator {
           expectedSourceIds:session.sourceIds
         });
       } else {
-        prepared={workspaceDir:null,sources:[]};
+        prepared=await this.taskWorkspace.ensure({session});
       }
       phase="content_safety_rejected";
       const task=publicTaskContext(session);

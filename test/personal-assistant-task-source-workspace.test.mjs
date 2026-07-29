@@ -277,3 +277,24 @@ test("preserves the bounded Source Intake failure reason",async()=>{
     await rm(root,{recursive:true,force:true});
   }
 });
+
+test("creates one private empty workspace for a text-only task",async()=>{
+  const h=await harness();
+  const textMessage=message({
+    text:"先分析这个问题",
+    attachments:[]
+  });
+  const session=createTaskSession({
+    message:textMessage,model:"codex",taskId:TASK_ID,now:NOW
+  });
+  try {
+    const first=await h.workspace.ensure({session});
+    assert.deepEqual(first.sources,[]);
+    assert.equal((await stat(first.workspaceDir)).mode&0o777,0o700);
+    const reopened=await h.workspace.ensure({session});
+    assert.equal(reopened.workspaceDir,first.workspaceDir);
+    assert.deepEqual(reopened.sources,[]);
+  } finally {
+    await rm(h.root,{recursive:true,force:true});
+  }
+});

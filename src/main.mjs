@@ -1,7 +1,7 @@
 import {execFile} from "node:child_process";
 import {randomBytes,randomUUID} from "node:crypto";
 import {lstat,mkdir,open,realpath,rename,rm,writeFile} from "node:fs/promises";
-import {dirname,resolve} from "node:path";
+import {dirname,join,resolve} from "node:path";
 import {fileURLToPath} from "node:url";
 import {promisify} from "node:util";
 import {loadConfig} from "./config.mjs";
@@ -60,13 +60,19 @@ import {
 import {
   PersonalRulesStore
 } from "./personal-assistant/personal-rules.mjs";
+import {
+  PersonalAssistantTaskSessionManager
+} from "./personal-assistant/task-session-manager.mjs";
+import {
+  TaskSourceWorkspace
+} from "./personal-assistant/task-source-workspace.mjs";
 
 const run=promisify(execFile);
 
 export const V6_PRIVATE_SKILL_ALLOWLIST=[{
   name:"llw-personal-assistant",
   capability:"personal-assistant",
-  versions:["4.0.1"],
+  versions:["4.1.0"],
   semanticTasks:["personal-assistant.turn"],
   modelSupport:["codex","deepseek"],
   enabled:true
@@ -113,7 +119,8 @@ async function runPersonalAssistantMain(config) {
   const modelMode=new ModelMode(config.modelStateFile);
   const binding={senderId:config.senderId,chatId:config.chatId};
   const bindings={
-    feishu:{userId:config.senderId,conversationId:config.chatId}
+    feishu:{userId:config.senderId,conversationId:config.chatId},
+    wechat:null
   };
   const larkMessenger=createLarkMessenger({
     cliPath:config.cliPath,profile:config.profile,boundChatId:config.chatId
@@ -192,6 +199,16 @@ async function runPersonalAssistantMain(config) {
     }),
     markReplied:key=>state.markReplied(key)
   };
+  const selectModel=createPersonalAssistantModelSelector({
+    modelMode,deepseekEnabled:config.deepseekEnabled
+  });
+  const taskManager=new PersonalAssistantTaskSessionManager({
+    state,bindings,selectModel
+  });
+  const taskWorkspace=new TaskSourceWorkspace({
+    root:join(dirname(config.stateFile),"task-sources"),
+    prepareTurnSources
+  });
   const coordinator=new PersonalAssistantCoordinator({
     prepareSource:prepareTurnSources,assistant,
     writer:new KnowledgeWriter({
@@ -205,22 +222,16 @@ async function runPersonalAssistantMain(config) {
       timeoutMs:documentConfig.aiTimeoutMs,...job
     }),
     outcomeStore,messenger,
-    conversationStore:{
-      get:(source,now)=>state.getPersonalAssistantConversation(source,now),
-      set:(source,value)=>state.setPersonalAssistantConversation(source,value),
-      clear:source=>state.clearPersonalAssistantConversation(source)
-    },
     loadDailyCandidates:()=>dailyCatalog.list({limit:20}).catch(()=>[]),
     personalRules:[],
     personalRulesStore,
-    selectModel:createPersonalAssistantModelSelector({
-      modelMode,deepseekEnabled:config.deepseekEnabled
-    }),
+    taskManager,taskWorkspace,
     model:"codex",
-    skillVersion:"4.0.1"
+    skillVersion:"4.1.0"
   });
   const dispatcher=new PersonalAssistantDispatcher({
     binding,bindings,state,coordinator,modelMode,
+    taskManager,taskWorkspace,
     deepseekEnabled:config.deepseekEnabled,messenger,
     onFailure:createPersonalAssistantFailureLogger(),
     sourceBurstQuietMs:config.personalAssistant.sourceBurstQuietMs,
@@ -237,14 +248,24 @@ async function runPersonalAssistantMain(config) {
       retentionDays:documentConfig.outputRetentionDays
     })
   });
+  const cleanupTaskSources=async()=>{
+    await taskManager.recoverPending();
+    await taskWorkspace.cleanupExpired({
+      activeTaskIds:["feishu","wechat"]
+        .map(source=>taskManager.current(source)?.taskId)
+        .filter(Boolean),
+      now:new Date().toISOString()
+    });
+  };
   await cleanupOutputs();
+  await cleanupTaskSources();
   await heartbeat(config.heartbeatFile);
   const heartbeatTimer=setInterval(()=>
     heartbeat(config.heartbeatFile).catch(()=>{}),30_000
   );
-  const cleanupTimer=setInterval(()=>
-    cleanupOutputs().catch(()=>{}),24*60*60*1000
-  );
+  const cleanupTimer=setInterval(()=>Promise.all([
+    cleanupOutputs(),cleanupTaskSources()
+  ]).catch(()=>{}),24*60*60*1000);
   cleanupTimer.unref();
   const {larkListener,wechatListener}=await startChatEntries({
     wechatEnabled:config.wechatEnabled,
@@ -258,6 +279,7 @@ async function runPersonalAssistantMain(config) {
         api:channel.api,boundUserId:channel.binding.userId
       });
       bindings.wechat=channel.binding;
+      taskManager.bind("wechat",channel.binding);
       return startWechatListener({
         ...options,api:channel.api,state:channel.state,
         binding:channel.binding
@@ -282,6 +304,8 @@ async function runPersonalAssistantMain(config) {
       `${safeLog({stage:"listener",code})}\n`
     )
   });
+  await dispatcher.recoverPendingTasks();
+  await cleanupTaskSources();
   let stopping=false;
   const shutdown=async()=>{
     if (stopping) return;

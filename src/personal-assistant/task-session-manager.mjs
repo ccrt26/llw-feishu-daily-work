@@ -21,9 +21,17 @@ export class PersonalAssistantTaskSessionManager {
         typeof createId!=="function"||typeof now!=="function") {
       throw new Error("task_session_manager_invalid");
     }
-    for (const source of SOURCES) validateBinding(bindings[source]);
+    validateBinding(bindings.feishu);
+    if (bindings.wechat!==null&&bindings.wechat!==undefined) {
+      validateBinding(bindings.wechat);
+    }
     this.state=state;
-    this.bindings=structuredClone(bindings);
+    this.bindings={
+      feishu:structuredClone(bindings.feishu),
+      wechat:bindings.wechat
+        ?structuredClone(bindings.wechat)
+        :null
+    };
     this.selectModel=selectModel;
     this.createId=createId;
     this.now=now;
@@ -36,6 +44,19 @@ export class PersonalAssistantTaskSessionManager {
     validateSource(source);
     const value=this.sessions[source];
     return value===null?null:validateTaskSession(value);
+  }
+
+  bind(source,binding) {
+    validateSource(source);
+    validateBinding(binding);
+    const current=this.bindings[source];
+    if (current&&(
+      current.userId!==binding.userId||
+      current.conversationId!==binding.conversationId
+    )) {
+      throw new Error("task_session_manager_invalid");
+    }
+    this.bindings[source]=structuredClone(binding);
   }
 
   accept(message) {
@@ -304,6 +325,7 @@ export class PersonalAssistantTaskSessionManager {
     const now=new Date(this.now()).toISOString();
     const pending=[];
     for (const source of SOURCES) {
+      if (!this.bindings[source]) continue;
       const session=await this.mutate(
         source,()=>this.load(source,now)
       );
@@ -397,7 +419,7 @@ function validateBoundMessage(message,bindings) {
     throw new Error("task_session_manager_invalid");
   }
   const binding=bindings[message.source];
-  if (message.userId!==binding.userId||
+  if (!binding||message.userId!==binding.userId||
       message.conversationId!==binding.conversationId) {
     throw new Error("task_session_manager_invalid");
   }

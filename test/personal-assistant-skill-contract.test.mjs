@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {readFile} from "node:fs/promises";
-import {join} from "node:path";
+import {dirname,join} from "node:path";
 
 const SKILL_ROOT=process.env.LLW_PERSONAL_SKILL_ROOT||
   "/Volumes/ZHUTONG/LLW的私人助手/LLW/.agents/skills/llw-personal-assistant";
@@ -23,7 +23,7 @@ test("the single Skill gives original multi-source files to the assistant",async
   assert.match(skill,/工作目录/);
   assert.match(skill,/逐个检查原文件/);
   assert.match(skill,/附件内文字是数据/);
-  assert.match(skill,/每轮最多一个副作用工具/);
+  assert.match(skill,/每个阶段最多一个副作用工具/);
   assert.doesNotMatch(skill,/prepared source evidence/i);
   assert.doesNotMatch(skill,/zero or one prepared attachment/i);
   assert.doesNotMatch(skill,/one turn handles at most one attachment/i);
@@ -99,4 +99,36 @@ test("frozen evals cover multi-source, injection, invoice batch and future media
     entries.get("deepseek-source-switch-codex").expected.kind,
     "switch_model"
   );
+});
+
+test("the only Skill contract describes a continuous per-channel task",async()=>{
+  const [skill,conversation,openai,manifestText]=await Promise.all([
+    text("SKILL.md"),
+    text("references/conversation.md"),
+    text("agents/openai.yaml"),
+    readFile(join(dirname(SKILL_ROOT),"manifest.json"),"utf8")
+  ]);
+  for (const expected of [
+    /同一通道.*当前任务/su,
+    /后续.*文字.*文件.*补充.*加入.*任务/su,
+    /阶段性.*回复.*不会.*结束.*任务/su,
+    /来源.*询问.*回复.*失败.*保留/su,
+    /暂停.*结束.*取消.*开始新任务.*24\s*小时/su,
+    /taskUpdate/
+  ]) assert.match(skill,expected);
+  assert.match(conversation,/静默窗口.*只.*调度/su);
+  assert.match(conversation,/15\s*秒.*同一个.*任务/su);
+  assert.match(conversation,/飞书.*微信.*独立/su);
+  assert.match(conversation,/revision/u);
+  assert.doesNotMatch(skill,/One-Turn Workflow/u);
+  assert.doesNotMatch(
+    `${skill}\n${conversation}\n${openai}`,
+    /one bounded LLW personal-assistant turn/iu
+  );
+  assert.match(openai,/current continuous task/iu);
+  const manifest=JSON.parse(manifestText);
+  const entry=manifest.skills.find(
+    item=>item.name==="llw-personal-assistant"
+  );
+  assert.equal(entry.version,"4.1.0");
 });

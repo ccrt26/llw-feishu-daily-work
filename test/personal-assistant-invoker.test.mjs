@@ -94,6 +94,10 @@ test("invokes one private Skill read-only with bounded context and visual pages"
       prompt,
       /waiting_confirmation.*preparedRule/s
     );
+    assert.match(
+      prompt,
+      /taskUpdate.*workingSummary.*confirmedRequirements.*rejectedDirections/s
+    );
   } finally { await rm(root,{recursive:true,force:true}); }
 });
 

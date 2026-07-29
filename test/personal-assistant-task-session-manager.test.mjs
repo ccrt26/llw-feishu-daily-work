@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {mkdtemp} from "node:fs/promises";
+import {mkdtemp,rm} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {StateStore} from "../src/state-store.mjs";
@@ -332,4 +332,44 @@ test("finishes an already reserved Writer stage and preserves a later supplement
     "committed"
   );
   assert.equal(h.state.getOutcome("feishu:message-2"),null);
+});
+
+test("binds the optional WeChat channel before accepting or recovering it",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"llw-pa-task-binding-"));
+  const state=await StateStore.open(join(root,"state.json"));
+  try {
+    const manager=new PersonalAssistantTaskSessionManager({
+      state,
+      bindings:{
+        feishu:{
+          userId:"feishu-owner",
+          conversationId:"feishu-chat"
+        },
+        wechat:null
+      },
+      selectModel:async()=>"codex",
+      createId:()=>WECHAT_TASK_ID,
+      now:()=>Date.parse(NOW)
+    });
+    assert.deepEqual(await manager.recoverPending(),[]);
+    assert.throws(
+      ()=>manager.accept(message({
+        source:"wechat",
+        id:"wechat-before-binding"
+      })),
+      /task_session_manager_invalid/
+    );
+
+    manager.bind("wechat",{
+      userId:"wechat-owner",
+      conversationId:"wechat-owner"
+    });
+    const accepted=await manager.accept(message({
+      source:"wechat",
+      id:"wechat-after-binding"
+    }));
+    assert.equal(accepted.taskId,WECHAT_TASK_ID);
+  } finally {
+    await rm(root,{recursive:true,force:true});
+  }
 });

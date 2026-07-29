@@ -43,13 +43,17 @@ test("version 6 enters one personal-assistant composition before legacy routing"
     "PersonalAssistantClient","createAssistantSourcePreparer",
     "PersonalAssistantCoordinator","PersonalAssistantDispatcher",
     "invokePersonalAssistantCodex","invokePersonalAssistantDeepSeek",
-    "PersonalRulesStore"
+    "PersonalRulesStore","PersonalAssistantTaskSessionManager",
+    "TaskSourceWorkspace"
   ]) assert.equal(source.includes(expected),true);
   assert.match(
     source,
     /config\.personalAssistant\.personalRulesFile\s*\?\s*await PersonalRulesStore\.open/
   );
-  assert.match(source,/personalRulesStore,\s*\n\s*selectModel:/);
+  assert.match(
+    source,
+    /personalRulesStore,\s*\n\s*taskManager,taskWorkspace/
+  );
   for (const expected of [
     "const prepareTurnSources=createAssistantSourcePreparer({",
     "maxSourcesPerTurn:config.personalAssistant.maxSourcesPerTurn",
@@ -61,6 +65,28 @@ test("version 6 enters one personal-assistant composition before legacy routing"
     "sourceBurstMaxMs:config.personalAssistant.sourceBurstMaxMs",
     "sourceBurstAttachmentQuietMs:config.personalAssistant.sourceBurstMaxMs"
   ]) assert.equal(source.includes(expected),true);
+  assert.equal(
+    (source.match(/new PersonalAssistantTaskSessionManager\(\{/gu)||[])
+      .length,
+    1
+  );
+  assert.equal(
+    (source.match(/new TaskSourceWorkspace\(\{/gu)||[]).length,
+    1
+  );
+  assert.match(
+    source,
+    /root:join\(dirname\(config\.stateFile\),"task-sources"\)/
+  );
+  assert.match(
+    source,
+    /taskManager,taskWorkspace[\s\S]*?skillVersion:"4\.1\.0"/
+  );
+  assert.match(
+    source,
+    /taskManager,taskWorkspace,[\s\S]*?new PersonalAssistantDispatcher/
+  );
+  assert.match(source,/await dispatcher\.recoverPendingTasks\(\)/);
   const v6Start=source.indexOf("async function runPersonalAssistantMain");
   const v6=source.slice(
     v6Start,source.indexOf("\nexport async function startChatEntries",v6Start)
@@ -69,11 +95,12 @@ test("version 6 enters one personal-assistant composition before legacy routing"
   assert.equal(v6.includes("createSourceEvidence"),false);
   assert.equal(v6.includes("knowledge_source_incomplete"),false);
   assert.equal(v6.includes("workspaceRoot:config.vaultRoot"),false);
+  assert.equal(v6.includes("conversationStore:"),false);
   const {V6_PRIVATE_SKILL_ALLOWLIST}=await import("../src/main.mjs");
   assert.deepEqual(V6_PRIVATE_SKILL_ALLOWLIST,[{
     name:"llw-personal-assistant",
     capability:"personal-assistant",
-    versions:["4.0.1"],
+    versions:["4.1.0"],
     semanticTasks:["personal-assistant.turn"],
     modelSupport:["codex","deepseek"],
     enabled:true
