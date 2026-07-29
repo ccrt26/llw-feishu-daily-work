@@ -112,6 +112,76 @@ test("persists one bounded personal-assistant conversation per entry",async()=>{
   );
 });
 
+test("migrates a live V4.0.1 waiting conversation into one channel Task Session",async()=>{
+  const {file}=await fresh();
+  const legacy={
+    waitingType:"waiting_answer",
+    question:"你希望重点整理哪些内容？",
+    instructionText:"整理这次讨论，并突出后续行动。",
+    preparedTool:null,
+    confirmed:{},
+    turns:[
+      {role:"user",text:"整理这次讨论，并突出后续行动。"},
+      {role:"assistant",text:"你希望重点整理哪些内容？"}
+    ],
+    model:"codex",
+    startedAt:"2026-07-29T03:00:00.000Z",
+    updatedAt:"2026-07-29T04:00:00.000Z"
+  };
+  await writeFile(file,JSON.stringify({
+    version:4,
+    capabilityState:{
+      "daily-work":{conversation:null},
+      invoice:{},
+      router:{conversation:null},
+      "task-session":{session:null},
+      "personal-assistant":{
+        conversations:{feishu:null,wechat:legacy}
+      }
+    },
+    outcomes:{}
+  }));
+
+  const store=await StateStore.open(file,{
+    migratePersonalAssistantConversations:true
+  });
+  const slot=store.getCapabilityState("personal-assistant");
+  assert.equal(slot.conversations.wechat,null);
+  assert.equal(slot.sessions.feishu,null);
+  assert.match(slot.sessions.wechat.taskId,/^[A-Za-z0-9_-]{43}$/u);
+  assert.deepEqual(slot.sessions.wechat,{
+    version:1,
+    taskId:slot.sessions.wechat.taskId,
+    source:"wechat",
+    status:"active",
+    revision:1,
+    resolvedRevision:1,
+    model:"codex",
+    goal:"整理这次讨论，并突出后续行动。",
+    workingSummary:"",
+    confirmedRequirements:[],
+    rejectedDirections:[],
+    recentTurns:legacy.turns,
+    sourceIds:[],
+    pendingInputs:[],
+    waiting:{
+      type:"waiting_answer",
+      question:"你希望重点整理哪些内容？",
+      preparedTool:null,
+      confirmed:{}
+    },
+    writerCheckpoint:null,
+    startedAt:"2026-07-29T03:00:00.000Z",
+    updatedAt:"2026-07-29T04:00:00.000Z",
+    expiresAt:"2026-07-30T04:00:00.000Z"
+  });
+  assert.deepEqual(
+    JSON.parse(await readFile(file,"utf8"))
+      .capabilityState["personal-assistant"],
+    slot
+  );
+});
+
 test("persists only an opaque prepared source id in a WeChat conversation",async()=>{
   const {file}=await fresh();
   const store=await StateStore.open(file);
@@ -142,6 +212,46 @@ test("persists only an opaque prepared source id in a WeChat conversation",async
     ),
     null
   );
+});
+
+test("fails closed instead of guessing how to migrate a retained legacy source",async()=>{
+  const {file}=await fresh();
+  const preparedSourceSetId="C".repeat(43);
+  await writeFile(file,JSON.stringify({
+    version:4,
+    capabilityState:{
+      "daily-work":{conversation:null},
+      invoice:{},
+      router:{conversation:null},
+      "task-session":{session:null},
+      "personal-assistant":{
+        conversations:{
+          feishu:null,
+          wechat:{
+            waitingType:"waiting_answer",
+            question:"要重点总结哪一部分？",
+            instructionText:"总结这个视频",
+            preparedTool:null,
+            confirmed:{},
+            turns:[],
+            model:"codex",
+            preparedSourceSetId,
+            startedAt:"2026-07-29T00:00:00.000Z",
+            updatedAt:"2026-07-29T00:00:00.000Z"
+          }
+        }
+      }
+    },
+    outcomes:{}
+  }));
+  const before=await readFile(file);
+  await assert.rejects(
+    StateStore.open(file,{
+      migratePersonalAssistantConversations:true
+    }),
+    /legacy_personal_assistant_source_migration_required/
+  );
+  assert.deepEqual(await readFile(file),before);
 });
 
 test("updates only the same open Task Session without identity, model, time or draft rollback",async()=>{

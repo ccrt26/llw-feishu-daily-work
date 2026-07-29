@@ -107,6 +107,16 @@ test("version 6 enters one personal-assistant composition before legacy routing"
   }]);
 });
 
+test("version 6 explicitly migrates a live per-channel waiting conversation",async()=>{
+  const source=await readFile(
+    fileURLToPath(new URL("../src/main.mjs",import.meta.url)),"utf8"
+  );
+  assert.match(
+    source,
+    /StateStore\.open\(config\.stateFile,\{\s*migratePersonalAssistantConversations:true\s*\}\)/
+  );
+});
+
 test("production model selection executes the real V6 wiring",async()=>{
   const {createPersonalAssistantModelSelector}=await import("../src/main.mjs");
   let reads=0;

@@ -115,7 +115,9 @@ async function runPersonalAssistantMain(config) {
     tempRoot:knowledgeConfig.tempRoot,
     timeoutMs:config.personalAssistant.aiTimeoutMs
   });
-  const state=await StateStore.open(config.stateFile);
+  const state=await StateStore.open(config.stateFile,{
+    migratePersonalAssistantConversations:true
+  });
   const modelMode=new ModelMode(config.modelStateFile);
   const binding={senderId:config.senderId,chatId:config.chatId};
   const bindings={

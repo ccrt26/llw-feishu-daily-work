@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename } from "node:fs/promises";
 import { dirname } from "node:path";
 import {validateTaskSession} from "./core/task-session.mjs";
@@ -18,7 +18,11 @@ export class StateStore {
     this.taskSessionPolicy=structuredClone(taskSessionPolicy);
   }
 
-  static async open(file, {maxOutcomes = 1000,taskSessionPolicy=[]} = {}) {
+  static async open(file, {
+    maxOutcomes=1000,
+    taskSessionPolicy=[],
+    migratePersonalAssistantConversations=false
+  } = {}) {
     let data = emptyState();
     let migrated = false;
     try {
@@ -57,6 +61,10 @@ export class StateStore {
     ensureTaskSessionSlot(data);
     if (ensureKnowledgePendingSlot(data)) migrated=true;
     if (ensurePersonalAssistantSlot(data)) migrated=true;
+    if (migratePersonalAssistantConversations&&
+        migrateLegacyPersonalAssistantConversations(data)) {
+      migrated=true;
+    }
     const storedTaskSession=data.capabilityState["task-session"].session;
     if (storedTaskSession!==null) {
       data.capabilityState["task-session"].session=validateTaskSession(storedTaskSession,{
@@ -607,6 +615,72 @@ function ensurePersonalAssistantSlot(data) {
     }
   }
   return migrated;
+}
+
+function migrateLegacyPersonalAssistantConversations(data) {
+  const slot=data.capabilityState["personal-assistant"];
+  let migrated=false;
+  for (const source of ["feishu","wechat"]) {
+    const value=slot.conversations[source];
+    const session=slot.sessions[source];
+    if (value!==null&&session!==null) {
+      throw new Error("invalid_personal_assistant_state");
+    }
+    if (value===null) continue;
+    slot.sessions[source]=migratePersonalAssistantConversation(
+      source,value
+    );
+    slot.conversations[source]=null;
+    migrated=true;
+  }
+  return migrated;
+}
+
+function migratePersonalAssistantConversation(source,value) {
+  const legacy=validateAssistantConversation(value);
+  if (Object.hasOwn(legacy,"preparedSourceSetId")) {
+    throw new Error(
+      "legacy_personal_assistant_source_migration_required"
+    );
+  }
+  const instruction=legacy.instructionText.trim();
+  return validatePersonalAssistantTaskSession({
+    version:1,
+    taskId:randomBytes(32).toString("base64url"),
+    source,
+    status:"active",
+    revision:1,
+    resolvedRevision:1,
+    model:legacy.model,
+    goal:fitUtf8(instruction||"继续当前任务",2_000),
+    workingSummary:"",
+    confirmedRequirements:[],
+    rejectedDirections:[],
+    recentTurns:structuredClone(legacy.turns),
+    sourceIds:[],
+    pendingInputs:[],
+    waiting:{
+      type:legacy.waitingType,
+      question:legacy.question,
+      preparedTool:legacy.preparedTool,
+      confirmed:structuredClone(legacy.confirmed)
+    },
+    writerCheckpoint:null,
+    startedAt:legacy.startedAt,
+    updatedAt:legacy.updatedAt,
+    expiresAt:new Date(
+      Date.parse(legacy.updatedAt)+24*60*60*1000
+    ).toISOString()
+  });
+}
+
+function fitUtf8(value,maxBytes) {
+  const characters=[...value];
+  while (characters.length&&
+      Buffer.byteLength(characters.join(""),"utf8")>maxBytes) {
+    characters.pop();
+  }
+  return characters.join("").trim();
 }
 
 function validateKnowledgePending(value) {
