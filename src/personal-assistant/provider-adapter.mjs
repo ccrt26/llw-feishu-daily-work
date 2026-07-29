@@ -2,6 +2,7 @@ import {validatePersonalRule} from "./personal-rules.mjs";
 import {
   validateSourceReadRequest
 } from "./source-read-request.mjs";
+import {validateTaskUpdate} from "./task-session.mjs";
 
 export function adaptProviderResult({
   provider,raw,availableSources=[]
@@ -20,7 +21,9 @@ export function adaptProviderResult({
       };
     }
     if ((raw.type==="reply"||raw.action==="reply")&&safeText(raw.text,32_000)) {
-      return {kind:"reply",text:raw.text};
+      return {
+        kind:"reply",text:raw.text,...taskUpdateOf(raw)
+      };
     }
     if ((raw.type==="ask"||raw.action==="ask")&&safeText(raw.question,1000)) {
       const waitingType=raw.waitingType??"waiting_answer";
@@ -38,7 +41,8 @@ export function adaptProviderResult({
         kind:"ask",question:raw.question,waitingType,preparedTool,
         ...(preparedRule===null
           ?{}
-          :{preparedRule:validatePersonalRule(preparedRule)})
+          :{preparedRule:validatePersonalRule(preparedRule)}),
+        ...taskUpdateOf(raw)
       };
     }
     if ((raw.type==="tool_call"||raw.action==="tool_call")&&
@@ -48,7 +52,11 @@ export function adaptProviderResult({
         !Object.hasOwn(raw,"text")&&!Object.hasOwn(raw,"question")) {
       return {
         kind:"tool",
-        toolCall:{name:raw.toolName||raw.name,arguments:structuredClone(raw.arguments)}
+        toolCall:{
+          name:raw.toolName||raw.name,
+          arguments:structuredClone(raw.arguments)
+        },
+        ...taskUpdateOf(raw)
       };
     }
     reject();
@@ -69,8 +77,15 @@ function plainObject(value) {
 }
 function toolEnvelopeOnly(value) {
   return Object.keys(value).every(key=>
-    new Set(["type","action","toolName","name","arguments"]).has(key)
+    new Set([
+      "type","action","toolName","name","arguments","taskUpdate"
+    ]).has(key)
   );
+}
+function taskUpdateOf(value) {
+  return Object.hasOwn(value,"taskUpdate")
+    ?{taskUpdate:validateTaskUpdate(value.taskUpdate)}
+    :{};
 }
 function reject() {
   throw new Error("provider_result_invalid");

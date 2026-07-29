@@ -100,6 +100,7 @@ export class TaskSourceWorkspace {
       });
       return Object.freeze({
         ...loaded,
+        instructionText:prepared.instructionText,
         addedSourceIds:Object.freeze(addedSourceIds)
       });
     } catch (error) {

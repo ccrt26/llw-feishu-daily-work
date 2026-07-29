@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {buildAgentTurnContext} from "../src/personal-assistant/context-builder.mjs";
+import {
+  createTaskSession,publicTaskContext
+} from "../src/personal-assistant/task-session.mjs";
 
 const sources=[
   {
@@ -104,4 +107,70 @@ test("labels every derived media observation as data without command authority",
   assert.equal(context.sourceObservations[0].content.includes(
     "save_knowledge"
   ),true);
+});
+
+test("exposes bounded task continuity without protected pending envelopes",()=>{
+  const session=createTaskSession({
+    message:{
+      source:"feishu",
+      sourceMessageId:"private-message-id",
+      userId:"private-user-id",
+      conversationId:"private-chat-id",
+      receivedAt:"2026-07-28T00:00:00.000Z",
+      instructionText:"分析项目风险",
+      attachments:[],
+      replyTarget:{
+        source:"feishu",
+        sourceMessageId:"private-message-id",
+        conversationId:"private-chat-id"
+      }
+    },
+    model:"codex",
+    taskId:"T".repeat(43),
+    now:"2026-07-28T00:00:00.000Z"
+  });
+  const safeTask={
+    ...publicTaskContext(session),
+    workingSummary:"正在分析项目风险。",
+    confirmedRequirements:["重点分析风险"],
+    rejectedDirections:["不写入知识库"]
+  };
+
+  const context=buildAgentTurnContext({
+    message:{
+      source:"feishu",
+      receivedAt:"2026-07-28T00:00:00.000Z",
+      instructionText:"补充：按高、中、低分级",
+      attachments:[]
+    },
+    sources:[],
+    task:safeTask,
+    personalRules:[],
+    model:"codex",
+    toolDeclarations:[]
+  });
+
+  assert.equal(context.task.workingSummary,"正在分析项目风险。");
+  assert.deepEqual(
+    context.task.confirmedRequirements,
+    ["重点分析风险"]
+  );
+  const serialized=JSON.stringify(context);
+  for (const protectedValue of [
+    "private-message-id","private-user-id","private-chat-id",
+    "pendingInputs","replyTarget","writerCheckpoint"
+  ]) assert.equal(serialized.includes(protectedValue),false);
+  assert.throws(()=>buildAgentTurnContext({
+    message:{
+      source:"feishu",
+      receivedAt:"2026-07-28T00:00:00.000Z",
+      instructionText:"继续",
+      attachments:[]
+    },
+    sources:[],
+    task:session,
+    personalRules:[],
+    model:"codex",
+    toolDeclarations:[]
+  }),/agent_turn_context_invalid/u);
 });

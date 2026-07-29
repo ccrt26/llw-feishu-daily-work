@@ -206,7 +206,9 @@ export function validateTaskSession(value) {
       !validateSourceIds(value.sourceIds)||
       !validatePendingInputs(value.pendingInputs,value)||
       !safeWaiting(value.waiting)||
-      !safeWriterCheckpoint(value.writerCheckpoint,value.revision)||
+      !safeWriterCheckpoint(
+        value.writerCheckpoint,value.revision,value.resolvedRevision
+      )||
       !canonicalIso(value.startedAt)||
       !canonicalIso(value.updatedAt)||
       !canonicalIso(value.expiresAt)||
@@ -350,12 +352,13 @@ function validateWaiting(value) {
   }
 }
 
-function safeWriterCheckpoint(value,revision) {
+function safeWriterCheckpoint(value,revision,resolvedRevision) {
   if (value===null) return true;
   return plainExact(
     value,new Set(["revision","toolName","status"])
   )&&Number.isSafeInteger(value.revision)&&
-    value.revision===revision&&
+    value.revision>resolvedRevision&&
+    value.revision<=revision&&
     /^[a-z][a-z0-9_]{0,63}$/u.test(value.toolName||"")&&
     value.status==="reserved";
 }

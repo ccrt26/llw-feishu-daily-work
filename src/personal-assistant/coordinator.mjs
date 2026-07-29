@@ -10,6 +10,7 @@ import {isConversationCancellation} from "./conversation.mjs";
 import {
   extractFeishuDocumentRequests
 } from "../core/feishu-document-link.mjs";
+import {publicTaskContext} from "./task-session.mjs";
 
 export class PersonalAssistantCoordinator {
   constructor({
@@ -18,7 +19,8 @@ export class PersonalAssistantCoordinator {
     conversationStore=null,loadDailyCandidates=async()=>[],
     personalRules,personalRulesStore=null,model,selectModel=null,skillVersion,
     sourceReader=null,maxSourceReadRounds=3,
-    releasePreparedSource=null
+    releasePreparedSource=null,
+    taskManager=null,taskWorkspace=null
   }) {
     this.prepareSource=prepareSource;
     this.assistant=assistant;
@@ -39,6 +41,260 @@ export class PersonalAssistantCoordinator {
     this.sourceReader=sourceReader;
     this.maxSourceReadRounds=maxSourceReadRounds;
     this.releasePreparedSource=releasePreparedSource;
+    this.taskManager=taskManager;
+    this.taskWorkspace=taskWorkspace;
+  }
+
+  async handleTask(snapshot) {
+    if (!this.taskManager||!this.taskWorkspace||
+        !snapshot?.session||!snapshot?.message||
+        !Array.isArray(snapshot.inputKeys)) {
+      throw new Error("task_execution_invalid");
+    }
+    const source=snapshot.session.source;
+    let phase="task_source_preparation_failed";
+    try {
+      let session=snapshot.session;
+      let turnMessage=snapshot.message;
+      let prepared;
+      const hasNewSources=turnMessage.attachments.length>0||
+        Boolean(extractFeishuDocumentRequests(turnMessage));
+      if (session.model==="deepseek"&&hasNewSources) {
+        return this.commitTaskResult(snapshot,{
+          status:"rejected",
+          reply:"当前 DeepSeek 仅支持纯文字每日工作；附件任务请先切换为 Codex。",
+          artifacts:[],
+          replyFiles:[],
+          noReplyRequired:false,
+          waiting:null,
+          taskUpdate:null
+        });
+      }
+      if (hasNewSources) {
+        prepared=await this.taskWorkspace.prepareAndMerge({
+          session,message:turnMessage
+        });
+        session=await this.taskManager.attachSources(snapshot,{
+          addedSourceIds:prepared.addedSourceIds
+        });
+        if (!await this.taskManager.isCurrent(snapshot)) {
+          return {status:"stale"};
+        }
+        if (typeof prepared.instructionText==="string") {
+          turnMessage={
+            ...turnMessage,
+            instructionText:prepared.instructionText
+          };
+        }
+      } else if (session.sourceIds.length) {
+        prepared=await this.taskWorkspace.load({
+          taskId:session.taskId,
+          expectedSourceIds:session.sourceIds
+        });
+      } else {
+        prepared={workspaceDir:null,sources:[]};
+      }
+      phase="content_safety_rejected";
+      const task=publicTaskContext(session);
+      assertContentSafe({
+        instructionText:turnMessage.instructionText,
+        sources:prepared.sources.map(source=>
+          source.handle??source
+        ),
+        conversation:task,
+        limits:{maxContextBytes:512*1024}
+      });
+      phase="personal_rules_load_failed";
+      const personalRules=this.personalRulesStore
+        ?await this.personalRulesStore.load()
+        :this.personalRules;
+      phase="daily_candidates_load_failed";
+      const dailyCandidates=await this.loadDailyCandidates();
+      const imageFiles=prepared.sources
+        .filter(source=>
+          (source.handle??source).mediaClass==="image"
+        )
+        .map(source=>source.absolutePath);
+      let decision;
+      let sourceObservations=[];
+      let sourceReadRounds=0;
+      while (true) {
+        phase="agent_turn_context_invalid";
+        const context=buildAgentTurnContext({
+          message:turnMessage,
+          sources:prepared.sources,
+          sourceObservations,
+          task,
+          personalRules,
+          model:session.model,
+          toolDeclarations:getModelToolDeclarations(),
+          dailyCandidates
+        });
+        phase="assistant_model_failed";
+        decision=await this.assistant.decide(context,{
+          workspaceDir:prepared.workspaceDir,
+          imageFiles
+        });
+        if (decision.kind!=="source_read") break;
+        if (!this.sourceReader||
+            sourceReadRounds>=this.maxSourceReadRounds) {
+          decision={
+            kind:"reply",
+            text:"当前只读环境无法继续取得足够的媒体观察，本次没有执行保存或其他写入。"
+          };
+          break;
+        }
+        phase="source_read_failed";
+        const evidence=await this.sourceReader.read({
+          requests:decision.requests,
+          sources:prepared.sources,
+          workspaceDir:prepared.workspaceDir,
+          signal:prepared.signal
+        });
+        sourceObservations=[
+          ...sourceObservations,...(evidence?.observations||[])
+        ];
+        sourceReadRounds+=1;
+      }
+      if (!await this.taskManager.isCurrent(snapshot)) {
+        return {status:"stale"};
+      }
+      let result;
+      if (decision.kind==="reply") {
+        result={
+          status:"committed",
+          reply:decision.text,
+          artifacts:[],
+          waiting:null
+        };
+      } else if (decision.kind==="ask") {
+        result={
+          status:"awaiting_clarification",
+          reply:decision.question,
+          artifacts:[],
+          waiting:{
+            type:decision.waitingType??"waiting_answer",
+            question:decision.question,
+            preparedTool:decision.preparedTool??null,
+            confirmed:decision.preparedRule
+              ?{ruleProposal:decision.preparedRule}
+              :{}
+          }
+        };
+      } else if (decision.kind==="tool") {
+        phase=`${decision.toolCall.name}_writer_reservation_failed`;
+        const reserved=await this.taskManager.reserveWriter({
+          source,
+          taskId:snapshot.taskId,
+          revision:snapshot.revision,
+          updatedAt:snapshot.session.updatedAt,
+          toolName:decision.toolCall.name
+        });
+        if (!reserved) return {status:"stale"};
+        result=await this.executeTaskTool({
+          decision,snapshot,message:turnMessage,prepared
+        });
+      } else {
+        result={
+          status:"rejected",
+          reply:"当前任务暂时没有可安全执行的工具。",
+          artifacts:[],
+          waiting:null
+        };
+      }
+      if (!await this.taskManager.isCommitCompatible(snapshot)) {
+        return {status:"stale"};
+      }
+      return this.commitTaskResult(snapshot,{
+        ...result,
+        replyFiles:result.replyFile
+          ?[structuredClone(result.replyFile)]
+          :[],
+        noReplyRequired:result.reply===null,
+        taskUpdate:decision.taskUpdate??null
+      });
+    } catch (error) {
+      if (error&&typeof error==="object") {
+        error.failurePhase=phase;
+      }
+      throw error;
+    }
+  }
+
+  async executeTaskTool({decision,snapshot,message,prepared}) {
+    const name=decision.toolCall.name;
+    if (name==="save_knowledge") {
+      return executeSaveKnowledge({
+        toolCall:decision.toolCall,
+        sourceBindings:prepared.sources,
+        instructionText:message.instructionText,
+        writer:this.writer,
+        skillVersion:this.skillVersion,
+        ingestedAt:message.receivedAt
+      });
+    }
+    if (name==="record_daily_work") {
+      return executeRecordDailyWork({
+        toolCall:decision.toolCall,
+        messageId:message.sourceMessageId,
+        createTime:Date.parse(message.receivedAt),
+        writer:this.dailyWriter
+      });
+    }
+    if (name==="archive_dining_invoice") {
+      return executeArchiveDiningInvoice({
+        toolCall:decision.toolCall,
+        sourceBindings:prepared.sources,
+        taskKey:`task:${snapshot.taskId}:${snapshot.revision}`,
+        writer:this.invoiceWriter,
+        currentInstruction:message.instructionText
+      });
+    }
+    if (name==="create_document") {
+      return executeCreateDocument({
+        toolCall:decision.toolCall,
+        sourceBindings:prepared.sources,
+        sessionId:createHash("sha256")
+          .update(`task-document:${snapshot.taskId}`)
+          .digest("hex").slice(0,32),
+        draftVersion:snapshot.revision,
+        workspace:this.documentWorkspace,
+        generate:this.artifactGenerator
+      });
+    }
+    return {
+      status:"rejected",
+      reply:"当前任务暂时没有可安全执行的工具。",
+      artifacts:[]
+    };
+  }
+
+  async commitTaskResult(snapshot,result) {
+    const publicResult={
+      status:result.status,
+      reply:result.reply,
+      artifacts:result.artifacts||[],
+      replyFiles:result.replyFiles||[],
+      noReplyRequired:result.noReplyRequired===true,
+      waiting:result.waiting??null,
+      taskUpdate:result.taskUpdate??null,
+      ...(result.status==="partial"
+        ?{reasonCode:"writer_partial"}
+        :result.status==="failed"
+          ?{reasonCode:result.failureCode??"tool_execution_failed"}
+          :{})
+    };
+    const committed=await this.taskManager.completeStage(
+      snapshot,publicResult
+    );
+    if (!committed) return {status:"stale"};
+    const key=snapshot.inputKeys.at(-1);
+    const outcome=await this.outcomeStore.get(key);
+    if (!outcome) throw new Error("task_outcome_missing");
+    if (outcome.reply) {
+      await this.sendOutcome(key,outcome,outcome.replyTarget);
+    }
+    return {status:"committed",outcome};
   }
 
   async handle(message) {

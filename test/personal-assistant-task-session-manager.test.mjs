@@ -18,7 +18,8 @@ function message({
   source="feishu",
   id="message-1",
   text="先分析这个项目",
-  receivedAt=NOW
+  receivedAt=NOW,
+  attachments=[]
 }={}) {
   const wechat=source==="wechat";
   return {
@@ -28,7 +29,7 @@ function message({
     conversationId:wechat?"wechat-owner":"feishu-chat",
     receivedAt,
     instructionText:text,
-    attachments:[],
+    attachments,
     replyTarget:wechat
       ?{
         source,
@@ -223,4 +224,112 @@ test("expires an in-memory task after 24 hours before accepting new input",async
     h.manager.current("feishu").pendingInputs[0].messageKey,
     "feishu:message-after-expiry"
   );
+});
+
+test("makes a snapshot stale after pause and resume even without a new input",async()=>{
+  const h=await harness();
+  await h.manager.accept(message());
+  const snapshot=await h.manager.claim("feishu");
+
+  await h.manager.pause("feishu",LATER);
+  await h.manager.resume(
+    "feishu","2026-07-29T01:02:00.000Z"
+  );
+
+  assert.equal(await h.manager.isCurrent(snapshot),false);
+  assert.equal(await h.manager.completeStage(snapshot,{
+    status:"committed",
+    reply:"不应提交的旧回答",
+    artifacts:[],
+    replyFiles:[],
+    noReplyRequired:false,
+    waiting:null
+  }),false);
+});
+
+test("moves inspected attachments into source ids without resolving their input",async()=>{
+  const h=await harness();
+  await h.manager.accept(message({
+    text:"",
+    attachments:[{
+      type:"file",
+      sourceAttachmentId:"file-1",
+      displayName:"材料.pdf",
+      extension:"pdf"
+    }]
+  }));
+  const snapshot=await h.manager.claim("feishu");
+
+  const updated=await h.manager.attachSources(snapshot,{
+    addedSourceIds:["source-001"]
+  });
+
+  assert.deepEqual(updated.sourceIds,["source-001"]);
+  assert.equal(updated.pendingInputs.length,1);
+  assert.deepEqual(updated.pendingInputs[0].attachments,[]);
+  assert.equal(updated.resolvedRevision,0);
+  assert.equal(await h.manager.isCurrent(snapshot),true);
+});
+
+test("blocks a stale Writer reservation before any side effect",async()=>{
+  const h=await harness();
+  await h.manager.accept(message());
+  const snapshot=await h.manager.claim("feishu");
+  await h.manager.accept(message({
+    id:"message-2",
+    text:"补充新要求",
+    receivedAt:LATER
+  }));
+
+  assert.equal(await h.manager.reserveWriter({
+    source:"feishu",
+    taskId:snapshot.taskId,
+    revision:snapshot.revision,
+    updatedAt:snapshot.session.updatedAt,
+    toolName:"create_document"
+  }),false);
+  assert.equal(await h.manager.isCommitCompatible(snapshot),false);
+});
+
+test("finishes an already reserved Writer stage and preserves a later supplement",async()=>{
+  const h=await harness();
+  await h.manager.accept(message());
+  const snapshot=await h.manager.claim("feishu");
+  assert.equal(await h.manager.reserveWriter({
+    source:"feishu",
+    taskId:snapshot.taskId,
+    revision:snapshot.revision,
+    updatedAt:snapshot.session.updatedAt,
+    toolName:"create_document"
+  }),true);
+
+  await h.manager.accept(message({
+    id:"message-2",
+    text:"补充：把标题改短",
+    receivedAt:LATER
+  }));
+
+  assert.equal(await h.manager.isCurrent(snapshot),false);
+  assert.equal(await h.manager.isCommitCompatible(snapshot),true);
+  assert.equal(await h.manager.completeStage(snapshot,{
+    status:"committed",
+    reply:"旧版本已在补充到达前获得写入授权并完成。",
+    artifacts:[{kind:"docx"}],
+    replyFiles:[],
+    noReplyRequired:false,
+    waiting:null
+  }),true);
+  const current=h.manager.current("feishu");
+  assert.equal(current.revision,2);
+  assert.equal(current.resolvedRevision,1);
+  assert.equal(current.writerCheckpoint,null);
+  assert.deepEqual(
+    current.pendingInputs.map(input=>input.messageKey),
+    ["feishu:message-2"]
+  );
+  assert.equal(
+    h.state.getOutcome("feishu:message-1").status,
+    "committed"
+  );
+  assert.equal(h.state.getOutcome("feishu:message-2"),null);
 });

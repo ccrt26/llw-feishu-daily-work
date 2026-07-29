@@ -133,7 +133,99 @@ export class PersonalAssistantTaskSessionManager {
       );
       return Boolean(current&&current.status==="active"&&
         current.taskId===snapshot.taskId&&
-        current.revision===snapshot.revision);
+        current.revision===snapshot.revision&&
+        current.updatedAt===snapshot.session.updatedAt);
+    });
+  }
+
+  attachSources(snapshot,{addedSourceIds}) {
+    validateSnapshot(snapshot);
+    validateAddedSourceIds(addedSourceIds);
+    const source=snapshot.session.source;
+    return this.mutate(source,async()=>{
+      const current=await this.load(
+        source,new Date(this.now()).toISOString()
+      );
+      if (!current||current.status!=="active"||
+          current.taskId!==snapshot.taskId||
+          current.revision<snapshot.revision||
+          !sameArray(
+            current.sourceIds,snapshot.session.sourceIds
+          )) {
+        throw new Error("task_session_manager_invalid");
+      }
+      const nextIds=[
+        ...current.sourceIds,...addedSourceIds
+      ];
+      if (nextIds.length>8) {
+        throw new Error("task_session_manager_invalid");
+      }
+      for (let index=0;index<nextIds.length;index+=1) {
+        if (nextIds[index]!==
+            `source-${String(index+1).padStart(3,"0")}`) {
+          throw new Error("task_session_manager_invalid");
+        }
+      }
+      const next=validateTaskSession({
+        ...current,
+        sourceIds:nextIds,
+        pendingInputs:current.pendingInputs.map(input=>
+          input.revision<=snapshot.revision
+            ?{...input,attachments:[]}
+            :input
+        )
+      });
+      await this.state.setPersonalAssistantTaskSession(source,next);
+      this.sessions[source]=next;
+      return validateTaskSession(next);
+    });
+  }
+
+  reserveWriter({
+    source,taskId,revision,updatedAt,toolName
+  }) {
+    validateSource(source);
+    if (typeof taskId!=="string"||
+        !Number.isSafeInteger(revision)||
+        !canonicalIso(updatedAt)||
+        !/^[a-z][a-z0-9_]{0,63}$/u.test(toolName||"")) {
+      throw new Error("task_session_manager_invalid");
+    }
+    return this.mutate(source,async()=>{
+      const current=await this.load(
+        source,new Date(this.now()).toISOString()
+      );
+      if (!current||current.status!=="active"||
+          current.taskId!==taskId||
+          current.revision!==revision||
+          current.updatedAt!==updatedAt||
+          current.writerCheckpoint!==null) return false;
+      const next=validateTaskSession({
+        ...current,
+        writerCheckpoint:{
+          revision,toolName,status:"reserved"
+        }
+      });
+      await this.state.setPersonalAssistantTaskSession(source,next);
+      this.sessions[source]=next;
+      return true;
+    });
+  }
+
+  isCommitCompatible(snapshot) {
+    validateSnapshot(snapshot);
+    const source=snapshot.session.source;
+    return this.mutate(source,async()=>{
+      const current=await this.load(
+        source,new Date(this.now()).toISOString()
+      );
+      if (!current||current.status!=="active"||
+          current.taskId!==snapshot.taskId) return false;
+      if (current.writerCheckpoint?.revision===
+          snapshot.revision) return true;
+      return current.writerCheckpoint===null&&
+        current.revision===snapshot.revision&&
+        current.updatedAt===snapshot.session.updatedAt;
     });
   }
 
@@ -146,8 +238,13 @@ export class PersonalAssistantTaskSessionManager {
         source,new Date(this.now()).toISOString()
       );
       if (!current||current.status!=="active"||
-          current.taskId!==snapshot.taskId||
-          current.revision!==snapshot.revision) return false;
+          current.taskId!==snapshot.taskId) return false;
+      const reserved=current.writerCheckpoint?.revision===
+        snapshot.revision;
+      const direct=current.writerCheckpoint===null&&
+        current.revision===snapshot.revision&&
+        current.updatedAt===snapshot.session.updatedAt;
+      if (!reserved&&!direct) return false;
       const latest=current.pendingInputs
         .filter(input=>input.revision<=snapshot.revision)
         .sort((a,b)=>a.revision-b.revision)
@@ -161,7 +258,7 @@ export class PersonalAssistantTaskSessionManager {
         assistantText:result.reply||"本阶段没有用户可见回复。",
         waiting:result.waiting??null,
         taskUpdate:result.taskUpdate??null,
-        now:latest.receivedAt
+        now:current.updatedAt
       });
       const publicResult={
         capability:"personal-assistant",
@@ -194,7 +291,7 @@ export class PersonalAssistantTaskSessionManager {
       const committed=await this.state.commitPersonalAssistantTaskStage({
         source,
         expectedTaskId:snapshot.taskId,
-        expectedRevision:snapshot.revision,
+        expectedRevision:current.revision,
         nextSession:next,
         outcomes
       });
@@ -334,4 +431,17 @@ function validateStageResult(value) {
 function canonicalIso(value) {
   return typeof value==="string"&&Number.isFinite(Date.parse(value))&&
     new Date(value).toISOString()===value;
+}
+
+function validateAddedSourceIds(value) {
+  if (!Array.isArray(value)||value.length>8||
+      new Set(value).size!==value.length||
+      value.some(item=>!/^source-00[1-8]$/u.test(item))) {
+    throw new Error("task_session_manager_invalid");
+  }
+}
+
+function sameArray(left,right) {
+  return left.length===right.length&&
+    left.every((value,index)=>value===right[index]);
 }

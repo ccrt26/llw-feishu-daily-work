@@ -109,3 +109,34 @@ test("never lets DeepSeek or a mixed envelope request source access",()=>{
     /provider_result_invalid/u
   );
 });
+
+test("attaches one bounded task update to the existing final decision",()=>{
+  const taskUpdate={
+    workingSummary:"已完成风险初步分析。",
+    confirmedRequirements:["按高、中、低分级"],
+    rejectedDirections:["不保存"]
+  };
+  assert.deepEqual(adaptProviderResult({
+    provider:"codex",
+    raw:{
+      type:"reply",
+      text:"风险分析如下。",
+      taskUpdate
+    }
+  }),{
+    kind:"reply",
+    text:"风险分析如下。",
+    taskUpdate
+  });
+  assert.throws(()=>adaptProviderResult({
+    provider:"codex",
+    raw:{
+      type:"reply",
+      text:"风险分析如下。",
+      taskUpdate:{
+        ...taskUpdate,
+        workingSummary:"/private/task/source.pdf"
+      }
+    }
+  }),/provider_result_invalid/u);
+});
