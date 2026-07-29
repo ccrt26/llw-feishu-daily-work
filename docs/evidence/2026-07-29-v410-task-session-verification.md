@@ -2,13 +2,13 @@
 
 Date: 2026-07-29  
 Component branch: `agent/v410-foundation-media-gates`  
-Verified component commit: `4a22813`  
+Verified component implementation commit: `4a22813`
 Verified Skill commit: `4a9ed70` on `agent/v410-continuous-tasks`  
 Production deployment: **not performed**
 
 ## Release position
 
-The continuous Task Session implementation is locally complete and has passed deterministic end-to-end journeys plus the complete component regression. Production remains closed because the real Codex smoke requires explicit authorization to transmit the private Skill contract and a synthetic task context to the model service.
+The continuous Task Session implementation is locally complete and has passed deterministic end-to-end journeys, the complete component regression and one real isolated Codex smoke. The project owner explicitly authorized transmitting the isolated private Skill contract and generated synthetic task context for that smoke. All pre-deployment gates now pass.
 
 Media remains disabled under `STOP_AFTER_FOUNDATION`. No media runtime, new permission, extra process, router, registry, side-effect tool, production state migration, push or deployment was performed.
 
@@ -76,19 +76,28 @@ The first restricted run produced 24 failures solely because the sandbox denied 
 - Deterministic reports contain only synthetic hashes, statuses, decision kinds, counts and elapsed time.
 - Source workspaces and manifests are owner-only and are removed on task replacement, cancellation before Writer, completion of a deferred cancellation, or expiry.
 
-## Open authorization gate
+## Real isolated Codex evidence
 
-`test/v410-task-session-real-model-smoke.mjs` is ready and uses only a generated non-private PDF and private temporary directories. It records no prompt text, model response body, absolute path or platform-like identifier.
+`test/v410-task-session-real-model-smoke.mjs` used the isolated V4.1.0 Skill worktree, a generated non-private PDF and private temporary directories. It recorded no prompt text, model response body, absolute path or platform-like identifier.
 
-Running it with the real Codex binary transmits the private `llw-personal-assistant` Skill contract and a synthetic task context to the model service. The authorization reviewer rejected execution without the project owner's explicit approval for that payload and destination. This gate must not be bypassed.
+After explicit project-owner authorization, the real Codex invocation completed in 57.040 seconds:
 
-Until the smoke passes, the following remain prohibited:
+```json
+{
+  "status": "passed",
+  "taskIdStable": true,
+  "decisions": ["ask", "reply"],
+  "stages": ["awaiting_clarification", "committed"],
+  "sourceCount": 1,
+  "writerCalls": 0,
+  "replyCount": 2,
+  "elapsedMs": 57040
+}
+```
 
-- production deployment or state migration;
-- real Feishu/WeChat acceptance;
-- documentation claims that V4.1.0 is deployed;
-- repository push;
-- media runtime installation or enablement.
+The generated PDF was accepted without an instruction, the real model asked for the purpose, and a later instruction was processed in the same task against the same single source. The second decision was a direct reply, so the safe zero-Writer path was correctly preserved.
+
+Immediately afterward, the complete deterministic journey suite was rerun and again passed all 11 journeys with zero failures or skips. This satisfies the full-flow evidence gate. Production deployment and real platform acceptance remain separate subsequent gates; media runtime installation and enablement remain prohibited.
 
 ## Protected rollback evidence
 
