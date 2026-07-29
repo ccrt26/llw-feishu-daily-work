@@ -137,7 +137,7 @@ test("never coalesces across entry, user or conversation",() => {
   );
 });
 
-test("starts a new turn for a source arriving after the hard deadline",() => {
+test("starts a new scheduling window after the hard deadline",() => {
   const {clock,ready,collector}=harness();
   collector.accept(message("first",{attachments:[file("a")]}));
   for (let index=1;index<5;index+=1) {

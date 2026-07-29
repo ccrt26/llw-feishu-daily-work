@@ -7,10 +7,14 @@ import {handleModelCommand} from "../core/model-command.mjs";
 import {isUnsupportedMediaExtension} from "../core/media-support.mjs";
 import {isConversationCancellation} from "./conversation.mjs";
 import {SourceBurstCollector} from "./source-burst-collector.mjs";
+import {
+  classifyTaskControl
+} from "./task-session.mjs";
 
 export class PersonalAssistantDispatcher {
   constructor({
     binding,bindings,state,coordinator,modelMode,deepseekEnabled,messenger,
+    taskManager=null,taskWorkspace=null,cancelTaskWork=async()=>{},
     onFailure=()=>{},coalesceWindowMs=0,
     sourceBurstQuietMs=coalesceWindowMs,
     sourceBurstMaxMs=sourceBurstQuietMs?15_000:0,
@@ -23,6 +27,9 @@ export class PersonalAssistantDispatcher {
     this.bindings=bindings;
     this.state=state;
     this.coordinator=coordinator;
+    this.taskManager=taskManager;
+    this.taskWorkspace=taskWorkspace;
+    this.cancelTaskWork=cancelTaskWork;
     this.modelMode=modelMode;
     this.deepseekEnabled=deepseekEnabled;
     this.messenger=messenger;
@@ -41,6 +48,8 @@ export class PersonalAssistantDispatcher {
     }
     this.acceptedTasks=new Set();
     this.acceptedMessageKeys=new Set();
+    this.runningSources=new Set();
+    this.rescheduleSources=new Set();
     this.queue=Promise.resolve();
     this.sourceCollector=sourceBurstQuietMs
       ?new SourceBurstCollector({
@@ -48,7 +57,9 @@ export class PersonalAssistantDispatcher {
         attachmentQuietMs:sourceBurstAttachmentQuietMs,
         maxMs:sourceBurstMaxMs,
         maxSources:maxSourcesPerTurn,now,setTimer,clearTimer,
-        onReady:({message,aliases})=>this.scheduleAccepted(message,aliases)
+        onReady:({message,aliases})=>this.taskManager
+          ?this.scheduleTask(message.source)
+          :this.scheduleAccepted(message,aliases)
       })
       :null;
   }
@@ -58,6 +69,9 @@ export class PersonalAssistantDispatcher {
   }
 
   handleIncomingMessage(message) {
+    if (this.taskManager) {
+      return this.handleTaskIncomingMessage(message);
+    }
     return this.enqueue(()=>this.processIncomingMessage(message));
   }
 
@@ -81,28 +95,31 @@ export class PersonalAssistantDispatcher {
     return this.acceptIncomingMessage(message);
   }
 
-  acceptIncomingMessage(message) {
+  async acceptIncomingMessage(message) {
     const security=checkIncomingSecurity(message,this.bindings);
-    if (!security.ok) return Promise.resolve({
+    if (!security.ok) return {
       handled:false,reason:security.reason
-    });
+    };
     if (!validTurnShape(message)) {
-      return Promise.resolve({handled:false,reason:"invalid_message"});
+      return {handled:false,reason:"invalid_message"};
     }
     if (!message.instructionText.trim()&&!message.attachments.length) {
-      return Promise.resolve({handled:false,reason:"empty_message"});
+      return {handled:false,reason:"empty_message"};
     }
     const key=personalOutcomeKey(message);
     if (this.state.hasOutcome(key)||this.acceptedMessageKeys.has(key)) {
-      return Promise.resolve({handled:false,reason:"duplicate"});
+      return {handled:false,reason:"duplicate"};
     }
     if (hasUnsupportedMedia(message)) {
       this.scheduleUnsupportedMedia(message);
-      return Promise.resolve({handled:true,status:"rejected"});
+      return {handled:true,status:"rejected"};
+    }
+    if (this.taskManager) {
+      return this.acceptTaskInput(message);
     }
     if (!this.sourceCollector) {
       this.scheduleAccepted(message);
-      return Promise.resolve({handled:true,status:"accepted"});
+      return {handled:true,status:"accepted"};
     }
     if (isConversationCancellation(message.instructionText)) {
       const cancelled=this.sourceCollector.cancel(message);
@@ -110,17 +127,295 @@ export class PersonalAssistantDispatcher {
         this.scheduleAliasOutcomes(cancelled.messages,"cancelled");
       }
       this.scheduleAccepted(message);
-      return Promise.resolve({handled:true,status:"accepted"});
+      return {handled:true,status:"accepted"};
     }
     const collected=this.sourceCollector.accept(message);
     if (collected.status==="rejected") {
       this.scheduleRejectedSource(message);
-      return Promise.resolve({handled:true,status:"rejected"});
+      return {handled:true,status:"rejected"};
     }
     if (collected.reason==="duplicate") {
-      return Promise.resolve({handled:false,reason:"duplicate"});
+      return {handled:false,reason:"duplicate"};
     }
-    return Promise.resolve({handled:true,status:"accepted"});
+    return {handled:true,status:"accepted"};
+  }
+
+  async handleTaskIncomingMessage(message) {
+    const result=await this.acceptIncomingMessage(message);
+    if (!result.handled||result.status!=="accepted") return result;
+    await this.flushAcceptedMessages();
+    const outcome=this.state.getOutcome?.(personalOutcomeKey(message));
+    return {
+      handled:true,
+      status:outcome?.status??result.status
+    };
+  }
+
+  async recoverPendingTasks() {
+    if (!this.taskManager) return [];
+    const sources=await this.taskManager.recoverPending();
+    for (const source of sources) this.scheduleTask(source);
+    return [...sources];
+  }
+
+  async acceptTaskInput(message) {
+    const control=classifyTaskControl({
+      instructionText:message.instructionText,
+      hasAttachments:message.attachments.length>0
+    });
+    if (control) return this.handleTaskControl(message,control);
+    if (!message.attachments.length) {
+      const command=await handleModelCommand(message.instructionText,{
+        modelMode:this.modelMode,deepseekEnabled:this.deepseekEnabled
+      });
+      if (command) {
+        this.scheduleTaskCommand(message,command);
+        return {handled:true,status:command.status};
+      }
+    }
+    const current=this.taskManager.current(message.source);
+    if (current?.status==="active"&&
+        current.sourceIds.length+
+          current.pendingInputs.reduce(
+            (count,input)=>count+input.attachments.length,0
+          )+
+          message.attachments.length>8) {
+      this.scheduleRejectedSource(message);
+      return {handled:true,status:"rejected"};
+    }
+    let accepted;
+    try {
+      accepted=await this.taskManager.accept(message);
+    } catch (error) {
+      if (error?.message!=="task_session_invalid") throw error;
+      this.scheduleRejectedSource(message);
+      return {handled:true,status:"rejected"};
+    }
+    if (accepted.duplicate) {
+      return {handled:false,reason:"duplicate"};
+    }
+    if (accepted.replacedTaskId&&this.taskWorkspace) {
+      await this.taskWorkspace.remove({
+        taskId:accepted.replacedTaskId
+      });
+    }
+    if (this.sourceCollector) {
+      this.sourceCollector.accept({
+        ...message,
+        instructionText:message.instructionText||"已接收来源",
+        attachments:[]
+      });
+    } else {
+      this.scheduleTask(message.source);
+    }
+    return {handled:true,status:"accepted"};
+  }
+
+  async handleTaskControl(message,control) {
+    const source=message.source;
+    if (control.kind==="new_task") {
+      const closed=await this.taskManager.close(
+        source,"new_task",message.receivedAt
+      );
+      await this.releaseClosedTask(closed,"new_task");
+      if (control.instructionText) {
+        const replacement={
+          ...message,
+          instructionText:control.instructionText
+        };
+        const accepted=await this.taskManager.accept(replacement);
+        if (this.sourceCollector) {
+          this.sourceCollector.accept({
+            ...replacement,attachments:[]
+          });
+        } else {
+          this.scheduleTask(source);
+        }
+        return {
+          handled:true,
+          status:accepted.duplicate?"existing":"accepted"
+        };
+      }
+      this.scheduleTaskCommand(message,{
+        status:"committed",
+        reply:"当前任务已结束，请直接发送新的要求。"
+      });
+      return {handled:true,status:"committed"};
+    }
+    if (control.kind==="cancel"||control.kind==="end") {
+      const closed=control.kind==="cancel"
+        ?await this.taskManager.cancel(source,message.receivedAt)
+        :await this.taskManager.close(
+          source,"ended",message.receivedAt
+        );
+      await this.releaseClosedTask(closed,control.kind);
+      this.scheduleTaskCommand(message,{
+        status:"committed",
+        reply:control.kind==="cancel"
+          ?"已取消，当前任务不会继续处理或保存。"
+          :"当前任务已结束。"
+      });
+      return {handled:true,status:"committed"};
+    }
+    if (control.kind==="pause") {
+      let paused=null;
+      try {
+        paused=await this.taskManager.pause(
+          source,message.receivedAt
+        );
+      } catch (error) {
+        if (error?.message!=="task_session_invalid") throw error;
+      }
+      this.scheduleTaskCommand(message,{
+        status:paused?"committed":"existing",
+        reply:paused
+          ?"当前任务已暂停；需要继续时直接说“继续刚才的”。"
+          :"当前没有可暂停的任务。"
+      });
+      return {
+        handled:true,status:paused?"committed":"existing"
+      };
+    }
+    if (control.kind==="resume") {
+      let resumed=null;
+      try {
+        resumed=await this.taskManager.resume(
+          source,message.receivedAt
+        );
+      } catch (error) {
+        if (error?.message!=="task_session_invalid") throw error;
+      }
+      if (resumed?.pendingInputs.length) this.scheduleTask(source);
+      this.scheduleTaskCommand(message,{
+        status:resumed?"committed":"existing",
+        reply:resumed
+          ?"已继续当前任务。"
+          :"当前没有已暂停且可继续的任务。"
+      });
+      return {
+        handled:true,status:resumed?"committed":"existing"
+      };
+    }
+    throw new Error("task_control_invalid");
+  }
+
+  async releaseClosedTask(session,reason) {
+    if (!session) return;
+    const reasonCode=new Map([
+      ["cancel","cancelled"],
+      ["end","ended"],
+      ["new_task","replaced_by_new_task"]
+    ]).get(reason)||"task_closed";
+    for (const input of session.pendingInputs) {
+      if (this.state.hasOutcome(input.messageKey)) continue;
+      await this.state.saveOutcome(input.messageKey,{
+        capability:"personal-assistant",
+        status:"ignored",
+        reply:null,
+        artifacts:[],
+        replyFiles:[],
+        noReplyRequired:true,
+        reasonCode,
+        createdAt:input.receivedAt
+      });
+    }
+    await this.cancelTaskWork({
+      source:session.source,
+      taskId:session.taskId,
+      reason
+    });
+    if (this.taskWorkspace) {
+      await this.taskWorkspace.remove({taskId:session.taskId});
+    }
+  }
+
+  scheduleTaskCommand(message,command) {
+    const key=personalOutcomeKey(message);
+    const task=this.enqueue(
+      ()=>this.persistAndSendCommand(key,message,command)
+    );
+    this.trackTask(task,[key]);
+  }
+
+  scheduleTask(source) {
+    if (!this.taskManager) {
+      throw new Error("task_session_manager_required");
+    }
+    if (this.runningSources.has(source)) {
+      this.rescheduleSources.add(source);
+      return;
+    }
+    this.runningSources.add(source);
+    let snapshot=null;
+    const task=(async()=>{
+      try {
+        snapshot=await this.taskManager.claim(source);
+        if (!snapshot) return;
+        const result=await this.coordinator.handleTask(snapshot);
+        if (result?.status==="stale") {
+          this.rescheduleSources.add(source);
+        }
+      } catch (error) {
+        if (snapshot) {
+          await this.commitTaskFailure(snapshot,error).catch(()=>{});
+        } else {
+          try {
+            this.onFailure(boundedFailureCode(error));
+          } catch {}
+        }
+      } finally {
+        this.runningSources.delete(source);
+        const current=this.taskManager.current(source);
+        const requested=this.rescheduleSources.delete(source);
+        const hasNewerInput=Boolean(
+          current?.status==="active"&&snapshot&&
+          current.pendingInputs.some(
+            input=>input.revision>snapshot.revision
+          )
+        );
+        const shouldRun=current?.status==="active"&&(
+          requested||hasNewerInput
+        );
+        if (shouldRun) this.scheduleTask(source);
+      }
+    })();
+    this.trackTask(task);
+  }
+
+  async commitTaskFailure(snapshot,error) {
+    const reasonCode=boundedFailureCode(error);
+    try { this.onFailure(reasonCode); } catch {}
+    const reply=failureReply(reasonCode);
+    const committed=await this.taskManager.completeStage(snapshot,{
+      status:"failed",
+      reply,
+      artifacts:[],
+      replyFiles:[],
+      noReplyRequired:false,
+      reasonCode,
+      waiting:null
+    });
+    if (!committed) {
+      this.rescheduleSources.add(snapshot.session.source);
+      return;
+    }
+    const key=snapshot.inputKeys.at(-1);
+    const outcome=this.state.getOutcome?.(key);
+    if (!outcome?.reply) return;
+    if (typeof this.coordinator.sendOutcome==="function") {
+      await this.coordinator.sendOutcome(
+        key,outcome,outcome.replyTarget
+      );
+      return;
+    }
+    await this.messenger.send({
+      capability:"personal-assistant",
+      replyTarget:outcome.replyTarget,
+      text:outcome.reply,
+      idempotencyKey:`reply:${key}`,
+      replyFiles:outcome.replyFiles||[]
+    });
+    await this.state.markReplied?.(key);
   }
 
   scheduleUnsupportedMedia(message) {

@@ -12,6 +12,7 @@ const FEISHU_TASK_ID="F".repeat(43);
 const WECHAT_TASK_ID="W".repeat(43);
 const NOW="2026-07-29T01:00:00.000Z";
 const LATER="2026-07-29T01:01:00.000Z";
+const AFTER_EXPIRY="2026-07-30T01:00:00.001Z";
 
 function message({
   source="feishu",
@@ -185,5 +186,41 @@ test("restores unresolved work after restart and clears only the selected channe
   assert.equal(
     await reopened.getPersonalAssistantTaskSession("feishu",LATER),
     null
+  );
+});
+
+test("replaces a paused task on ordinary input and reports the old task for cleanup",async()=>{
+  const h=await harness();
+  await h.manager.accept(message());
+  await h.manager.pause("feishu",LATER);
+
+  const accepted=await h.manager.accept(message({
+    id:"message-2",
+    text:"这是一个新的普通要求",
+    receivedAt:"2026-07-29T01:02:00.000Z"
+  }));
+
+  assert.equal(accepted.isNew,true);
+  assert.equal(accepted.replacedTaskId,FEISHU_TASK_ID);
+  assert.equal(accepted.taskId,WECHAT_TASK_ID);
+  assert.equal(h.manager.current("feishu").status,"active");
+});
+
+test("expires an in-memory task after 24 hours before accepting new input",async()=>{
+  const h=await harness();
+  await h.manager.accept(message());
+
+  const accepted=await h.manager.accept(message({
+    id:"message-after-expiry",
+    text:"超时后的新要求",
+    receivedAt:AFTER_EXPIRY
+  }));
+
+  assert.equal(accepted.isNew,true);
+  assert.equal(accepted.taskId,WECHAT_TASK_ID);
+  assert.equal(h.manager.current("feishu").revision,1);
+  assert.equal(
+    h.manager.current("feishu").pendingInputs[0].messageKey,
+    "feishu:message-after-expiry"
   );
 });

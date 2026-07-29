@@ -58,7 +58,9 @@ export class PersonalAssistantTaskSessionManager {
         };
       }
       let isNew=false;
+      let replacedTaskId=null;
       if (!current||current.status==="paused") {
+        replacedTaskId=current?.taskId??null;
         const model=await this.selectModel();
         current=createTaskSession({
           message,model,taskId:this.createId(),now:message.receivedAt
@@ -76,7 +78,8 @@ export class PersonalAssistantTaskSessionManager {
         revision:current.revision,
         source,
         isNew,
-        messageKey
+        messageKey,
+        ...(replacedTaskId?{replacedTaskId}:{})
       };
     });
   }
@@ -261,6 +264,10 @@ export class PersonalAssistantTaskSessionManager {
       this.sessions[source]=
         await this.state.getPersonalAssistantTaskSession(source,now);
       this.loaded[source]=true;
+    } else if (this.sessions[source]&&
+        Date.parse(now)>Date.parse(this.sessions[source].expiresAt)) {
+      await this.state.clearPersonalAssistantTaskSession(source);
+      this.sessions[source]=null;
     }
     return this.sessions[source];
   }
