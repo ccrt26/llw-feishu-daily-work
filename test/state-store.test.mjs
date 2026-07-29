@@ -112,6 +112,38 @@ test("persists one bounded personal-assistant conversation per entry",async()=>{
   );
 });
 
+test("persists only an opaque prepared source id in a WeChat conversation",async()=>{
+  const {file}=await fresh();
+  const store=await StateStore.open(file);
+  const preparedSourceSetId="C".repeat(43);
+  const conversation={
+    waitingType:"waiting_answer",
+    question:"要重点总结哪一部分？",
+    instructionText:"总结这个视频",
+    preparedTool:null,confirmed:{},turns:[],model:"codex",
+    preparedSourceSetId,
+    startedAt:"2026-07-29T00:00:00.000Z",
+    updatedAt:"2026-07-29T00:00:00.000Z"
+  };
+  await store.setPersonalAssistantConversation("wechat",conversation);
+  const reopened=await StateStore.open(file);
+  assert.deepEqual(
+    await reopened.getPersonalAssistantConversation(
+      "wechat","2026-07-29T01:00:00.000Z"
+    ),
+    conversation
+  );
+  const persisted=await readFile(file,"utf8");
+  assert.equal(persisted.includes(preparedSourceSetId),true);
+  assert.equal(persisted.includes("/private/"),false);
+  assert.equal(
+    await reopened.getPersonalAssistantConversation(
+      "feishu","2026-07-29T01:00:00.000Z"
+    ),
+    null
+  );
+});
+
 test("updates only the same open Task Session without identity, model, time or draft rollback",async()=>{
   const {file}=await fresh();
   const store=await StateStore.open(file,{taskSessionPolicy});

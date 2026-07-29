@@ -22,7 +22,8 @@ export class PersonalAssistantClient {
             workspaceDir:options.workspaceDir,
             imageFiles:[...(options.imageFiles||[])]
           }
-        )
+        ),
+        availableSources:context.sources||[]
       });
       if (decision.kind==="tool") {
         decision.toolCall=validateToolCall(decision.toolCall);

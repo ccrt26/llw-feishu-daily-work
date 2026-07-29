@@ -39,3 +39,27 @@ test("explicit cancellation clears state without an AI decision",() => {
   assert.equal(isConversationCancellation("不用了，取消"),true);
   assert.equal(isConversationCancellation("取消昨天的记录"),false);
 });
+
+test("keeps only one opaque prepared source id while waiting",()=>{
+  const preparedSourceSetId="A".repeat(43);
+  const next=applyConversationDecision({
+    state:{feishu:null,wechat:null},source:"wechat",now,
+    decision:{
+      kind:"ask",waitingType:"waiting_answer",
+      question:"要重点总结哪一部分？",
+      instructionText:"总结这个视频",
+      preparedTool:null,preparedSourceSetId
+    }
+  });
+  assert.equal(
+    next.wechat.preparedSourceSetId,
+    preparedSourceSetId
+  );
+  assert.throws(()=>applyConversationDecision({
+    state:{feishu:null,wechat:null},source:"wechat",now,
+    decision:{
+      kind:"ask",waitingType:"waiting_answer",
+      question:"继续吗？",preparedSourceSetId:"../private/source"
+    }
+  }),/conversation_invalid/u);
+});

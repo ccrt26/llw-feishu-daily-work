@@ -1,9 +1,24 @@
 import {validatePersonalRule} from "./personal-rules.mjs";
+import {
+  validateSourceReadRequest
+} from "./source-read-request.mjs";
 
-export function adaptProviderResult({provider,raw}) {
+export function adaptProviderResult({
+  provider,raw,availableSources=[]
+}) {
   try {
     if (!new Set(["codex","deepseek"]).has(provider)||
         !raw||typeof raw!=="object"||Array.isArray(raw)) reject();
+    if (provider==="codex"&&raw.type==="source_read_request"&&
+        Object.keys(raw).length===2&&
+        Object.hasOwn(raw,"requests")) {
+      return {
+        kind:"source_read",
+        requests:validateSourceReadRequest({
+          raw:raw.requests,availableSources
+        })
+      };
+    }
     if ((raw.type==="reply"||raw.action==="reply")&&safeText(raw.text,32_000)) {
       return {kind:"reply",text:raw.text};
     }

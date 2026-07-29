@@ -61,3 +61,51 @@ test("rejects multiple tools, mixed success claims and unknown envelopes",() => 
     null
   ]) assert.throws(()=>adaptProviderResult({provider:"codex",raw}),/provider_result_invalid/);
 });
+
+test("adapts a Codex source read as an internal observation, not a tool",()=>{
+  const result=adaptProviderResult({
+    provider:"codex",
+    availableSources:[{
+      sourceId:"source-001",mediaClass:"video",durationMs:120_000
+    }],
+    raw:{
+      type:"source_read_request",
+      requests:[{
+        sourceId:"source-001",view:"inspect_time_range",
+        startMs:1_000,endMs:20_000
+      }]
+    }
+  });
+  assert.deepEqual(result,{
+    kind:"source_read",
+    requests:[{
+      sourceId:"source-001",view:"inspect_time_range",
+      startMs:1_000,endMs:20_000
+    }]
+  });
+  assert.equal(Object.hasOwn(result,"toolCall"),false);
+});
+
+test("never lets DeepSeek or a mixed envelope request source access",()=>{
+  const raw={
+    type:"source_read_request",
+    requests:[{sourceId:"source-001",view:"probe_media"}]
+  };
+  const availableSources=[{
+    sourceId:"source-001",mediaClass:"video",durationMs:120_000
+  }];
+  assert.throws(
+    ()=>adaptProviderResult({
+      provider:"deepseek",raw,availableSources
+    }),
+    /provider_result_invalid/u
+  );
+  assert.throws(
+    ()=>adaptProviderResult({
+      provider:"codex",
+      raw:{...raw,text:"已经看完"},
+      availableSources
+    }),
+    /provider_result_invalid/u
+  );
+});

@@ -49,3 +49,26 @@ test("never falls back to another provider after a failure",async() => {
   await assert.rejects(client.decide({model:"codex"}),/assistant_model_failed/);
   assert.equal(deepseekCalls,0);
 });
+
+test("validates a Codex observation against only the current source set",async()=>{
+  const client=new PersonalAssistantClient({
+    codex:async()=>({
+      type:"source_read_request",
+      requests:[{sourceId:"source-001",view:"probe_media"}]
+    }),
+    deepseek:async()=>{throw new Error("unexpected_deepseek");}
+  });
+  const decision=await client.decide({
+    model:"codex",instructionText:"总结",
+    tools:[],
+    sources:[{
+      sourceId:"source-001",mediaClass:"video",durationMs:12_000,
+      displayName:"测试.mov",format:"mov",relativePath:"source-001.mov",
+      byteSize:2_000,sha256:"a".repeat(64),availability:"ready"
+    }]
+  });
+  assert.deepEqual(decision,{
+    kind:"source_read",
+    requests:[{sourceId:"source-001",view:"probe_media"}]
+  });
+});

@@ -52,6 +52,38 @@ test("projects a source binding without platform IDs, absolute paths or bytes",(
   ]) assert.equal(privateField in projected,false);
 });
 
+test("projects original video metadata while keeping observations in sidecars",()=>{
+  const handle=createSourceHandle({
+    sourceId:"source-001",
+    displayName:"合成视频.mov",
+    mediaClass:"video",
+    format:"mov",
+    relativePath:"source-001.mov",
+    byteSize:64*1024*1024,
+    sha256:"b".repeat(64),
+    availability:"ready",
+    durationMs:12_000,
+    instructionRole:"source_content",
+    representationIndexPath:"source-001.manifest.json",
+    limitations:["当前运行链尚未证明可以直接读取原始视频"]
+  });
+  assert.deepEqual(handle,{
+    sourceId:"source-001",
+    displayName:"合成视频.mov",
+    mediaClass:"video",
+    format:"mov",
+    relativePath:"source-001.mov",
+    byteSize:64*1024*1024,
+    sha256:"b".repeat(64),
+    availability:"ready",
+    durationMs:12_000,
+    instructionRole:"source_content",
+    representationIndexPath:"source-001.manifest.json",
+    limitations:["当前运行链尚未证明可以直接读取原始视频"]
+  });
+  assert.equal(Object.isFrozen(handle.limitations),true);
+});
+
 test("rejects oversized names, unsafe relative paths and malformed metadata",() => {
   for (const invalid of [
     {...binding,displayName:"x".repeat(256)},

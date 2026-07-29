@@ -1,3 +1,7 @@
+import {
+  isPreparedSourceSetId
+} from "./source-job-store.mjs";
+
 const WAITING=new Set(["waiting_answer","waiting_file","waiting_confirmation"]);
 const TTL_MS=24*60*60*1000;
 
@@ -13,7 +17,10 @@ export function applyConversationDecision({
         (typeof decision.instructionText!=="string"||
           Buffer.byteLength(decision.instructionText,"utf8")>32_768))||
       (decision.preparedTool!==null&&decision.preparedTool!==undefined&&
-        !/^[a-z][a-z0-9_]{0,63}$/u.test(decision.preparedTool))) {
+        !/^[a-z][a-z0-9_]{0,63}$/u.test(decision.preparedTool))||
+      (decision.preparedSourceSetId!==undefined&&
+        decision.preparedSourceSetId!==null&&
+        !isPreparedSourceSetId(decision.preparedSourceSetId))) {
     throw new Error("conversation_invalid");
   }
   const next={feishu:clone(state.feishu),wechat:clone(state.wechat)};
@@ -25,6 +32,10 @@ export function applyConversationDecision({
     confirmed:{},
     turns:[],
     model:decision.model??"codex",
+    ...(decision.preparedSourceSetId===undefined||
+      decision.preparedSourceSetId===null
+      ?{}
+      :{preparedSourceSetId:decision.preparedSourceSetId}),
     startedAt:now,
     updatedAt:now
   };
@@ -48,9 +59,12 @@ export function validateAssistantConversation(value) {
     "waitingType","question","instructionText","preparedTool","confirmed",
     "turns","model","startedAt","updatedAt"
   ]);
+  const allowed=new Set([...fields,"preparedSourceSetId"]);
   if (!value||typeof value!=="object"||Array.isArray(value)||
-      Object.keys(value).length!==fields.size||
-      Object.keys(value).some(key=>!fields.has(key))||
+      !new Set([fields.size,fields.size+1]).has(Object.keys(value).length)||
+      Object.keys(value).some(key=>!allowed.has(key))||
+      (Object.hasOwn(value,"preparedSourceSetId")&&
+        !isPreparedSourceSetId(value.preparedSourceSetId))||
       !WAITING.has(value.waitingType)||
       !safeText(value.question,1000)||
       typeof value.instructionText!=="string"||

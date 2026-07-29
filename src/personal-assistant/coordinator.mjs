@@ -16,7 +16,9 @@ export class PersonalAssistantCoordinator {
     prepareSource,assistant,writer,dailyWriter,invoiceWriter,
     documentWorkspace,artifactGenerator,outcomeStore,messenger,
     conversationStore=null,loadDailyCandidates=async()=>[],
-    personalRules,personalRulesStore=null,model,selectModel=null,skillVersion
+    personalRules,personalRulesStore=null,model,selectModel=null,skillVersion,
+    sourceReader=null,maxSourceReadRounds=3,
+    releasePreparedSource=null
   }) {
     this.prepareSource=prepareSource;
     this.assistant=assistant;
@@ -34,6 +36,9 @@ export class PersonalAssistantCoordinator {
     this.model=model;
     this.selectModel=selectModel;
     this.skillVersion=skillVersion;
+    this.sourceReader=sourceReader;
+    this.maxSourceReadRounds=maxSourceReadRounds;
+    this.releasePreparedSource=releasePreparedSource;
   }
 
   async handle(message) {
@@ -56,6 +61,13 @@ export class PersonalAssistantCoordinator {
       if (isConversationCancellation(message.instructionText)) {
         preflightPhase="conversation_state_failed";
         await this.conversationStore?.clear(message.source);
+        if (active?.preparedSourceSetId&&this.releasePreparedSource) {
+          await this.releasePreparedSource({
+            preparedSourceSetId:active.preparedSourceSetId,
+            source:message.source,userId:message.userId,
+            conversationId:message.conversationId
+          });
+        }
         const outcome={
           status:"ignored",reply:null,artifacts:[],noReplyRequired:true,
           replyTarget:structuredClone(message.replyTarget)
@@ -103,7 +115,8 @@ export class PersonalAssistantCoordinator {
       }
       throw error;
     }
-    let prepared,failurePhase="source_preparation_failed";
+    let prepared,retainPrepared=false;
+    let failurePhase="source_preparation_failed";
     try {
       prepared=await this.prepareSource(turnMessage);
       if (typeof prepared?.instructionText==="string") {
@@ -124,24 +137,48 @@ export class PersonalAssistantCoordinator {
         :this.personalRules;
       failurePhase="daily_candidates_load_failed";
       const dailyCandidates=await this.loadDailyCandidates();
-      failurePhase="agent_turn_context_invalid";
-      const context=buildAgentTurnContext({
-        message:turnMessage,
-        sources:prepared?.sources||[],
-        conversation:active,
-        personalRules,
-        model,
-        toolDeclarations:getModelToolDeclarations(),
-        dailyCandidates
-      });
       const imageFiles=(prepared?.sources||[])
         .filter(source=>(source.handle??source).mediaClass==="image")
         .map(source=>source.absolutePath);
-      failurePhase="assistant_model_failed";
-      const decision=await this.assistant.decide(context,{
-        workspaceDir:prepared?.workspaceDir,
-        imageFiles
-      });
+      let decision,sourceObservations=[],sourceReadRounds=0;
+      while (true) {
+        failurePhase="agent_turn_context_invalid";
+        const context=buildAgentTurnContext({
+          message:turnMessage,
+          sources:prepared?.sources||[],
+          sourceObservations,
+          conversation:active,
+          personalRules,
+          model,
+          toolDeclarations:getModelToolDeclarations(),
+          dailyCandidates
+        });
+        failurePhase="assistant_model_failed";
+        decision=await this.assistant.decide(context,{
+          workspaceDir:prepared?.workspaceDir,
+          imageFiles
+        });
+        if (decision.kind!=="source_read") break;
+        if (!this.sourceReader||
+            sourceReadRounds>=this.maxSourceReadRounds) {
+          decision={
+            kind:"reply",
+            text:"当前只读环境无法继续取得足够的媒体观察，本次没有执行保存或其他写入。"
+          };
+          break;
+        }
+        failurePhase="source_read_failed";
+        const evidence=await this.sourceReader.read({
+          requests:decision.requests,
+          sources:prepared?.sources||[],
+          workspaceDir:prepared?.workspaceDir,
+          signal:prepared?.signal
+        });
+        sourceObservations=[
+          ...sourceObservations,...(evidence?.observations||[])
+        ];
+        sourceReadRounds+=1;
+      }
       let result;
       if (decision.kind==="reply") {
         result={status:"committed",reply:decision.text,artifacts:[]};
@@ -200,6 +237,9 @@ export class PersonalAssistantCoordinator {
       }
       failurePhase="conversation_state_failed";
       if (result.status==="awaiting_clarification") {
+        if (prepared?.preparedSourceSetId) {
+          await prepared.retain?.("awaiting_clarification");
+        }
         await this.conversationStore?.set(message.source,{
           waitingType:result.waitingType,
           question:result.reply,
@@ -213,9 +253,13 @@ export class PersonalAssistantCoordinator {
           },
           turns:boundedTurns(active,turnMessage,result.reply),
           model,
+          ...(prepared?.preparedSourceSetId
+            ?{preparedSourceSetId:prepared.preparedSourceSetId}
+            :{}),
           startedAt:active?.startedAt??message.receivedAt,
           updatedAt:message.receivedAt
         });
+        retainPrepared=Boolean(prepared?.preparedSourceSetId);
       } else {
         await this.conversationStore?.clear(message.source);
       }
@@ -242,7 +286,20 @@ export class PersonalAssistantCoordinator {
       }
       throw error;
     } finally {
-      await prepared?.cleanup?.().catch(()=>{});
+      if (!retainPrepared) {
+        const release=typeof prepared?.release==="function"
+          ?prepared.release
+          :typeof prepared?.cleanup==="function"
+            ?prepared.cleanup
+            :null;
+        if (release) {
+          try {
+            await release.call(prepared,"turn_finished");
+          } catch {
+            // Cleanup is best effort after the durable outcome path.
+          }
+        }
+      }
     }
   }
 
