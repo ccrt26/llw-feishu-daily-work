@@ -2,7 +2,7 @@
 
 Date: 2026-07-29  
 Component branch: `agent/v410-foundation-media-gates`  
-Verified component implementation commit: `4a22813`
+Verified component candidate commit: `0c57481`
 Verified Skill commit: `4a9ed70` on `agent/v410-continuous-tasks`  
 Production deployment: **not performed**
 
@@ -20,12 +20,13 @@ The original failure was not caused by WeChat or Feishu being unable to send tex
 
 The implemented boundary is one independent current Task Session per channel. Every accepted same-channel input first increments a durable revision. A debounce window schedules work only; it never decides task membership. AI completion does not close the task. Explicit controls or 24-hour inactivity change the boundary.
 
-The longitudinal verification found and fixed four integration defects that isolated tests did not expose:
+The longitudinal and deployment-gate verification found and fixed five integration defects that isolated tests did not expose:
 
 1. Retained task workspaces were not accepted by the real `KnowledgeWriter` safety boundary.
 2. Expired state was cleared without synchronously cleaning the old task workspace.
 3. A crash after a source manifest was durable but before source IDs reached state could strand the task or force a redownload.
 4. Cancellation after Writer reservation could falsely promise that nothing would be saved even though the side effect had crossed its point of no return.
+5. The live V4.0.1 WeChat channel still had one valid waiting conversation. A direct V4.1.0 startup would have kept it only as an ignored legacy field, silently breaking continuity.
 
 ## Primary longitudinal evidence
 
@@ -55,17 +56,17 @@ Production V4.0.1 baseline before implementation:
 0 failed
 ```
 
-V4.1.0 isolated component regression after the longitudinal fixes:
+V4.1.0 isolated component regression after the longitudinal and live-state migration fixes:
 
 ```text
-672 tests
-672 passed
+675 tests
+675 passed
 0 failed
 0 skipped
-duration: 11.976 seconds
+duration: 13.095 seconds
 ```
 
-The first restricted run produced 24 failures solely because the sandbox denied temporary loopback listeners with `listen EPERM 127.0.0.1`. The identical suite was rerun with local-loopback permission and passed `672/672`. No product change was made between those runs.
+The first restricted run produced 24 failures solely because the sandbox denied temporary loopback listeners with `listen EPERM 127.0.0.1`. The suite was rerun with local-loopback permission. After adding the three deployment migration checks, the final candidate passed `675/675`.
 
 ## Privacy and architecture checks
 
@@ -98,6 +99,30 @@ After explicit project-owner authorization, the real Codex invocation completed 
 The generated PDF was accepted without an instruction, the real model asked for the purpose, and a later instruction was processed in the same task against the same single source. The second decision was a direct reply, so the safe zero-Writer path was correctly preserved.
 
 Immediately afterward, the complete deterministic journey suite was rerun and again passed all 11 journeys with zero failures or skips. This satisfies the full-flow evidence gate. Production deployment and real platform acceptance remain separate subsequent gates; media runtime installation and enablement remain prohibited.
+
+## Live-state migration evidence
+
+A read-only preflight found one current V4.0.1 WeChat waiting conversation and no Feishu waiting conversation or retained media source. Deployment therefore gained an explicit, V6-only migration rather than discarding the old state.
+
+The migration converts each safe legacy per-channel conversation into that channel's active Task Session, preserving its model, bounded recent turns, question, waiting type, confirmed fields, start/update time and 24-hour expiry. It clears the legacy field only in the same atomic state persistence. If a legacy conversation contains a retained source that cannot be proven equivalent to a task source, startup fails closed and leaves the state bytes unchanged.
+
+A protected copy of the actual production state was migrated in `/private/tmp` and then deleted. The redacted result was:
+
+```json
+{
+  "status": "passed",
+  "stateVersion": 4,
+  "oldConversationCleared": true,
+  "wechatTaskCreated": true,
+  "turnCountPreserved": true,
+  "modelPreserved": true,
+  "waitingTypePreserved": true,
+  "feishuRemainsEmpty": true,
+  "fileMode": 384
+}
+```
+
+Decimal mode `384` is owner-only `0600`. No conversation text, identity, task ID or protected path was recorded in the report.
 
 ## Protected rollback evidence
 
