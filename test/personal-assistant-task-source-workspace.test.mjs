@@ -115,6 +115,34 @@ test("keeps an original after a stage question and reopens identical bytes later
   }
 });
 
+test("reuses an already durable manifest after a crash before source ids reached state",async()=>{
+  const h=await harness();
+  const firstMessage=message();
+  const session=createTaskSession({
+    message:firstMessage,model:"codex",taskId:TASK_ID,now:NOW
+  });
+  try {
+    const beforeCrash=await h.workspace.prepareAndMerge({
+      session,message:firstMessage
+    });
+    assert.deepEqual(beforeCrash.addedSourceIds,["source-001"]);
+    assert.equal(h.downloads,1);
+
+    const recovered=await h.workspace.prepareAndMerge({
+      session,message:firstMessage
+    });
+    assert.deepEqual(recovered.addedSourceIds,["source-001"]);
+    assert.equal(recovered.sources.length,1);
+    assert.equal(
+      recovered.sources[0].handle.sha256,
+      beforeCrash.sources[0].handle.sha256
+    );
+    assert.equal(h.downloads,1);
+  } finally {
+    await rm(h.root,{recursive:true,force:true});
+  }
+});
+
 test("merges later files with monotonic task source ids and never overwrites",async()=>{
   const h=await harness();
   const firstMessage=message();

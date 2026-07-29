@@ -212,20 +212,35 @@ export class StateStore {
   }
 
   async getPersonalAssistantTaskSession(source,now) {
+    const loaded=await this.loadPersonalAssistantTaskSession(
+      source,now
+    );
+    return loaded.session;
+  }
+
+  async loadPersonalAssistantTaskSession(source,now) {
     validateKnowledgeSource(source);
     if (!canonicalIso(now)) {
       throw new Error("invalid_personal_assistant_state");
     }
     const sessions=this.data.capabilityState["personal-assistant"].sessions;
     const value=sessions[source];
-    if (value===null) return null;
+    if (value===null) {
+      return {session:null,expiredTaskId:null};
+    }
     const session=validatePersonalAssistantTaskSession(value);
     if (Date.parse(now)<=Date.parse(session.expiresAt)) {
-      return session;
+      return {
+        session,
+        expiredTaskId:null
+      };
     }
     sessions[source]=null;
     await this.persist();
-    return null;
+    return {
+      session:null,
+      expiredTaskId:session.taskId
+    };
   }
 
   async setPersonalAssistantTaskSession(source,session) {
@@ -269,11 +284,15 @@ export class StateStore {
     const current=sessions[source]===null
       ?null
       :validatePersonalAssistantTaskSession(sessions[source]);
-    const next=validatePersonalAssistantTaskSession(nextSession);
+    const next=nextSession===null
+      ?null
+      :validatePersonalAssistantTaskSession(nextSession);
     if (!current||current.taskId!==expectedTaskId||
         current.revision!==expectedRevision||
-        next.source!==source||next.taskId!==expectedTaskId||
-        next.revision!==expectedRevision||
+        (next!==null&&(
+          next.source!==source||next.taskId!==expectedTaskId||
+          next.revision!==expectedRevision
+        ))||
         !Array.isArray(outcomes)||outcomes.length<1||
         outcomes.length>8) {
       return false;

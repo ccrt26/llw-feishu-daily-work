@@ -36,6 +36,7 @@ export class PersonalAssistantTaskSessionManager {
     this.createId=createId;
     this.now=now;
     this.sessions={feishu:null,wechat:null};
+    this.expiredTaskIds={feishu:null,wechat:null};
     this.loaded={feishu:false,wechat:false};
     this.mutations={feishu:Promise.resolve(),wechat:Promise.resolve()};
   }
@@ -64,6 +65,8 @@ export class PersonalAssistantTaskSessionManager {
     const source=message.source;
     return this.mutate(source,async()=>{
       let current=await this.load(source,message.receivedAt);
+      let replacedTaskId=this.expiredTaskIds[source];
+      this.expiredTaskIds[source]=null;
       const messageKey=`${source}:${message.sourceMessageId}`;
       if (this.state.hasOutcome(messageKey)||
           current?.pendingInputs.some(
@@ -79,9 +82,8 @@ export class PersonalAssistantTaskSessionManager {
         };
       }
       let isNew=false;
-      let replacedTaskId=null;
       if (!current||current.status==="paused") {
-        replacedTaskId=current?.taskId??null;
+        replacedTaskId=current?.taskId??replacedTaskId;
         const model=await this.selectModel();
         current=createTaskSession({
           message,model,taskId:this.createId(),now:message.receivedAt
@@ -293,9 +295,23 @@ export class PersonalAssistantTaskSessionManager {
         ...(result.reasonCode?{reasonCode:result.reasonCode}:{})
       };
       const outcomes=current.pendingInputs
-        .filter(input=>input.revision<=snapshot.revision)
         .map(input=>input.messageKey===latest.messageKey
           ?{key:input.messageKey,value:publicResult}
+          :input.revision>snapshot.revision&&
+              current.writerCheckpoint?.status==="cancel_requested"
+            ?{
+              key:input.messageKey,
+              value:{
+                capability:"personal-assistant",
+                status:"ignored",
+                reply:null,
+                artifacts:[],
+                replyFiles:[],
+                noReplyRequired:true,
+                reasonCode:"cancelled",
+                createdAt:input.receivedAt
+              }
+            }
           :{
             key:input.messageKey,
             value:{
@@ -308,15 +324,25 @@ export class PersonalAssistantTaskSessionManager {
               reasonCode:"absorbed_into_task_revision",
               createdAt:input.receivedAt
             }
-          });
+          })
+        .filter(entry=>
+          current.writerCheckpoint?.status==="cancel_requested"||
+          current.pendingInputs.find(
+            input=>input.messageKey===entry.key
+          ).revision<=snapshot.revision
+        );
+      const cancelRequested=
+        current.writerCheckpoint?.status==="cancel_requested";
       const committed=await this.state.commitPersonalAssistantTaskStage({
         source,
         expectedTaskId:snapshot.taskId,
         expectedRevision:current.revision,
-        nextSession:next,
+        nextSession:cancelRequested?null:next,
         outcomes
       });
-      if (committed) this.sessions[source]=next;
+      if (committed) {
+        this.sessions[source]=cancelRequested?null:next;
+      }
       return committed;
     });
   }
@@ -351,7 +377,29 @@ export class PersonalAssistantTaskSessionManager {
   }
 
   cancel(source,now=new Date(this.now()).toISOString()) {
-    return this.close(source,"cancelled",now);
+    validateSource(source);
+    if (!canonicalIso(now)) {
+      throw new Error("task_session_manager_invalid");
+    }
+    return this.mutate(source,async()=>{
+      const current=await this.load(source,now);
+      if (!current) return null;
+      if (current.writerCheckpoint?.status==="reserved") {
+        const next=validateTaskSession({
+          ...current,
+          writerCheckpoint:{
+            ...current.writerCheckpoint,
+            status:"cancel_requested"
+          }
+        });
+        await this.state.setPersonalAssistantTaskSession(source,next);
+        this.sessions[source]=next;
+        return validateTaskSession(next);
+      }
+      await this.state.clearPersonalAssistantTaskSession(source);
+      this.sessions[source]=null;
+      return validateTaskSession(current);
+    });
   }
 
   pause(source,now=new Date(this.now()).toISOString()) {
@@ -380,11 +428,20 @@ export class PersonalAssistantTaskSessionManager {
 
   async load(source,now) {
     if (!this.loaded[source]) {
-      this.sessions[source]=
-        await this.state.getPersonalAssistantTaskSession(source,now);
+      if (typeof this.state.loadPersonalAssistantTaskSession===
+          "function") {
+        const loaded=
+          await this.state.loadPersonalAssistantTaskSession(source,now);
+        this.sessions[source]=loaded.session;
+        this.expiredTaskIds[source]=loaded.expiredTaskId;
+      } else {
+        this.sessions[source]=
+          await this.state.getPersonalAssistantTaskSession(source,now);
+      }
       this.loaded[source]=true;
     } else if (this.sessions[source]&&
         Date.parse(now)>Date.parse(this.sessions[source].expiresAt)) {
+      this.expiredTaskIds[source]=this.sessions[source].taskId;
       await this.state.clearPersonalAssistantTaskSession(source);
       this.sessions[source]=null;
     }

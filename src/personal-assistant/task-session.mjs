@@ -360,7 +360,7 @@ function safeWriterCheckpoint(value,revision,resolvedRevision) {
     value.revision>resolvedRevision&&
     value.revision<=revision&&
     /^[a-z][a-z0-9_]{0,63}$/u.test(value.toolName||"")&&
-    value.status==="reserved";
+    new Set(["reserved","cancel_requested"]).has(value.status);
 }
 
 function safeAttachments(value) {

@@ -4,10 +4,14 @@ import {
   readdir,rename,rm
 } from "node:fs/promises";
 import {isAbsolute,join} from "node:path";
+import {
+  extractFeishuDocumentRequests
+} from "../core/feishu-document-link.mjs";
 import {createSourceHandle} from "./source-handle.mjs";
 import {validateTaskSession} from "./task-session.mjs";
 
 const TASK_ID=/^[A-Za-z0-9_-]{43}$/u;
+const TASK_DIRECTORY=/^llw-task-([A-Za-z0-9_-]{43})$/u;
 const MANIFEST="task-sources.json";
 const SOURCE_INTAKE_FAILURES=new Set([
   "source_receive_failed","source_security_rejected",
@@ -61,6 +65,10 @@ export class TaskSourceWorkspace {
     if (!message||message.source!==current.source) {
       throw new Error("task_source_workspace_invalid");
     }
+    const recovered=await this.recoverPrepared({
+      session:current,message
+    });
+    if (recovered) return recovered;
     let prepared;
     try {
       prepared=await this.prepareTurnSources(message);
@@ -144,6 +152,54 @@ export class TaskSourceWorkspace {
     }
   }
 
+  async recoverPrepared({session,message}) {
+    await this.ensureRoot();
+    let manifest;
+    try {
+      manifest=await this.readManifest(session.taskId);
+    } catch (error) {
+      if (error?.code==="ENOENT") return null;
+      throw error;
+    }
+    const manifestIds=manifest.sources.map(
+      entry=>entry.handle.sourceId
+    );
+    if (sameArray(manifestIds,session.sourceIds)) return null;
+    if (manifestIds.length<=session.sourceIds.length||
+        !sameArray(
+          manifestIds.slice(0,session.sourceIds.length),
+          session.sourceIds
+        )) {
+      throw new Error("task_source_workspace_invalid");
+    }
+    const documentBundle=extractFeishuDocumentRequests(message);
+    const documentCount=documentBundle?.requests.length??0;
+    const missing=manifest.sources.slice(session.sourceIds.length);
+    if (missing.length!==documentCount+message.attachments.length) {
+      throw new Error("task_source_workspace_invalid");
+    }
+    for (let index=0;index<message.attachments.length;index+=1) {
+      const attachment=message.attachments[index];
+      const entry=missing[documentCount+index];
+      if (entry.handle.displayName!==attachment.displayName||
+          (attachment.extension&&
+            entry.archiveExtension!==attachment.extension.toLowerCase())) {
+        throw new Error("task_source_workspace_invalid");
+      }
+    }
+    const loaded=await this.load({
+      taskId:session.taskId,expectedSourceIds:manifestIds
+    });
+    return Object.freeze({
+      ...loaded,
+      instructionText:documentBundle?.safeInstructionText??
+        message.instructionText,
+      addedSourceIds:Object.freeze(
+        manifestIds.slice(session.sourceIds.length)
+      )
+    });
+  }
+
   async load({taskId,expectedSourceIds}) {
     if (!TASK_ID.test(taskId||"")||
         !Array.isArray(expectedSourceIds)||
@@ -193,14 +249,16 @@ export class TaskSourceWorkspace {
     const removed=[];
     const entries=await readdir(this.root,{withFileTypes:true});
     for (const entry of entries) {
+      const match=TASK_DIRECTORY.exec(entry.name);
       if (!entry.isDirectory()||entry.isSymbolicLink()||
-          !TASK_ID.test(entry.name)||active.has(entry.name)) continue;
-      const manifest=await this.readManifest(entry.name);
+          !match||active.has(match[1])) continue;
+      const taskId=match[1];
+      const manifest=await this.readManifest(taskId);
       if (Date.parse(now)-Date.parse(manifest.updatedAt)<24*60*60*1000) {
         continue;
       }
-      await this.remove({taskId:entry.name});
-      removed.push(entry.name);
+      await this.remove({taskId});
+      removed.push(taskId);
     }
     return Object.freeze(removed.sort());
   }
@@ -209,7 +267,7 @@ export class TaskSourceWorkspace {
     if (!TASK_ID.test(taskId||"")) {
       throw new Error("task_source_workspace_invalid");
     }
-    return join(this.root,taskId);
+    return join(this.root,`llw-task-${taskId}`);
   }
 
   async readManifest(taskId) {

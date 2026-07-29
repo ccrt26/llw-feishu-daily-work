@@ -174,6 +174,13 @@ export class PersonalAssistantDispatcher {
       }
     }
     const current=this.taskManager.current(message.source);
+    if (current?.writerCheckpoint?.status==="cancel_requested") {
+      this.scheduleTaskCommand(message,{
+        status:"existing",
+        reply:"当前写入正在结束；完成后会按实际结果告知。请稍后再发送新的要求。"
+      });
+      return {handled:true,status:"existing"};
+    }
     if (current?.status==="active"&&
         current.sourceIds.length+
           current.pendingInputs.reduce(
@@ -248,10 +255,17 @@ export class PersonalAssistantDispatcher {
         :await this.taskManager.close(
           source,"ended",message.receivedAt
         );
-      await this.releaseClosedTask(closed,control.kind);
+      const writerFinishing=Boolean(
+        closed?.writerCheckpoint?.status==="cancel_requested"
+      );
+      if (!writerFinishing) {
+        await this.releaseClosedTask(closed,control.kind);
+      }
       this.scheduleTaskCommand(message,{
         status:"committed",
-        reply:control.kind==="cancel"
+        reply:writerFinishing
+          ?"已收到取消；写入已经开始，无法安全撤回。完成后会按实际结果告知，之后不再继续当前任务。"
+          :control.kind==="cancel"
           ?"已取消，当前任务不会继续处理或保存。"
           :"当前任务已结束。"
       });
@@ -366,6 +380,11 @@ export class PersonalAssistantDispatcher {
       } finally {
         this.runningSources.delete(source);
         const current=this.taskManager.current(source);
+        if (!current&&snapshot&&this.taskWorkspace) {
+          await this.taskWorkspace.remove({
+            taskId:snapshot.taskId
+          }).catch(()=>{});
+        }
         const requested=this.rescheduleSources.delete(source);
         const hasNewerInput=Boolean(
           current?.status==="active"&&snapshot&&

@@ -338,7 +338,8 @@ async function verifyOneSourceInput(source) {
   if (!workspaceInfo.isDirectory()||workspaceInfo.isSymbolicLink()||
       workspaceInfo.uid!==process.getuid()||
       (workspaceInfo.mode&0o077)!==0||
-      !/^llw-turn-[A-Za-z0-9_-]+$/u.test(basename(workspaceReal))||
+      !/^(?:llw-turn-[A-Za-z0-9_-]+|llw-task-[A-Za-z0-9_-]{43})$/u
+        .test(basename(workspaceReal))||
       dirname(await realpath(source.absolutePath))!==workspaceReal) {
     throw new Error("invalid_workspace");
   }
