@@ -6,6 +6,9 @@ import {
   getActiveConversation as getActiveAssistantConversation,
   validateAssistantConversation
 } from "./personal-assistant/conversation.mjs";
+import {
+  validateTaskSession as validatePersonalAssistantTaskSession
+} from "./personal-assistant/task-session.mjs";
 
 export class StateStore {
   constructor(file, data, maxOutcomes, taskSessionPolicy) {
@@ -208,6 +211,104 @@ export class StateStore {
     await this.persist();
   }
 
+  async getPersonalAssistantTaskSession(source,now) {
+    validateKnowledgeSource(source);
+    if (!canonicalIso(now)) {
+      throw new Error("invalid_personal_assistant_state");
+    }
+    const sessions=this.data.capabilityState["personal-assistant"].sessions;
+    const value=sessions[source];
+    if (value===null) return null;
+    const session=validatePersonalAssistantTaskSession(value);
+    if (Date.parse(now)<=Date.parse(session.expiresAt)) {
+      return session;
+    }
+    sessions[source]=null;
+    await this.persist();
+    return null;
+  }
+
+  async setPersonalAssistantTaskSession(source,session) {
+    validateKnowledgeSource(source);
+    const next=validatePersonalAssistantTaskSession(session);
+    if (next.source!==source) {
+      throw new Error("invalid_personal_assistant_state");
+    }
+    const sessions=this.data.capabilityState["personal-assistant"].sessions;
+    const current=sessions[source];
+    if (current!==null) {
+      const previous=validatePersonalAssistantTaskSession(current);
+      if (next.taskId===previous.taskId&&(
+        next.revision<previous.revision||
+        next.resolvedRevision<previous.resolvedRevision||
+        next.startedAt!==previous.startedAt||
+        next.model!==previous.model||
+        Date.parse(next.updatedAt)<Date.parse(previous.updatedAt)
+      )) {
+        throw new Error("invalid_personal_assistant_state");
+      }
+    }
+    sessions[source]=next;
+    await this.persist();
+    return structuredClone(next);
+  }
+
+  async clearPersonalAssistantTaskSession(source) {
+    validateKnowledgeSource(source);
+    const sessions=this.data.capabilityState["personal-assistant"].sessions;
+    if (sessions[source]===null) return;
+    sessions[source]=null;
+    await this.persist();
+  }
+
+  async commitPersonalAssistantTaskStage({
+    source,expectedTaskId,expectedRevision,nextSession,outcomes
+  }) {
+    validateKnowledgeSource(source);
+    const sessions=this.data.capabilityState["personal-assistant"].sessions;
+    const current=sessions[source]===null
+      ?null
+      :validatePersonalAssistantTaskSession(sessions[source]);
+    const next=validatePersonalAssistantTaskSession(nextSession);
+    if (!current||current.taskId!==expectedTaskId||
+        current.revision!==expectedRevision||
+        next.source!==source||next.taskId!==expectedTaskId||
+        next.revision!==expectedRevision||
+        !Array.isArray(outcomes)||outcomes.length<1||
+        outcomes.length>8) {
+      return false;
+    }
+    const prepared=[];
+    const keys=new Set();
+    for (const entry of outcomes) {
+      if (!entry||typeof entry!=="object"||Array.isArray(entry)||
+          Object.keys(entry).length!==2||
+          typeof entry.key!=="string"||!entry.key||
+          keys.has(entry.key)||this.hasOutcome(entry.key)) {
+        return false;
+      }
+      keys.add(entry.key);
+      prepared.push({
+        key:entry.key,
+        value:normalizeStoredOutcome(entry.value)
+      });
+    }
+    const previous=structuredClone(sessions[source]);
+    sessions[source]=next;
+    for (const entry of prepared) {
+      this.data.outcomes[entry.key]=entry.value;
+    }
+    try {
+      pruneOutcomes(this.data.outcomes,this.maxOutcomes);
+      await this.persist();
+    } catch (error) {
+      sessions[source]=previous;
+      for (const entry of prepared) delete this.data.outcomes[entry.key];
+      throw error;
+    }
+    return true;
+  }
+
   listInvoiceTransactions() {
     const transactions = this.data.capabilityState.invoice?.transactions || {};
     return Object.values(transactions).map(value => structuredClone(value));
@@ -295,20 +396,8 @@ export class StateStore {
 
   async saveOutcome(messageId, outcome) {
     if (!this.hasOutcome(messageId)) {
-      const stored = {...structuredClone(outcome), replied: false};
-      if (stored.replyTarget!==undefined) validateReplyTarget(stored.replyTarget);
-      if (Array.isArray(stored.recordIds)) stored.recordIds = [...stored.recordIds];
-      if (Array.isArray(stored.artifacts)) stored.artifacts = [...stored.artifacts];
-      if (stored.replyFiles!==undefined) {
-        validateReplyFiles(stored.replyFiles);
-        stored.replyFiles=structuredClone(stored.replyFiles);
-      }
-      this.data.outcomes[messageId] = stored;
-      while (Object.keys(this.data.outcomes).length > this.maxOutcomes) {
-        const removable = Object.keys(this.data.outcomes).find(id => this.data.outcomes[id].replied === true);
-        if (!removable) break;
-        delete this.data.outcomes[removable];
-      }
+      this.data.outcomes[messageId]=normalizeStoredOutcome(outcome);
+      pruneOutcomes(this.data.outcomes,this.maxOutcomes);
       await this.persist();
     }
     return structuredClone(this.data.outcomes[messageId]);
@@ -374,7 +463,10 @@ function emptyState() {
       router:{conversation:null},
       "knowledge-ingest":{pendingBySource:{feishu:null,wechat:null}},
       "task-session":{session:null}
-      ,"personal-assistant":{conversations:{feishu:null,wechat:null}}
+      ,"personal-assistant":{
+        conversations:{feishu:null,wechat:null},
+        sessions:{feishu:null,wechat:null}
+      }
     },
     outcomes: {}
   };
@@ -389,7 +481,10 @@ function migratedState(conversation, outcomes) {
       router:{conversation:null},
       "knowledge-ingest":{pendingBySource:{feishu:null,wechat:null}},
       "task-session":{session:null}
-      ,"personal-assistant":{conversations:{feishu:null,wechat:null}}
+      ,"personal-assistant":{
+        conversations:{feishu:null,wechat:null},
+        sessions:{feishu:null,wechat:null}
+      }
     },
     outcomes: structuredClone(outcomes)
   };
@@ -453,25 +548,46 @@ function ensureKnowledgePendingSlot(data) {
 function ensurePersonalAssistantSlot(data) {
   if (!Object.hasOwn(data.capabilityState,"personal-assistant")) {
     data.capabilityState["personal-assistant"]={
-      conversations:{feishu:null,wechat:null}
+      conversations:{feishu:null,wechat:null},
+      sessions:{feishu:null,wechat:null}
     };
     return true;
   }
   const slot=data.capabilityState["personal-assistant"];
+  let migrated=false;
+  if (slot&&typeof slot==="object"&&!Array.isArray(slot)&&
+      Object.getPrototypeOf(slot)===Object.prototype&&
+      Object.keys(slot).length===1&&
+      Object.hasOwn(slot,"conversations")) {
+    slot.sessions={feishu:null,wechat:null};
+    migrated=true;
+  }
   if (!slot||typeof slot!=="object"||Array.isArray(slot)||
-      Object.keys(slot).length!==1||!slot.conversations||
+      Object.keys(slot).length!==2||!slot.conversations||
       typeof slot.conversations!=="object"||
       Array.isArray(slot.conversations)||
       Object.keys(slot.conversations).length!==2||
       !Object.hasOwn(slot.conversations,"feishu")||
-      !Object.hasOwn(slot.conversations,"wechat")) {
+      !Object.hasOwn(slot.conversations,"wechat")||
+      !slot.sessions||typeof slot.sessions!=="object"||
+      Array.isArray(slot.sessions)||
+      Object.keys(slot.sessions).length!==2||
+      !Object.hasOwn(slot.sessions,"feishu")||
+      !Object.hasOwn(slot.sessions,"wechat")) {
     throw new Error("invalid_personal_assistant_state");
   }
   for (const source of ["feishu","wechat"]) {
     const value=slot.conversations[source];
     if (value!==null) validateAssistantConversation(value);
+    const session=slot.sessions[source];
+    if (session!==null) {
+      const validated=validatePersonalAssistantTaskSession(session);
+      if (validated.source!==source) {
+        throw new Error("invalid_personal_assistant_state");
+      }
+    }
   }
-  return false;
+  return migrated;
 }
 
 function validateKnowledgePending(value) {
@@ -519,6 +635,11 @@ function validateKnowledgeSource(source) {
   if (!new Set(["feishu","wechat"]).has(source)) {
     throw new Error("invalid_knowledge_pending");
   }
+}
+
+function canonicalIso(value) {
+  return typeof value==="string"&&Number.isFinite(Date.parse(value))&&
+    new Date(value).toISOString()===value;
 }
 
 function validateRouterConversation(conversation) {
@@ -577,6 +698,31 @@ function pruneTransactions(transactions) {
     .filter(transaction => ["published","aborted"].includes(transaction.status))
     .sort((a,b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
   while (Object.keys(transactions).length > 2000 && eligible.length) delete transactions[eligible.shift().transactionId];
+}
+
+function normalizeStoredOutcome(outcome) {
+  if (!outcome||typeof outcome!=="object"||Array.isArray(outcome)) {
+    throw new Error("invalid_outcome");
+  }
+  const stored={...structuredClone(outcome),replied:false};
+  if (stored.replyTarget!==undefined) validateReplyTarget(stored.replyTarget);
+  if (Array.isArray(stored.recordIds)) stored.recordIds=[...stored.recordIds];
+  if (Array.isArray(stored.artifacts)) stored.artifacts=[...stored.artifacts];
+  if (stored.replyFiles!==undefined) {
+    validateReplyFiles(stored.replyFiles);
+    stored.replyFiles=structuredClone(stored.replyFiles);
+  }
+  return stored;
+}
+
+function pruneOutcomes(outcomes,maxOutcomes) {
+  while (Object.keys(outcomes).length>maxOutcomes) {
+    const removable=Object.keys(outcomes).find(
+      id=>outcomes[id].replied===true
+    );
+    if (!removable) break;
+    delete outcomes[removable];
+  }
 }
 
 function validateReplyTarget(value) {
