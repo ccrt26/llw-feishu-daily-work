@@ -18,7 +18,7 @@ if (process.env.FAKE_CODEX_MODE === "process-failure") {
   process.exit(9);
 }
 if (process.env.FAKE_CODEX_MODE === "timeout") {
-  await new Promise(()=>{});
+  await new Promise(resolve=>setTimeout(resolve,10_000));
 }
 if (process.env.FAKE_ARGS_FILE) await writeFile(process.env.FAKE_ARGS_FILE, JSON.stringify(args));
 if (process.env.FAKE_CWD_ONLY_FILE) {

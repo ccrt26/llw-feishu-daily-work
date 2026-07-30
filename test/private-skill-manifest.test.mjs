@@ -83,7 +83,7 @@ async function rejected(options) {
   );
 }
 
-test("loads one strict synthetic manifest and returns metadata without private content or hashes",async()=>{
+test("loads one strict synthetic manifest and returns runtime authorization without private content",async()=>{
   const value=await fixture();
   try {
     const result=await loadPrivateSkillManifest(value.options);
@@ -97,15 +97,20 @@ test("loads one strict synthetic manifest and returns metadata without private c
         capability:"synthetic-alpha",
         semanticTasks:["synthetic.run"],
         modelSupport:["codex"],
-        root:await realpath(value.skillRoot)
+        root:await realpath(value.skillRoot),
+        runtimeFiles:fields.runtime_files.map(item=>Object.freeze({
+          path:item.path,sha256:item.sha256
+        }))
       }]
     });
     const serialized=JSON.stringify(result);
     assert.equal(serialized.includes(PRIVATE_MARKER),false);
-    assert.equal(serialized.includes(fields.skill_sha256),false);
-    assert.equal(serialized.includes(fields.routing_contract_sha256),false);
-    assert.equal(serialized.includes(fields.output_schema_sha256),false);
-    assert.equal(serialized.includes(sha(POLICY)),false);
+    assert.equal(
+      result.skills[0].runtimeFiles.every(item=>
+        /^[a-f0-9]{64}$/u.test(item.sha256)
+      ),
+      true
+    );
   } finally { await rm(value.outer,{recursive:true,force:true}); }
 });
 

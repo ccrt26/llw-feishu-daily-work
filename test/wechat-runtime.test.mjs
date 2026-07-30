@@ -367,7 +367,7 @@ test("keeps one image, PDF or Office media reference only in the current in-memo
   }
 });
 
-test("passes declared unsupported media metadata to one deterministic assistant rejection without download",async()=>{
+test("passes disabled audio metadata to one deterministic assistant rejection without download",async()=>{
   const channelState=state();
   const outcomes=new Map();
   const sends=[];
@@ -416,7 +416,7 @@ test("passes declared unsupported media metadata to one deterministic assistant 
   assert.equal(outcomes.size,1);
   const outcome=[...outcomes.values()][0];
   assert.equal(outcome.status,"rejected");
-  assert.equal(outcome.reasonCode,"unsupported_media");
+  assert.equal(outcome.reasonCode,"audio_file_disabled");
   assert.deepEqual(outcome.artifacts,[]);
   assert.equal(outcome.replied,true);
   assert.match(outcome.reply,/尚未支持音频或视频/u);

@@ -28,7 +28,13 @@ test("calls exactly one selected provider and validates one tool",async() => {
     model:"codex",instructionText:"保存",tools:[],sources:[]
   },{
     workspaceDir:"/private/tmp/llw-turn-test",
-    imageFiles:["/private/tmp/llw-turn-test/page.png"]
+    imageFiles:["/private/tmp/llw-turn-test/page.png"],
+    modelImageFiles:[{
+      sourceId:"source-001",
+      relativePath:"source-001.page-001.png",
+      sha256:"a".repeat(64),
+      pageNumber:1
+    }]
   });
   assert.equal(calls.length,1);
   assert.deepEqual(
@@ -36,6 +42,12 @@ test("calls exactly one selected provider and validates one tool",async() => {
     ["/private/tmp/llw-turn-test/page.png"]
   );
   assert.equal(calls[0].options.workspaceDir,"/private/tmp/llw-turn-test");
+  assert.deepEqual(calls[0].options.modelImageFiles,[{
+    sourceId:"source-001",
+    relativePath:"source-001.page-001.png",
+    sha256:"a".repeat(64),
+    pageNumber:1
+  }]);
   assert.equal(decision.kind,"tool");
   assert.equal(decision.toolCall.name,"save_knowledge");
 });
@@ -48,6 +60,26 @@ test("never falls back to another provider after a failure",async() => {
   });
   await assert.rejects(client.decide({model:"codex"}),/assistant_model_failed/);
   assert.equal(deepseekCalls,0);
+});
+
+test("preserves bounded pre-Writer diagnostics without provider fallback",async()=>{
+  for (const code of [
+    "assistant_timeout",
+    "assistant_process_failed",
+    "assistant_result_invalid",
+    "pdf_prepare_failed"
+  ]) {
+    let deepseekCalls=0;
+    const client=new PersonalAssistantClient({
+      codex:async()=>{throw new Error(code);},
+      deepseek:async()=>{deepseekCalls+=1;}
+    });
+    await assert.rejects(
+      client.decide({model:"codex",tools:[],sources:[]}),
+      error=>error?.message===code
+    );
+    assert.equal(deepseekCalls,0);
+  }
 });
 
 test("validates a Codex observation against only the current source set",async()=>{

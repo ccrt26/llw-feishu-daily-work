@@ -1,34 +1,49 @@
 import {spawn} from "node:child_process";
+import {createHash} from "node:crypto";
 import {
-  lstat,mkdtemp,readFile,readdir,realpath,rm
+  lstat,mkdtemp,readFile,realpath,rm
 } from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {isAbsolute,join,relative,resolve} from "node:path";
 import {readDeepSeekApiKey} from "../ai/deepseek-client.mjs";
+import {
+  validateModelImageEvidence
+} from "./model-image-evidence.mjs";
 
 const MAX_OUTPUT_BYTES=64*1024;
 
 export async function invokePersonalAssistantCodex({
-  codexPath,workspaceDir,skillRoot,context,imageFiles=[],
+  codexPath,workspaceDir,skillBundle,context,
+  imageFiles=[],modelImageFiles=[],
   environment=process.env,timeoutMs=120_000
 }) {
-  validateCommon({skillRoot,context,imageFiles,timeoutMs});
+  validateCommon({
+    skillBundle,context,imageFiles,modelImageFiles,timeoutMs
+  });
   if (!isAbsolute(codexPath)||!isAbsolute(workspaceDir)) {
     throw new Error("assistant_codex_invalid");
   }
-  const modelImageFiles=await validatePrivateWorkspace(
+  const originalImageFiles=await validatePrivateWorkspace(
     workspaceDir,imageFiles
   );
+  const derivedImageFiles=await validateModelImageEvidence({
+    workspaceDir,
+    files:modelImageFiles,
+    maxFiles:16-originalImageFiles.length
+  });
+  const modelInputs=[...originalImageFiles,...derivedImageFiles];
+  if (new Set(modelInputs).size!==modelInputs.length) {
+    throw new Error("assistant_codex_invalid");
+  }
   const outputDir=await mkdtemp(join(tmpdir(),"llw-personal-assistant-"));
   const output=join(outputDir,"result.json");
   const args=[
     "exec","--ephemeral","--sandbox","read-only","--skip-git-repo-check",
     "--color","never","-c",'model_reasoning_effort="medium"',
-    ...modelImageFiles.flatMap(file=>["--image",file]),
+    ...modelInputs.flatMap(file=>["--image",file]),
     "--output-last-message",output,"-"
   ];
   try {
-    const bundle=await readSkillBundle(skillRoot);
     const prompt=[
       "使用 $llw-personal-assistant。",
       "严格根据下面的主 Skill、references、CONTEXT_JSON 和其中唯一工具定义，选择一次直接回复、一次询问或一个工具调用。",
@@ -43,24 +58,39 @@ export async function invokePersonalAssistantCodex({
       "工具：{\"type\":\"tool_call\",\"toolName\":\"registered_name\",\"arguments\":{...}}",
       "只输出一个 JSON 对象；不得输出旧 Router/Capability 包装；不得提前宣称工具成功。",
       "SKILL_BUNDLE:",
-      bundle,
+      skillBundle.content,
       "CONTEXT_JSON:",
       JSON.stringify(context)
     ].join("\n");
     await runChild(codexPath,args,{
       cwd:workspaceDir,environment,stdin:prompt,timeoutMs
     });
-    const bytes=await readFile(output);
-    if (!bytes.length||bytes.length>MAX_OUTPUT_BYTES) {
-      throw new Error("assistant_codex_invalid");
+    let bytes;
+    try {
+      bytes=await readFile(output);
+    } catch {
+      throw new Error("assistant_result_invalid");
     }
-    const value=JSON.parse(bytes.toString("utf8"));
+    if (!bytes.length||bytes.length>MAX_OUTPUT_BYTES) {
+      throw new Error("assistant_result_invalid");
+    }
+    let value;
+    try {
+      value=JSON.parse(bytes.toString("utf8"));
+    } catch {
+      throw new Error("assistant_result_invalid");
+    }
     if (!value||typeof value!=="object"||Array.isArray(value)) {
-      throw new Error("assistant_codex_invalid");
+      throw new Error("assistant_result_invalid");
     }
     return value;
   } catch (error) {
-    if (error?.message==="assistant_codex_invalid") throw error;
+    if (new Set([
+      "assistant_codex_invalid",
+      "assistant_timeout",
+      "assistant_process_failed",
+      "assistant_result_invalid"
+    ]).has(error?.message)) throw error;
     throw new Error("assistant_codex_failed");
   } finally {
     await rm(outputDir,{recursive:true,force:true});
@@ -68,12 +98,16 @@ export async function invokePersonalAssistantCodex({
 }
 
 export async function invokePersonalAssistantDeepSeek({
-  model,keychainService,keychainAccount,skillRoot,context,imageFiles=[],
+  model,keychainService,keychainAccount,skillBundle,context,
+  imageFiles=[],modelImageFiles=[],
   keyReader=readDeepSeekApiKey,fetchImpl=fetch,
   endpoint="https://api.deepseek.com/chat/completions",timeoutMs=30_000
 }) {
-  validateCommon({skillRoot,context,imageFiles,timeoutMs});
-  if (imageFiles.length||!Array.isArray(context.sources)||
+  validateCommon({
+    skillBundle,context,imageFiles,modelImageFiles,timeoutMs
+  });
+  if (imageFiles.length||modelImageFiles.length||
+      !Array.isArray(context.sources)||
       context.sources.length!==0||
       model!=="deepseek-v4-pro") {
     throw new Error("assistant_deepseek_subset_unsupported");
@@ -89,7 +123,6 @@ export async function invokePersonalAssistantDeepSeek({
   const controller=new AbortController();
   const timer=setTimeout(()=>controller.abort(),timeoutMs);
   try {
-    const bundle=await readSkillBundle(skillRoot);
     const response=await fetchImpl(endpoint,{
       method:"POST",redirect:"error",signal:controller.signal,
       headers:{
@@ -104,7 +137,7 @@ export async function invokePersonalAssistantDeepSeek({
             content:[
               "Use the LLW Personal Assistant only for the approved plain-text daily-work subset.",
               "For a direct reply or one question, return one JSON envelope in message content.",
-              bundle
+              skillBundle.content
             ].join("\n")
           },
           {role:"user",content:JSON.stringify(context)}
@@ -142,24 +175,11 @@ export async function invokePersonalAssistantDeepSeek({
   }
 }
 
-async function readSkillBundle(skillRoot) {
-  const references=join(skillRoot,"references");
-  const names=(await readdir(references))
-    .filter(name=>name.endsWith(".md")).sort();
-  const files=[join(skillRoot,"SKILL.md"),...names.map(name=>
-    join(references,name)
-  )];
-  return (await Promise.all(files.map(async file=>{
-    const value=await readFile(file,"utf8");
-    if (!value.trim()||Buffer.byteLength(value,"utf8")>256*1024) {
-      throw new Error("assistant_skill_invalid");
-    }
-    return value;
-  }))).join("\n\n");
-}
-
-function validateCommon({skillRoot,context,imageFiles,timeoutMs}) {
-  if (!isAbsolute(skillRoot)||!context||typeof context!=="object"||
+function validateCommon({
+  skillBundle,context,imageFiles,modelImageFiles,timeoutMs
+}) {
+  if (!validSkillBundle(skillBundle)||
+      !context||typeof context!=="object"||
       Array.isArray(context)||!Array.isArray(context.tools)||
       !Array.isArray(context.sources)||context.sources.length>8||
       context.sources.some(source=>
@@ -170,9 +190,28 @@ function validateCommon({skillRoot,context,imageFiles,timeoutMs}) {
       )||
       !Array.isArray(imageFiles)||imageFiles.length>8||
       imageFiles.some(file=>!isAbsolute(file))||
+      !Array.isArray(modelImageFiles)||modelImageFiles.length>16||
       !Number.isInteger(timeoutMs)||timeoutMs<1||timeoutMs>300_000) {
     throw new Error("assistant_invocation_invalid");
   }
+}
+
+function validSkillBundle(value) {
+  if (!value||typeof value!=="object"||Array.isArray(value)||
+      Object.keys(value).length!==4||
+      typeof value.content!=="string"||!value.content.trim()||
+      !Number.isSafeInteger(value.fileCount)||value.fileCount<1||
+      value.fileCount>256||
+      !Number.isSafeInteger(value.totalBytes)||value.totalBytes<1||
+      value.totalBytes>512*1024||
+      Buffer.byteLength(value.content,"utf8")!==
+        value.totalBytes+2*(value.fileCount-1)||
+      !/^[a-f0-9]{64}$/u.test(value.sha256||"")) {
+    return false;
+  }
+  return createHash("sha256")
+    .update(value.content,"utf8")
+    .digest("hex")===value.sha256;
 }
 
 async function validatePrivateWorkspace(workspaceDir,imageFiles) {
@@ -213,19 +252,19 @@ function runChild(command,args,{cwd,environment,stdin,timeoutMs}) {
       if (settled) return;
       settled=true;
       child.kill("SIGKILL");
-      reject(new Error("timeout"));
+      reject(new Error("assistant_timeout"));
     },timeoutMs);
-    child.once("error",error=>{
+    child.once("error",()=>{
       if (settled) return;
       settled=true;
       clearTimeout(timer);
-      reject(error);
+      reject(new Error("assistant_process_failed"));
     });
     child.once("close",code=>{
       if (settled) return;
       settled=true;
       clearTimeout(timer);
-      code===0?resolve():reject(new Error("failed"));
+      code===0?resolve():reject(new Error("assistant_process_failed"));
     });
     child.stdin.on("error",()=>{});
     child.stdin.end(stdin,"utf8");

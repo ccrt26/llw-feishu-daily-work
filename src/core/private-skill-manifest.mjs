@@ -98,11 +98,20 @@ async function load(options) {
       capability:entry.capability,
       semanticTasks:[...entry.semantic_tasks],
       modelSupport:[...entry.model_support],
-      root:skillRoot
+      root:skillRoot,
+      runtimeFiles:Object.freeze(
+        [...runtimeFiles].map(([path,sha256])=>
+          Object.freeze({path,sha256})
+        )
+      )
     });
   }
   fail(names.size!==allowed.size);
-  return {manifestVersion:1,manifestSha256,skills};
+  return Object.freeze({
+    manifestVersion:1,
+    manifestSha256,
+    skills:Object.freeze(skills.map(skill=>Object.freeze(skill)))
+  });
 }
 
 function validateManifestShape(value) {

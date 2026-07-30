@@ -63,3 +63,34 @@ test("rejects traversal instead of writing a sidecar outside the job",async()=>{
     /source_sidecar_invalid/u
   );
 });
+
+test("allows a document original without duration but still requires media duration",async()=>{
+  const workspaceDir=await mkdtemp(join(tmpdir(),"llw-sidecar-document-"));
+  const documentPath=await createSourceSidecarManifest({
+    workspaceDir,
+    original:{
+      sourceId:"source-001",
+      relativePath:"source-001.pdf",
+      byteSize:2_000,
+      sha256:ORIGINAL_SHA,
+      mime:"application/pdf"
+    },
+    now:"2026-07-29T01:00:00.000Z"
+  });
+  const document=JSON.parse(await readFile(documentPath,"utf8"));
+  assert.equal(Object.hasOwn(document.original,"durationMs"),false);
+  await assert.rejects(
+    createSourceSidecarManifest({
+      workspaceDir,
+      original:{
+        sourceId:"source-002",
+        relativePath:"source-002.mp4",
+        byteSize:2_000,
+        sha256:ORIGINAL_SHA,
+        mime:"video/mp4"
+      },
+      now:"2026-07-29T01:00:00.000Z"
+    }),
+    /source_sidecar_invalid/u
+  );
+});

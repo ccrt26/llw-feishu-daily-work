@@ -1,6 +1,6 @@
 import {createHash} from "node:crypto";
 import {
-  chmod,mkdir,mkdtemp,rm,writeFile
+  chmod,mkdir,mkdtemp,readFile,rm,writeFile
 } from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
@@ -19,6 +19,9 @@ import {
 import {
   invokePersonalAssistantCodex
 } from "../src/personal-assistant/invoke-personal-assistant.mjs";
+import {
+  loadPersonalAssistantSkillBundle
+} from "../src/personal-assistant/skill-bundle.mjs";
 import {
   createAssistantSourcePreparer
 } from "../src/personal-assistant/source-preparer.mjs";
@@ -48,6 +51,17 @@ try {
   const skillsRoot=process.env.LLW_SKILLS_ROOT;
   if (!skillsRoot) throw new Error("skill_root_unavailable");
   const skillRoot=join(skillsRoot,"llw-personal-assistant");
+  const skillManifest=JSON.parse(
+    await readFile(join(skillsRoot,"manifest.json"),"utf8")
+  );
+  const skillEntry=skillManifest.skills.find(
+    entry=>entry.name==="llw-personal-assistant"
+  );
+  if (!skillEntry) throw new Error("skill_manifest_invalid");
+  const skillBundle=await loadPersonalAssistantSkillBundle({
+    skillRoot,
+    runtimeFiles:skillEntry.runtime_files.map(({path,sha256})=>({path,sha256}))
+  });
   const codexPath=process.env.LLW_CODEX_PATH||
     "/Applications/ChatGPT.app/Contents/Resources/codex";
   const firstTime=Date.parse("2026-07-29T10:00:00.000Z");
@@ -83,7 +97,7 @@ try {
   const assistant=new PersonalAssistantClient({
     codex:async(context,{workspaceDir,imageFiles})=>{
       const raw=await invokePersonalAssistantCodex({
-        codexPath,workspaceDir,skillRoot,context,imageFiles,
+        codexPath,workspaceDir,skillBundle,context,imageFiles,
         timeoutMs:180_000
       });
       report.decisions.push(raw.type||raw.action||"invalid");

@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import {createHash} from "node:crypto";
 import {
   chmod,mkdtemp,mkdir,readFile,realpath,rm,writeFile
 } from "node:fs/promises";
@@ -9,10 +10,31 @@ import {fileURLToPath} from "node:url";
 import {
   invokePersonalAssistantCodex,invokePersonalAssistantDeepSeek
 } from "../src/personal-assistant/invoke-personal-assistant.mjs";
+import {
+  loadPersonalAssistantSkillBundle
+} from "../src/personal-assistant/skill-bundle.mjs";
 
 const fixture=fileURLToPath(
   new URL("./fixtures/fake-codex.mjs",import.meta.url)
 );
+
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function png(width,height,marker) {
+  const value=Buffer.alloc(33,0);
+  Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a])
+    .copy(value,0);
+  value.writeUInt32BE(13,8);
+  value.write("IHDR",12,"ascii");
+  value.writeUInt32BE(width,16);
+  value.writeUInt32BE(height,20);
+  value[24]=8;
+  value[25]=6;
+  value[32]=marker;
+  return value;
+}
 
 test("invokes one private Skill read-only with bounded context and visual pages",async()=>{
   const root=await mkdtemp(join(tmpdir(),"llw-pa-invoke-"));
@@ -28,8 +50,19 @@ test("invokes one private Skill read-only with bounded context and visual pages"
       join(workspaceDir,"source-001.png"),
       join(workspaceDir,"source-002.png")
     ];
+    const derivedBytes=png(12,16,3);
+    const derivedImage=join(
+      workspaceDir,"source-003.page-001.png"
+    );
     await writeFile(imageFiles[0],"image-a",{mode:0o600});
     await writeFile(imageFiles[1],"image-b",{mode:0o600});
+    await writeFile(derivedImage,derivedBytes,{mode:0o600});
+    const modelImageFiles=[{
+      sourceId:"source-003",
+      relativePath:"source-003.page-001.png",
+      sha256:sha256(derivedBytes),
+      pageNumber:1
+    }];
     await writeFile(
       join(skillRoot,"SKILL.md"),
       "---\nname: llw-personal-assistant\ndescription: test\n---\n# Test\n",
@@ -40,6 +73,26 @@ test("invokes one private Skill read-only with bounded context and visual pages"
       "# Model policy\n",
       {mode:0o600}
     );
+    await writeFile(
+      join(skillRoot,"references","._model-policy.md"),
+      "AppleDouble fixture marker that must not enter the prompt.\n",
+      {mode:0o600}
+    );
+    const skillBundle=await loadPersonalAssistantSkillBundle({
+      skillRoot,
+      runtimeFiles:[
+        {
+          path:"SKILL.md",
+          sha256:sha256(
+            "---\nname: llw-personal-assistant\ndescription: test\n---\n# Test\n"
+          )
+        },
+        {
+          path:"references/model-policy.md",
+          sha256:sha256("# Model policy\n")
+        }
+      ]
+    });
     await chmod(fixture,0o755);
     const context={
       model:"codex",instructionText:"总结，不保存",
@@ -63,7 +116,8 @@ test("invokes one private Skill read-only with bounded context and visual pages"
       priority:["program_safety"]
     };
     const result=await invokePersonalAssistantCodex({
-      codexPath:fixture,workspaceDir,skillRoot,context,imageFiles,
+      codexPath:fixture,workspaceDir,skillBundle,context,
+      imageFiles,modelImageFiles,
       environment:{
         ...process.env,FAKE_ARGS_FILE:argsFile,FAKE_STDIN_FILE:stdinFile,
         FAKE_CWD_ONLY_FILE:cwdFile,
@@ -75,9 +129,10 @@ test("invokes one private Skill read-only with bounded context and visual pages"
     assert.deepEqual(args.slice(0,5),[
       "exec","--ephemeral","--sandbox","read-only","--skip-git-repo-check"
     ]);
-    assert.equal(args.filter(value=>value==="--image").length,2);
+    assert.equal(args.filter(value=>value==="--image").length,3);
     assert.ok(args.includes("source-001.png"));
     assert.ok(args.includes("source-002.png"));
+    assert.ok(args.includes("source-003.page-001.png"));
     assert.equal(args.some(value=>value.includes(workspaceDir)),false);
     assert.equal(await readFile(cwdFile,"utf8"),await realpath(workspaceDir));
     assert.equal(args.some(value=>value.includes("总结，不保存")),false);
@@ -89,6 +144,7 @@ test("invokes one private Skill read-only with bounded context and visual pages"
     assert.match(prompt,/source-001/);
     assert.match(prompt,/source-002/);
     assert.doesNotMatch(prompt,/\/Volumes\/ZHUTONG/);
+    assert.doesNotMatch(prompt,/AppleDouble fixture marker/u);
     assert.match(prompt,/不得提前宣称工具成功/);
     assert.match(
       prompt,
@@ -106,7 +162,12 @@ test("rejects every DeepSeek turn containing an original source",async()=>{
   await assert.rejects(()=>invokePersonalAssistantDeepSeek({
     model:"deepseek-v4-pro",
     keychainService:"test",keychainAccount:"test",
-    skillRoot:"/private/tmp/skill",
+    skillBundle:{
+      content:"# Synthetic Skill\n",
+      fileCount:1,
+      totalBytes:Buffer.byteLength("# Synthetic Skill\n","utf8"),
+      sha256:sha256("# Synthetic Skill\n")
+    },
     context:{
       model:"deepseek",instructionText:"处理附件",
       sourceEvidence:{kind:"text"},
@@ -119,3 +180,63 @@ test("rejects every DeepSeek turn containing an original source",async()=>{
   }),/assistant_deepseek_subset_unsupported/);
   assert.equal(keyReads,0);
 });
+
+test("reports a bounded assistant timeout without exposing child details",async()=>{
+  await assert.rejects(
+    invokeSyntheticCodex({FAKE_CODEX_MODE:"timeout"},50),
+    error=>error?.message==="assistant_timeout"&&
+      Object.keys(error).length===0
+  );
+});
+
+test("reports a bounded assistant process failure without stderr",async()=>{
+  await assert.rejects(
+    invokeSyntheticCodex({FAKE_CODEX_MODE:"process-failure"}),
+    error=>error?.message==="assistant_process_failed"&&
+      !String(error).includes("synthetic private stderr")&&
+      Object.keys(error).length===0
+  );
+});
+
+test("reports malformed and oversized Codex output as an invalid result",async()=>{
+  for (const response of ["{",`{"text":"${"x".repeat(64*1024)}"}`]) {
+    await assert.rejects(
+      invokeSyntheticCodex({
+        FAKE_CODEX_MODE:"raw",
+        FAKE_RESPONSE:response
+      }),
+      error=>error?.message==="assistant_result_invalid"&&
+        Object.keys(error).length===0
+    );
+  }
+});
+
+async function invokeSyntheticCodex(environment,timeoutMs=2_000) {
+  const root=await mkdtemp(join(tmpdir(),"llw-pa-failure-"));
+  const workspaceDir=join(root,"workspace");
+  await mkdir(workspaceDir,{mode:0o700});
+  await chmod(fixture,0o755);
+  const content="# Synthetic Skill\n";
+  try {
+    return await invokePersonalAssistantCodex({
+      codexPath:fixture,
+      workspaceDir,
+      skillBundle:{
+        content,
+        fileCount:1,
+        totalBytes:Buffer.byteLength(content,"utf8"),
+        sha256:sha256(content)
+      },
+      context:{
+        model:"codex",
+        instructionText:"只读分析",
+        sources:[],
+        tools:[]
+      },
+      environment:{...process.env,...environment},
+      timeoutMs
+    });
+  } finally {
+    await rm(root,{recursive:true,force:true});
+  }
+}

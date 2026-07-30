@@ -1,4 +1,5 @@
 import {createHash,randomUUID} from "node:crypto";
+import {createReadStream} from "node:fs";
 import {
   chmod,constants as fsConstants,copyFile,lstat,mkdir,open,readFile,
   readdir,rename,rm
@@ -7,6 +8,9 @@ import {isAbsolute,join} from "node:path";
 import {
   extractFeishuDocumentRequests
 } from "../core/feishu-document-link.mjs";
+import {
+  extractPublicVideoRequest
+} from "./public-video-link.mjs";
 import {createSourceHandle} from "./source-handle.mjs";
 import {validateTaskSession} from "./task-session.mjs";
 
@@ -19,15 +23,21 @@ const SOURCE_INTAKE_FAILURES=new Set([
 ]);
 
 export class TaskSourceWorkspace {
-  constructor({root,prepareTurnSources,now=Date.now}) {
+  constructor({root,prepareTurnSources,now=Date.now,operations={}}) {
     if (typeof root!=="string"||!isAbsolute(root)||
         typeof prepareTurnSources!=="function"||
-        typeof now!=="function") {
+        typeof now!=="function"||
+        !operations||typeof operations!=="object"||
+        Array.isArray(operations)||
+        Object.keys(operations).some(key=>key!=="readFile")||
+        (operations.readFile!==undefined&&
+          typeof operations.readFile!=="function")) {
       throw new Error("task_source_workspace_invalid");
     }
     this.root=root;
     this.prepareTurnSources=prepareTurnSources;
     this.now=now;
+    this.readFile=operations.readFile??readFile;
   }
 
   async ensure({session}) {
@@ -121,6 +131,21 @@ export class TaskSourceWorkspace {
           addedPaths.push(destination);
           await chmod(destination,0o600);
           await verifySource(destination,handle);
+          for (const auxiliary of source.auxiliaryFiles??[]) {
+            validateAuxiliary(auxiliary);
+            const auxiliaryPath=join(
+              workspaceDir,
+              `${sourceId}.${auxiliary.role}.${auxiliary.extension}`
+            );
+            await copyFile(
+              auxiliary.absolutePath,
+              auxiliaryPath,
+              fsConstants.COPYFILE_EXCL
+            );
+            addedPaths.push(auxiliaryPath);
+            await chmod(auxiliaryPath,0o600);
+            await verifyAuxiliary(auxiliaryPath,auxiliary);
+          }
           next.sources.push({handle,archiveExtension});
           addedSourceIds.push(sourceId);
         }
@@ -174,8 +199,13 @@ export class TaskSourceWorkspace {
     }
     const documentBundle=extractFeishuDocumentRequests(message);
     const documentCount=documentBundle?.requests.length??0;
+    const publicVideoRequest=extractPublicVideoRequest(
+      message.instructionText
+    );
+    const publicVideoCount=publicVideoRequest?1:0;
     const missing=manifest.sources.slice(session.sourceIds.length);
-    if (missing.length!==documentCount+message.attachments.length) {
+    if (missing.length!==
+        documentCount+message.attachments.length+publicVideoCount) {
       throw new Error("task_source_workspace_invalid");
     }
     for (let index=0;index<message.attachments.length;index+=1) {
@@ -184,6 +214,18 @@ export class TaskSourceWorkspace {
       if (entry.handle.displayName!==attachment.displayName||
           (attachment.extension&&
             entry.archiveExtension!==attachment.extension.toLowerCase())) {
+        throw new Error("task_source_workspace_invalid");
+      }
+    }
+    if (publicVideoRequest) {
+      const entry=missing[
+        documentCount+message.attachments.length
+      ];
+      if (entry.handle.mediaClass!=="video"||
+          entry.archiveExtension!=="mp4"||
+          !entry.handle.displayName.startsWith(
+            `${publicVideoRequest.platform}-`
+          )) {
         throw new Error("task_source_workspace_invalid");
       }
     }
@@ -284,7 +326,7 @@ export class TaskSourceWorkspace {
         info.uid!==process.getuid()||(info.mode&0o077)!==0) {
       throw new Error("task_source_workspace_invalid");
     }
-    const value=JSON.parse(await readFile(file,"utf8"));
+    const value=JSON.parse(await this.readFile(file,"utf8"));
     validateManifest(value,taskId);
     return value;
   }
@@ -350,12 +392,50 @@ async function verifySource(file,handle) {
       info.size!==handle.byteSize) {
     throw new Error("task_source_workspace_invalid");
   }
-  const sha256=createHash("sha256")
-    .update(await readFile(file))
-    .digest("hex");
+  const hash=createHash("sha256");
+  try {
+    for await (const chunk of createReadStream(file)) hash.update(chunk);
+  } catch {
+    throw new Error("task_source_workspace_invalid");
+  }
+  const sha256=hash.digest("hex");
   if (sha256!==handle.sha256) {
     throw new Error("task_source_workspace_invalid");
   }
+}
+
+function validateAuxiliary(value) {
+  const fields=new Set([
+    "role","extension","absolutePath","byteSize","sha256","durationMs"
+  ]);
+  if (!value||typeof value!=="object"||Array.isArray(value)||
+      Object.keys(value).length!==fields.size||
+      Object.keys(value).some(key=>!fields.has(key))||
+      value.role!=="audio"||value.extension!=="m4a"||
+      typeof value.absolutePath!=="string"||
+      !isAbsolute(value.absolutePath)||
+      !Number.isSafeInteger(value.byteSize)||value.byteSize<12||
+      !/^[a-f0-9]{64}$/u.test(value.sha256||"")||
+      !Number.isSafeInteger(value.durationMs)||
+      value.durationMs<1||value.durationMs>7*24*60*60*1_000) {
+    throw new Error("task_source_workspace_invalid");
+  }
+}
+
+async function verifyAuxiliary(file,value) {
+  const info=await lstat(file);
+  if (!info.isFile()||info.isSymbolicLink()||
+      info.uid!==process.getuid()||(info.mode&0o077)!==0||
+      info.size!==value.byteSize||
+      await sha256File(file)!==value.sha256) {
+    throw new Error("task_source_workspace_invalid");
+  }
+}
+
+async function sha256File(file) {
+  const hash=createHash("sha256");
+  for await (const chunk of createReadStream(file)) hash.update(chunk);
+  return hash.digest("hex");
 }
 
 function plainExact(value,fields) {

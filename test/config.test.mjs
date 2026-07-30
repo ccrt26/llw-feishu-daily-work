@@ -48,6 +48,47 @@ function configV5(overrides={}) {
   };
 }
 
+function configV6(overrides={}) {
+  return {
+    ...configV5(),
+    version:6,
+    personalAssistant:{
+      enabled:true,
+      skillName:"llw-personal-assistant",
+      aiTimeoutMs:120000,
+      maxContextBytes:524288,
+      maxSourcesPerTurn:8,
+      maxSourceFileBytes:20971520,
+      maxTurnSourceBytes:83886080,
+      sourceBurstQuietMs:3000,
+      sourceBurstMaxMs:15000,
+      personalRulesFile:null
+    },
+    ...overrides
+  };
+}
+
+function mediaInputGates(overrides={}) {
+  return {
+    nativeVoiceEnabled:false,
+    audioFileEnabled:false,
+    localVideoEnabled:false,
+    webPageEnabled:false,
+    bilibiliEnabled:false,
+    douyinEnabled:false,
+    ...overrides
+  };
+}
+
+function configV7(overrides={}) {
+  return {
+    ...configV6(),
+    version:7,
+    mediaInputGates:mediaInputGates(),
+    ...overrides
+  };
+}
+
 function assistantConfig(overrides={}) {
   return {
     enabled:false,
@@ -209,8 +250,49 @@ test("version 5 requires one exact private Skill root, manifest and expected has
     }
     const {privateSkills,...missing}=configV5();
     await assert.rejects(()=>saveConfig(file,missing),/missing_config_field/);
-    await assert.rejects(()=>saveConfig(file,{...configV5(),version:7}),/invalid_config_version/);
+    await assert.rejects(
+      ()=>saveConfig(file,{...configV5(),version:7}),
+      /missing_config_field/
+    );
   } finally { await rm(dir,{recursive:true,force:true}); }
+});
+
+test("version 7 allows only the independently approved Bilibili gate",async()=>{
+  const dir=await mkdtemp(join(tmpdir(),"llw-config-v7-"));
+  const file=join(dir,"config.json");
+  try {
+    await saveConfig(file,configV7());
+    assert.deepEqual(await loadConfig(file),configV7());
+    const bilibiliConfig=configV7({
+      mediaInputGates:mediaInputGates({bilibiliEnabled:true})
+    });
+    await saveConfig(file,bilibiliConfig);
+    assert.deepEqual(await loadConfig(file),bilibiliConfig);
+    const {douyinEnabled,...missing}=mediaInputGates();
+    for (const gates of [
+      missing,
+      {...mediaInputGates(),extra:false},
+      mediaInputGates({audioFileEnabled:"false"}),
+      ...Object.keys(mediaInputGates())
+        .filter(field=>field!=="bilibiliEnabled")
+        .map(field=>
+        mediaInputGates({[field]:true})
+      )
+    ]) {
+      await assert.rejects(
+        saveConfig(file,configV7({mediaInputGates:gates})),
+        /media_input_gates/
+      );
+    }
+    await saveConfig(file,configV6());
+    assert.equal((await loadConfig(file)).version,6);
+    assert.equal(
+      Object.hasOwn(await loadConfig(file),"mediaInputGates"),
+      false
+    );
+  } finally {
+    await rm(dir,{recursive:true,force:true});
+  }
 });
 
 test("version 5 requires one exact configurable knowledge-ingest definition with disjoint managed roots",async()=>{

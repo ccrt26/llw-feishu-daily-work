@@ -4,7 +4,10 @@ import {
 } from "../core/security-gate.mjs";
 import {createFeishuIncomingMessage} from "../core/incoming-message.mjs";
 import {handleModelCommand} from "../core/model-command.mjs";
-import {isUnsupportedMediaExtension} from "../core/media-support.mjs";
+import {
+  classifyDisabledMediaInput,DEFAULT_MEDIA_INPUT_GATES,
+  isUnsupportedMediaExtension,normalizeMediaInputGates
+} from "../core/media-support.mjs";
 import {isConversationCancellation} from "./conversation.mjs";
 import {SourceBurstCollector} from "./source-burst-collector.mjs";
 import {
@@ -19,6 +22,7 @@ export class PersonalAssistantDispatcher {
     sourceBurstQuietMs=coalesceWindowMs,
     sourceBurstMaxMs=sourceBurstQuietMs?15_000:0,
     sourceBurstAttachmentQuietMs=sourceBurstQuietMs,
+    mediaInputGates=DEFAULT_MEDIA_INPUT_GATES,
     maxSourcesPerTurn=8,
     now=Date.now,setTimer=globalThis.setTimeout,
     clearTimer=globalThis.clearTimeout
@@ -34,6 +38,7 @@ export class PersonalAssistantDispatcher {
     this.deepseekEnabled=deepseekEnabled;
     this.messenger=messenger;
     this.onFailure=typeof onFailure==="function"?onFailure:()=>{};
+    this.mediaInputGates=normalizeMediaInputGates(mediaInputGates);
     if (!Number.isSafeInteger(sourceBurstQuietMs)||
         sourceBurstQuietMs<0||sourceBurstQuietMs>5_000||
         !Number.isSafeInteger(sourceBurstAttachmentQuietMs)||
@@ -110,8 +115,17 @@ export class PersonalAssistantDispatcher {
     if (this.state.hasOutcome(key)||this.acceptedMessageKeys.has(key)) {
       return {handled:false,reason:"duplicate"};
     }
+    const mediaGate=classifyDisabledMediaInput(
+      message,this.mediaInputGates
+    );
+    if (mediaGate) {
+      this.scheduleUnsupportedMedia(
+        message,mediaInputGateCommand(mediaGate)
+      );
+      return {handled:true,status:"rejected"};
+    }
     if (hasUnsupportedMedia(message)) {
-      this.scheduleUnsupportedMedia(message);
+      this.scheduleUnsupportedMedia(message,unsupportedMediaCommand());
       return {handled:true,status:"rejected"};
     }
     if (this.taskManager) {
@@ -437,10 +451,10 @@ export class PersonalAssistantDispatcher {
     await this.state.markReplied?.(key);
   }
 
-  scheduleUnsupportedMedia(message) {
+  scheduleUnsupportedMedia(message,command) {
     const key=personalOutcomeKey(message);
     const task=this.enqueue(()=>this.persistAndSendCommand(
-      key,message,unsupportedMediaCommand()
+      key,message,command
     ));
     this.trackTask(task,[key]);
   }
@@ -551,8 +565,19 @@ export class PersonalAssistantDispatcher {
     if (this.state.hasOutcome(key)) {
       return {handled:false,reason:"duplicate"};
     }
+    const mediaGate=classifyDisabledMediaInput(
+      message,this.mediaInputGates
+    );
+    if (mediaGate) {
+      await this.persistAndSendCommand(
+        key,message,mediaInputGateCommand(mediaGate)
+      );
+      return {handled:true,status:"rejected"};
+    }
     if (hasUnsupportedMedia(message)) {
-      await this.persistAndSendCommand(key,message,unsupportedMediaCommand());
+      await this.persistAndSendCommand(
+        key,message,unsupportedMediaCommand()
+      );
       return {handled:true,status:"rejected"};
     }
     if (!message.attachments.length) {
@@ -613,8 +638,14 @@ const SAFE_FAILURE_CODES=new Set([
   "content_safety_rejected","agent_turn_context_invalid",
   "personal_rules_invalid","assistant_model_failed",
   "assistant_model_unsupported","provider_result_invalid",
+  "assistant_timeout","assistant_process_failed",
+  "assistant_result_invalid","pdf_prepare_failed",
   "tool_call_invalid","tool_execution_failed","writer_partial",
   "reply_delivery_failed"
+]);
+const PRECISE_PRE_WRITER_FAILURES=new Set([
+  "assistant_timeout","assistant_process_failed",
+  "assistant_result_invalid","pdf_prepare_failed"
 ]);
 const SAFE_FAILURE_PHASES=new Set([
   "outcome_lookup_failed","reply_recovery_failed",
@@ -622,7 +653,8 @@ const SAFE_FAILURE_PHASES=new Set([
   "model_selection_failed","source_preparation_failed",
   "content_safety_rejected","personal_rules_load_failed",
   "daily_candidates_load_failed","agent_turn_context_invalid",
-  "assistant_model_failed","save_knowledge_execution_failed",
+  "assistant_model_failed","public_video_prepare_failed",
+  "save_knowledge_execution_failed",
   "record_daily_work_execution_failed",
   "archive_dining_invoice_execution_failed",
   "create_document_execution_failed","conversation_state_failed",
@@ -630,6 +662,9 @@ const SAFE_FAILURE_PHASES=new Set([
 ]);
 
 function boundedFailureCode(error) {
+  if (PRECISE_PRE_WRITER_FAILURES.has(error?.message)) {
+    return error.message;
+  }
   if (SAFE_FAILURE_PHASES.has(error?.failurePhase)) {
     return error.failurePhase;
   }
@@ -666,6 +701,26 @@ function failureReply(code) {
       "AI 本次未能完成分析，系统没有确认任何写入；请稍后重试。"
     ],
     [
+      "assistant_timeout",
+      "AI 分析超过当前时间上限，本次没有确认任何写入；来源仍在当前任务中，可以直接重试。"
+    ],
+    [
+      "assistant_process_failed",
+      "AI 进程本次未能正常完成，本次没有确认任何写入；来源仍在当前任务中，可以直接重试。"
+    ],
+    [
+      "assistant_result_invalid",
+      "AI 返回结果未通过安全校验，本次没有确认任何写入；来源仍在当前任务中，可以直接重试。"
+    ],
+    [
+      "pdf_prepare_failed",
+      "PDF 已安全保留，但页面准备失败，本次没有完成分析，也没有确认任何写入；可以直接重试，不需要重新发送文件。"
+    ],
+    [
+      "public_video_prepare_failed",
+      "公开视频来源已保留，但音频转写或画面准备失败，本次没有完成分析，也没有确认任何写入；可以直接重试。"
+    ],
+    [
       "tool_call_invalid",
       "AI 返回的操作请求未通过安全校验，系统没有写入；请重试。"
     ]
@@ -700,6 +755,37 @@ function unsupportedMediaCommand() {
     reply:"当前版本尚未支持音频或视频文件，本次没有调用 AI 或 Writer，也没有写入。",
     reasonCode:"unsupported_media"
   };
+}
+
+function mediaInputGateCommand(reasonCode) {
+  const reply=new Map([
+    [
+      "native_voice_disabled",
+      "当前阶段原生语音输入尚未启用，本次没有下载、调用 AI 或 Writer，也没有写入。"
+    ],
+    [
+      "audio_file_disabled",
+      "当前阶段尚未支持音频或视频文件，本次没有调用 AI 或 Writer，也没有写入。"
+    ],
+    [
+      "local_video_disabled",
+      "当前阶段尚未支持音频或视频文件，本次没有调用 AI 或 Writer，也没有写入。"
+    ],
+    [
+      "web_page_disabled",
+      "当前阶段网页读取尚未启用，本次没有访问网页、调用 AI 或 Writer，也没有写入。"
+    ],
+    [
+      "bilibili_disabled",
+      "当前阶段 B 站视频读取尚未启用，本次没有访问链接、调用 AI 或 Writer，也没有写入。"
+    ],
+    [
+      "douyin_disabled",
+      "当前阶段抖音视频读取尚未启用，本次没有访问链接、调用 AI 或 Writer，也没有写入。"
+    ]
+  ]).get(reasonCode);
+  if (!reply) throw new Error("media_input_gate_invalid");
+  return {status:"rejected",reply,reasonCode};
 }
 
 export function personalOutcomeKey(message) {

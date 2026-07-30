@@ -57,6 +57,9 @@ import {
   invokePersonalAssistantCodex,invokePersonalAssistantDeepSeek
 } from "./personal-assistant/invoke-personal-assistant.mjs";
 import {
+  loadPersonalAssistantSkillBundle
+} from "./personal-assistant/skill-bundle.mjs";
+import {
   createAssistantSourcePreparer
 } from "./personal-assistant/source-preparer.mjs";
 import {
@@ -106,9 +109,8 @@ export async function runLegacyMain(
 process.umask(0o077);
 
 const config=await loadConfig(configFile);
-if (config.version===6) {
-  await runPersonalAssistantMain(config);
-  return;
+if (config.version===6||config.version===7) {
+  throw new Error("config_migration_required");
 }
 const invoiceConfig=config.capabilities.invoice;
 const knowledgeConfig=config.version===5?config.capabilities["knowledge-ingest"]:null;
@@ -157,9 +159,24 @@ async function runPersonalAssistantMain(config) {
     expectedManifestSha256:config.privateSkills.expectedManifestSha256,
     allowlist:V6_PRIVATE_SKILL_ALLOWLIST
   });
+  const skillEntry=privateSkillCatalog.skills.find(
+    entry=>entry.name===config.personalAssistant.skillName
+  );
+  if (!skillEntry) throw new Error("private_skill_manifest_invalid");
   const skillRoot=await selectPrivateSkillRoot(
     privateSkillCatalog,config.personalAssistant.skillName
   );
+  const skillBundle=await loadPersonalAssistantSkillBundle({
+    skillRoot,
+    runtimeFiles:skillEntry.runtimeFiles
+  });
+  process.stderr.write(`${safeLog({
+    stage:"startup",
+    code:"personal_assistant_skill_loaded",
+    fileCount:skillBundle.fileCount,
+    totalBytes:skillBundle.totalBytes,
+    bundleSha256:skillBundle.sha256
+  })}\n`);
   await validatePdfiumRuntime(invoiceConfig.pdfProcessorPath);
   const personalRulesStore=config.personalAssistant.personalRulesFile
     ?await PersonalRulesStore.open(
@@ -225,14 +242,14 @@ async function runPersonalAssistantMain(config) {
   const assistant=new PersonalAssistantClient({
     codex:(context,{workspaceDir,imageFiles})=>invokePersonalAssistantCodex({
       codexPath:config.codexPath,workspaceDir,
-      skillRoot,context,imageFiles,
+      skillBundle,context,imageFiles,
       timeoutMs:config.personalAssistant.aiTimeoutMs
     }),
     deepseek:(context,{imageFiles})=>invokePersonalAssistantDeepSeek({
       model:config.deepseekModel,
       keychainService:config.deepseekKeychainService,
       keychainAccount:config.deepseekKeychainAccount,
-      skillRoot,context,imageFiles
+      skillBundle,context,imageFiles
     })
   });
   const dailyCatalog=new RecordCatalog(config.vaultRoot);

@@ -20,7 +20,10 @@ export class PersonalAssistantClient {
           structuredClone(context),
           {
             workspaceDir:options.workspaceDir,
-            imageFiles:[...(options.imageFiles||[])]
+            imageFiles:[...(options.imageFiles||[])],
+            modelImageFiles:structuredClone(
+              options.modelImageFiles||[]
+            )
           }
         ),
         availableSources:context.sources||[]
@@ -31,7 +34,13 @@ export class PersonalAssistantClient {
       return decision;
     } catch (error) {
       if (error?.message==="tool_call_invalid"||
-          error?.message==="provider_result_invalid") throw error;
+          error?.message==="provider_result_invalid"||
+          new Set([
+            "assistant_timeout",
+            "assistant_process_failed",
+            "assistant_result_invalid",
+            "pdf_prepare_failed"
+          ]).has(error?.message)) throw error;
       throw new Error("assistant_model_failed");
     }
   }

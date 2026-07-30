@@ -10,11 +10,16 @@ const V4_TOP_FIELDS=new Set([
 ]);
 const V5_TOP_FIELDS=new Set([...V4_TOP_FIELDS,"privateSkills"]);
 const V6_TOP_FIELDS=new Set([...V5_TOP_FIELDS,"personalAssistant"]);
+const V7_TOP_FIELDS=new Set([...V6_TOP_FIELDS,"mediaInputGates"]);
 const PRIVATE_SKILLS_FIELDS=new Set(["root","manifestPath","expectedManifestSha256"]);
 const PERSONAL_ASSISTANT_FIELDS=new Set([
   "enabled","skillName","aiTimeoutMs","maxContextBytes",
   "maxSourcesPerTurn","maxSourceFileBytes","maxTurnSourceBytes",
   "sourceBurstQuietMs","sourceBurstMaxMs","personalRulesFile"
+]);
+const MEDIA_INPUT_GATE_FIELDS=new Set([
+  "nativeVoiceEnabled","audioFileEnabled","localVideoEnabled",
+  "webPageEnabled","bilibiliEnabled","douyinEnabled"
 ]);
 const DEEPSEEK_MODELS=new Set(["deepseek-v4-pro"]);
 const DAILY_FIELDS=new Set(["enabled","skillRoot"]);
@@ -59,10 +64,13 @@ export function bindingFromEvent(event) {
 }
 
 function validateConfig(config,requireBinding,configFile) {
-  if (![4,5,6].includes(config?.version)) throw new Error("invalid_config_version");
+  if (![4,5,6,7].includes(config?.version)) {
+    throw new Error("invalid_config_version");
+  }
   exact(
     config,
-    config.version===6?V6_TOP_FIELDS:
+    config.version===7?V7_TOP_FIELDS:
+      config.version===6?V6_TOP_FIELDS:
       config.version===5?V5_TOP_FIELDS:V4_TOP_FIELDS,
     "config"
   );
@@ -74,10 +82,13 @@ function validateConfig(config,requireBinding,configFile) {
     if (config.privateSkills.manifestPath!==join(config.privateSkills.root,"manifest.json")) throw new Error("invalid_private_skills_manifest");
     if (typeof config.privateSkills.expectedManifestSha256!=="string"||!/^[0-9a-f]{64}$/.test(config.privateSkills.expectedManifestSha256)) throw new Error("invalid_private_skills_hash");
   }
-  if (config.version===6) {
+  if (config.version>=6) {
     validatePersonalAssistantConfig(
       config.personalAssistant,config.vaultRoot
     );
+  }
+  if (config.version===7) {
+    validateMediaInputGates(config.mediaInputGates);
   }
   if (typeof config.deepseekEnabled!=="boolean") throw new Error("invalid_deepseek_enabled");
   if (!DEEPSEEK_MODELS.has(config.deepseekModel)) throw new Error("invalid_deepseek_model");
@@ -147,6 +158,17 @@ function validateConfig(config,requireBinding,configFile) {
   if (invoice.maxPdfTextBytes !== 262_144) throw new Error("invalid_max_pdf_text_bytes");
   if (invoice.maxPdfRenderBytes !== 100 * 1024 * 1024) throw new Error("invalid_max_pdf_render_bytes");
   if (invoice.pdfPrepareTimeoutMs !== 60_000) throw new Error("invalid_pdf_prepare_timeout");
+}
+
+function validateMediaInputGates(value) {
+  exact(value,MEDIA_INPUT_GATE_FIELDS,"media_input_gates");
+  if (typeof value.bilibiliEnabled!=="boolean"||
+      [
+        "nativeVoiceEnabled","audioFileEnabled","localVideoEnabled",
+        "webPageEnabled","douyinEnabled"
+      ].some(field=>value[field]!==false)) {
+    throw new Error("invalid_media_input_gates");
+  }
 }
 
 function validatePersonalAssistantConfig(value,vaultRoot) {

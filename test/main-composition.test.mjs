@@ -5,7 +5,7 @@ import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {fileURLToPath} from "node:url";
 
-test("version 6 production entry does not statically load legacy routing layers",async()=>{
+test("version 7 production entry does not statically load legacy routing layers",async()=>{
   const main=await readFile(
     fileURLToPath(new URL("../src/main.mjs",import.meta.url)),"utf8"
   );
@@ -24,28 +24,54 @@ test("version 6 production entry does not statically load legacy routing layers"
   ]) assert.equal(main.includes(forbidden),false,forbidden);
   assert.match(
     main,
-    /if \(config\.version!==6\) \{\s*const \{runLegacyMain\}=await import\("\.\/legacy-main\.mjs"\)/
+    /if \(config\.version===6\) \{\s*throw new Error\("config_migration_required"\);\s*\}[\s\S]*?if \(config\.version!==7\) \{\s*const \{runLegacyMain\}=await import\("\.\/legacy-main\.mjs"\)/
   );
   assert.match(legacy,/feishu-intent-router/);
   assert.match(legacy,/buildCapabilityRegistry/);
   assert.match(legacy,/createRouterTextTask/);
 });
 
-test("version 6 enters one personal-assistant composition before legacy routing",async()=>{
+test("version 7 enters one personal-assistant composition before legacy routing",async()=>{
   const source=await readFile(
     fileURLToPath(new URL("../src/main.mjs",import.meta.url)),"utf8"
   );
   assert.match(
     source,
-    /if \(config\.version!==6\) \{[\s\S]*?runLegacyMain\(configFile\);[\s\S]*?return;[\s\S]*?\}\s*await runPersonalAssistantMain\(config\);/
+    /if \(config\.version===6\) \{[\s\S]*?config_migration_required[\s\S]*?\}[\s\S]*?if \(config\.version!==7\) \{[\s\S]*?runLegacyMain\(configFile\);[\s\S]*?return;[\s\S]*?\}\s*await runPersonalAssistantMain\(config\);/
   );
   for (const expected of [
     "PersonalAssistantClient","createAssistantSourcePreparer",
     "PersonalAssistantCoordinator","PersonalAssistantDispatcher",
     "invokePersonalAssistantCodex","invokePersonalAssistantDeepSeek",
+    "loadPersonalAssistantSkillBundle",
     "PersonalRulesStore","PersonalAssistantTaskSessionManager",
     "TaskSourceWorkspace"
   ]) assert.equal(source.includes(expected),true);
+  for (const expected of [
+    "TaskPdfReader",
+    "mediaInputGates:config.mediaInputGates",
+    "cancelTaskWork:value=>coordinator.cancelTaskWork(value)",
+    "createBilibiliPublicAdapter",
+    "createVolcengineVideoAsrAdapter",
+    "ExternalVideoAsrUsageStore",
+    "createVideoTimelineReaderAdapter",
+    "createPublicVideoSourcePreparer",
+    "createTurnSourcePreparerWithPublicVideo",
+    "TaskPublicVideoReader",
+    "inspectIsoBmffMediaHeader"
+  ]) assert.equal(source.includes(expected),true);
+  assert.match(
+    source,
+    /config\.mediaInputGates\.bilibiliEnabled[\s\S]*?BILIBILI_TIMELINE_HELPER_PATH[\s\S]*?BILIBILI_TIMELINE_HELPER_SHA256/
+  );
+  assert.match(
+    source,
+    /keychainService:\s*"com\.llw\.assistant\.volcengine\.video-asr\.api-key"[\s\S]*?keychainAccount:"llw-assistant"/
+  );
+  assert.match(
+    source,
+    /new PersonalAssistantCoordinator\(\{[\s\S]*?publicVideoReader:publicVideoRuntime\.publicVideoReader/
+  );
   assert.match(
     source,
     /config\.personalAssistant\.personalRulesFile\s*\?\s*await PersonalRulesStore\.open/
@@ -55,7 +81,7 @@ test("version 6 enters one personal-assistant composition before legacy routing"
     /personalRulesStore,\s*\n\s*taskManager,taskWorkspace/
   );
   for (const expected of [
-    "const prepareTurnSources=createAssistantSourcePreparer({",
+    "const basePrepareTurnSources=createAssistantSourcePreparer({",
     "maxSourcesPerTurn:config.personalAssistant.maxSourcesPerTurn",
     "maxTurnSourceBytes:config.personalAssistant.maxTurnSourceBytes",
     "const feishuDocumentExporter=createFeishuDocumentExporter({",
@@ -81,6 +107,14 @@ test("version 6 enters one personal-assistant composition before legacy routing"
   assert.match(
     source,
     /taskManager,taskWorkspace[\s\S]*?skillVersion:"4\.1\.0"/
+  );
+  assert.match(
+    source,
+    /skillBundle=await loadPersonalAssistantSkillBundle\(\{[\s\S]*?runtimeFiles:skillEntry\.runtimeFiles/
+  );
+  assert.match(
+    source,
+    /invokePersonalAssistantCodex\(\{[\s\S]*?skillBundle,context,imageFiles/
   );
   assert.match(
     source,
@@ -126,6 +160,34 @@ test("production model selection executes the real V6 wiring",async()=>{
   });
   assert.equal(await selectModel(),"codex");
   assert.equal(reads,1);
+});
+
+test("Bilibili production composition stays inert while disabled",async()=>{
+  const {
+    createBilibiliProductionComposition
+  }=await import("../src/main.mjs");
+  const root=await mkdtemp(join(tmpdir(),"llw-bili-composition-"));
+  const basePreparer=async()=>({
+    instructionText:"text",sources:[],cleanup:async()=>{}
+  });
+  try {
+    const disabled=await createBilibiliProductionComposition({
+      enabled:false,basePreparer,stateRoot:root
+    });
+    assert.equal(disabled.prepareTurnSources,basePreparer);
+    assert.equal(disabled.publicVideoReader,null);
+
+    const enabled=await createBilibiliProductionComposition({
+      enabled:true,basePreparer,stateRoot:root
+    });
+    assert.notEqual(enabled.prepareTurnSources,basePreparer);
+    assert.equal(
+      typeof enabled.publicVideoReader.prepare,
+      "function"
+    );
+  } finally {
+    await rm(root,{recursive:true,force:true});
+  }
 });
 
 test("personal-assistant failures use the existing bounded analyze log",async()=>{

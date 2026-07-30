@@ -17,6 +17,24 @@ test("safe logs contain only allowlisted scalars and a one-way correlation",() =
   for (const secret of secrets) assert.equal(line.includes(secret),false);
 });
 
+test("safe startup logs retain only bounded Skill bundle metadata",()=>{
+  const line=safeLog({
+    stage:"startup",
+    code:"personal_assistant_skill_loaded",
+    fileCount:7,
+    totalBytes:20_111,
+    bundleSha256:"a".repeat(64),
+    content:"must-not-log",
+    path:"/private/skill"
+  });
+  const parsed=JSON.parse(line);
+  assert.equal(parsed.fileCount,7);
+  assert.equal(parsed.totalBytes,20_111);
+  assert.equal(parsed.bundleSha256,"a".repeat(64));
+  assert.equal(line.includes("must-not-log"),false);
+  assert.equal(line.includes("/private/skill"),false);
+});
+
 test("AI guard errors never echo rejected user content",()=>{
   const secret="Authorization: Bearer not-a-real-secret";
   let error;

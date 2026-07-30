@@ -11,6 +11,9 @@ import {
   extractFeishuDocumentRequests
 } from "../core/feishu-document-link.mjs";
 import {publicTaskContext} from "./task-session.mjs";
+import {
+  extractPublicVideoRequest
+} from "./public-video-link.mjs";
 
 export class PersonalAssistantCoordinator {
   constructor({
@@ -18,7 +21,8 @@ export class PersonalAssistantCoordinator {
     documentWorkspace,artifactGenerator,outcomeStore,messenger,
     conversationStore=null,loadDailyCandidates=async()=>[],
     personalRules,personalRulesStore=null,model,selectModel=null,skillVersion,
-    sourceReader=null,maxSourceReadRounds=3,
+    sourceReader=null,maxSourceReadRounds=3,pdfReader=null,
+    publicVideoReader=null,
     releasePreparedSource=null,
     taskManager=null,taskWorkspace=null
   }) {
@@ -40,9 +44,12 @@ export class PersonalAssistantCoordinator {
     this.skillVersion=skillVersion;
     this.sourceReader=sourceReader;
     this.maxSourceReadRounds=maxSourceReadRounds;
+    this.pdfReader=pdfReader;
+    this.publicVideoReader=publicVideoReader;
     this.releasePreparedSource=releasePreparedSource;
     this.taskManager=taskManager;
     this.taskWorkspace=taskWorkspace;
+    this.taskControllers=new Map();
   }
 
   async handleTask(snapshot) {
@@ -52,13 +59,19 @@ export class PersonalAssistantCoordinator {
       throw new Error("task_execution_invalid");
     }
     const source=snapshot.session.source;
+    const taskController=new AbortController();
+    this.trackTaskController(snapshot.taskId,taskController);
     let phase="task_source_preparation_failed";
     try {
       let session=snapshot.session;
       let turnMessage=snapshot.message;
       let prepared;
+      const publicVideoRequest=this.publicVideoReader
+        ?extractPublicVideoRequest(turnMessage.instructionText)
+        :null;
       const hasNewSources=turnMessage.attachments.length>0||
-        Boolean(extractFeishuDocumentRequests(turnMessage));
+        Boolean(extractFeishuDocumentRequests(turnMessage))||
+        Boolean(publicVideoRequest);
       if (session.model==="deepseek"&&hasNewSources) {
         return this.commitTaskResult(snapshot,{
           status:"rejected",
@@ -94,6 +107,32 @@ export class PersonalAssistantCoordinator {
       } else {
         prepared=await this.taskWorkspace.ensure({session});
       }
+      let pdfEvidence={
+        observations:[],
+        modelImageFiles:[]
+      };
+      if (this.pdfReader) {
+        phase="pdf_prepare_failed";
+        pdfEvidence=await this.pdfReader.prepare({
+          workspaceDir:prepared.workspaceDir,
+          sources:prepared.sources,
+          signal:taskController.signal,
+          now:turnMessage.receivedAt
+        });
+      }
+      let publicVideoEvidence={
+        observations:[],
+        modelImageFiles:[]
+      };
+      if (this.publicVideoReader) {
+        phase="public_video_prepare_failed";
+        publicVideoEvidence=await this.publicVideoReader.prepare({
+          workspaceDir:prepared.workspaceDir,
+          sources:prepared.sources,
+          signal:taskController.signal,
+          now:turnMessage.receivedAt
+        });
+      }
       phase="content_safety_rejected";
       const task=publicTaskContext(session);
       assertContentSafe({
@@ -116,7 +155,14 @@ export class PersonalAssistantCoordinator {
         )
         .map(source=>source.absolutePath);
       let decision;
-      let sourceObservations=[];
+      let sourceObservations=[
+        ...(pdfEvidence.observations||[]),
+        ...(publicVideoEvidence.observations||[])
+      ];
+      let modelImageFiles=[
+        ...(pdfEvidence.modelImageFiles||[]),
+        ...(publicVideoEvidence.modelImageFiles||[])
+      ];
       let sourceReadRounds=0;
       while (true) {
         phase="agent_turn_context_invalid";
@@ -133,7 +179,8 @@ export class PersonalAssistantCoordinator {
         phase="assistant_model_failed";
         decision=await this.assistant.decide(context,{
           workspaceDir:prepared.workspaceDir,
-          imageFiles
+          imageFiles,
+          modelImageFiles
         });
         if (decision.kind!=="source_read") break;
         if (!this.sourceReader||
@@ -149,11 +196,14 @@ export class PersonalAssistantCoordinator {
           requests:decision.requests,
           sources:prepared.sources,
           workspaceDir:prepared.workspaceDir,
-          signal:prepared.signal
+          signal:taskController.signal
         });
         sourceObservations=[
           ...sourceObservations,...(evidence?.observations||[])
         ];
+        modelImageFiles=mergeModelImageFiles(
+          modelImageFiles,evidence?.modelImageFiles||[]
+        );
         sourceReadRounds+=1;
       }
       if (!await this.taskManager.isCurrent(snapshot)) {
@@ -218,7 +268,29 @@ export class PersonalAssistantCoordinator {
         error.failurePhase=phase;
       }
       throw error;
+    } finally {
+      this.releaseTaskController(snapshot.taskId,taskController);
     }
+  }
+
+  async cancelTaskWork({taskId}) {
+    if (typeof taskId!=="string") return;
+    for (const controller of this.taskControllers.get(taskId)||[]) {
+      controller.abort();
+    }
+  }
+
+  trackTaskController(taskId,controller) {
+    const active=this.taskControllers.get(taskId)??new Set();
+    active.add(controller);
+    this.taskControllers.set(taskId,active);
+  }
+
+  releaseTaskController(taskId,controller) {
+    const active=this.taskControllers.get(taskId);
+    if (!active) return;
+    active.delete(controller);
+    if (!active.size) this.taskControllers.delete(taskId);
   }
 
   async executeTaskTool({decision,snapshot,message,prepared}) {
@@ -601,6 +673,30 @@ export class PersonalAssistantCoordinator {
     await this.sendOutcome(key,outcome,message.replyTarget);
     return outcome;
   }
+}
+
+function mergeModelImageFiles(current,additional) {
+  if (!Array.isArray(additional)) {
+    throw new Error("source_reader_result_invalid");
+  }
+  const result=current.map(value=>structuredClone(value));
+  const seen=new Map(result.map(value=>[
+    `${value.sourceId}\0${value.relativePath}`,
+    JSON.stringify(value)
+  ]));
+  for (const value of additional) {
+    const key=`${value?.sourceId}\0${value?.relativePath}`;
+    const serialized=JSON.stringify(value);
+    if (seen.has(key)) {
+      if (seen.get(key)!==serialized) {
+        throw new Error("source_reader_result_invalid");
+      }
+      continue;
+    }
+    seen.set(key,serialized);
+    result.push(structuredClone(value));
+  }
+  return result;
 }
 
 function isExactConfirmation(value) {

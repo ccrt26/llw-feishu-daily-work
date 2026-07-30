@@ -5,6 +5,9 @@ import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {PersonalAssistantDispatcher} from "../src/personal-assistant/dispatcher.mjs";
 import {
+  PersonalAssistantCoordinator
+} from "../src/personal-assistant/coordinator.mjs";
+import {
   PersonalAssistantTaskSessionManager
 } from "../src/personal-assistant/task-session-manager.mjs";
 import {StateStore} from "../src/state-store.mjs";
@@ -115,7 +118,7 @@ test("rejects a declared audio or video file before AI and Writer with a specifi
   assert.equal(coordinatorCalls,0);
   assert.equal(saved[0].key,"feishu:audio-1");
   assert.equal(saved[0].outcome.status,"rejected");
-  assert.equal(saved[0].outcome.reasonCode,"unsupported_media");
+  assert.equal(saved[0].outcome.reasonCode,"audio_file_disabled");
   assert.match(saved[0].outcome.reply,/尚未支持音频或视频/u);
   assert.match(saved[0].outcome.reply,/没有调用 AI 或 Writer/u);
   assert.equal(saved[0].outcome.artifacts.length,0);
@@ -170,6 +173,93 @@ test("keeps a controlled provider failure code in Outcome and diagnostics",async
   assert.deepEqual(failures,["assistant_model_failed"]);
 });
 
+test("preserves precise pre-Writer failures through one WeChat turn",async()=>{
+  const replies=new Map([
+    [
+      "assistant_timeout",
+      "AI 分析超过当前时间上限，本次没有确认任何写入；来源仍在当前任务中，可以直接重试。"
+    ],
+    [
+      "assistant_process_failed",
+      "AI 进程本次未能正常完成，本次没有确认任何写入；来源仍在当前任务中，可以直接重试。"
+    ],
+    [
+      "assistant_result_invalid",
+      "AI 返回结果未通过安全校验，本次没有确认任何写入；来源仍在当前任务中，可以直接重试。"
+    ],
+    [
+      "pdf_prepare_failed",
+      "PDF 已安全保留，但页面准备失败，本次没有完成分析，也没有确认任何写入；可以直接重试，不需要重新发送文件。"
+    ]
+  ]);
+  for (const [code,expectedReply] of replies) {
+    const saved=[],sent=[],failures=[];
+    let writerCalls=0;
+    const outcomeStore={
+      async get(){return null;},
+      async save(){throw new Error("unexpected_outcome_save");}
+    };
+    const coordinator=new PersonalAssistantCoordinator({
+      prepareSource:code==="pdf_prepare_failed"
+        ?async()=>{throw new Error(code);}
+        :async()=>({sources:[],workspaceDir:"/private/tmp"}),
+      assistant:{
+        async decide(){throw new Error(code);}
+      },
+      writer:{
+        async commit(){writerCalls+=1;}
+      },
+      dailyWriter:{
+        async write(){writerCalls+=1;}
+      },
+      invoiceWriter:{
+        async commit(){writerCalls+=1;}
+      },
+      documentWorkspace:{},
+      artifactGenerator:async()=>{writerCalls+=1;},
+      outcomeStore,
+      messenger:{async send(){throw new Error("unexpected_coordinator_send");}},
+      personalRules:[],
+      model:"codex",
+      skillVersion:"4.1.0"
+    });
+    const dispatcher=new PersonalAssistantDispatcher({
+      binding:{senderId:"owner",chatId:"private"},
+      bindings:{
+        feishu:{userId:"owner",conversationId:"private"},
+        wechat:{userId:"wx-owner",conversationId:"wx-owner"}
+      },
+      state:{
+        hasOutcome:()=>false,
+        async saveOutcome(key,outcome){saved.push({key,outcome});},
+        async markReplied(key){saved.push({marked:key});}
+      },
+      coordinator,
+      modelMode:{},deepseekEnabled:false,
+      messenger:{async send(value){sent.push(value);}},
+      onFailure:value=>failures.push(value)
+    });
+    const result=await dispatcher.handleIncomingMessage(incoming({
+      source:"wechat",
+      sourceMessageId:`wx-${code}`,
+      userId:"wx-owner",
+      conversationId:"wx-owner",
+      replyTarget:{
+        source:"wechat",
+        sourceMessageId:`wx-${code}`,
+        conversationId:"wx-owner",
+        contextToken:"wechat-context"
+      }
+    }));
+    assert.deepEqual(result,{handled:true,status:"failed"});
+    assert.equal(saved[0].outcome.reasonCode,code);
+    assert.equal(saved[0].outcome.reply,expectedReply);
+    assert.deepEqual(failures,[code]);
+    assert.equal(writerCalls,0);
+    assert.equal(sent.length,1);
+  }
+});
+
 test("reports only a bounded coordinator phase for unknown internal errors",async()=>{
   const saved=[],failures=[];
   const dispatcher=new PersonalAssistantDispatcher({
@@ -195,6 +285,36 @@ test("reports only a bounded coordinator phase for unknown internal errors",asyn
     "save_knowledge_execution_failed"
   );
   assert.deepEqual(failures,["save_knowledge_execution_failed"]);
+});
+
+test("reports a bounded public-video preparation failure without provider detail",async()=>{
+  const saved=[],sent=[],failures=[];
+  const dispatcher=new PersonalAssistantDispatcher({
+    binding:{senderId:"owner",chatId:"private"},
+    bindings:{feishu:{userId:"owner",conversationId:"private"}},
+    state:{
+      hasOutcome:()=>false,
+      async saveOutcome(_key,outcome){saved.push(outcome);},
+      async markReplied(){}
+    },
+    coordinator:{async handle(){
+      const error=new Error("private_provider_response");
+      error.failurePhase="public_video_prepare_failed";
+      throw error;
+    }},
+    modelMode:{},deepseekEnabled:false,
+    messenger:{async send(value){sent.push(value);}},
+    onFailure:code=>failures.push(code)
+  });
+  await dispatcher.handleIncomingMessage(incoming());
+  assert.equal(saved[0].reasonCode,"public_video_prepare_failed");
+  assert.equal(
+    saved[0].reply,
+    "公开视频来源已保留，但音频转写或画面准备失败，本次没有完成分析，也没有确认任何写入；可以直接重试。"
+  );
+  assert.equal(saved[0].reply.includes("private_provider_response"),false);
+  assert.deepEqual(failures,["public_video_prepare_failed"]);
+  assert.equal(sent.length,1);
 });
 
 test("prefers a bounded phase over a generic error message",async()=>{

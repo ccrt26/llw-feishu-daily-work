@@ -7,6 +7,9 @@ import {buildFixtureManifest} from "../scripts/create-v410-media-fixtures.mjs";
 import {
   evaluateGateResult,renderGateReport
 } from "../scripts/v410-media-capability-gate.mjs";
+import {
+  PersonalAssistantDispatcher
+} from "../src/personal-assistant/dispatcher.mjs";
 
 test("fixture manifest labels synthetic bytes as fixed non-private facts",async()=>{
   const root=await mkdtemp(join(tmpdir(),"llw-v410-media-fixtures-"));
@@ -89,3 +92,174 @@ test("gate report contains evidence status without private absolute paths",()=>{
   assert.doesNotMatch(report,/\/Users\/private/u);
   assert.match(report,/<absolute-path>/u);
 });
+
+test("six false phase-0 gates stop WeChat media and web input before the assistant or Writer",async()=>{
+  const gates={
+    nativeVoiceEnabled:false,
+    audioFileEnabled:false,
+    localVideoEnabled:false,
+    webPageEnabled:false,
+    bilibiliEnabled:false,
+    douyinEnabled:false
+  };
+  const cases=[
+    [
+      "native_voice_disabled",
+      incoming({
+        id:"native-voice",
+        attachments:[attachment("voice.amr","amr")]
+      })
+    ],
+    [
+      "audio_file_disabled",
+      incoming({
+        id:"audio-file",
+        attachments:[attachment("meeting.mp3","mp3")]
+      })
+    ],
+    [
+      "local_video_disabled",
+      incoming({
+        id:"local-video",
+        attachments:[attachment("meeting.mp4","mp4")]
+      })
+    ],
+    [
+      "web_page_disabled",
+      incoming({
+        id:"web-page",
+        instructionText:"总结 https://example.com/article"
+      })
+    ],
+    [
+      "bilibili_disabled",
+      incoming({
+        id:"bilibili",
+        instructionText:"总结 https://www.bilibili.com/video/BV1test"
+      })
+    ],
+    [
+      "douyin_disabled",
+      incoming({
+        id:"douyin",
+        instructionText:"总结 https://www.douyin.com/video/123"
+      })
+    ]
+  ];
+  let assistantCalls=0,writerCalls=0,replyFileCount=0;
+  const saved=[];
+  const dispatcher=new PersonalAssistantDispatcher({
+    binding:{senderId:"owner",chatId:"private"},
+    bindings:{
+      feishu:{userId:"owner",conversationId:"private"},
+      wechat:{userId:"wx-owner",conversationId:"wx-owner"}
+    },
+    state:{
+      hasOutcome:()=>false,
+      async saveOutcome(_key,outcome){saved.push(outcome);},
+      async markReplied(){}
+    },
+    coordinator:{
+      async handle(){
+        assistantCalls+=1;
+        writerCalls+=1;
+        return {status:"committed"};
+      }
+    },
+    modelMode:{},deepseekEnabled:false,
+    messenger:{
+      async send(value){replyFileCount+=value.replyFiles.length;}
+    },
+    mediaInputGates:gates
+  });
+  for (const [reasonCode,message] of cases) {
+    const result=await dispatcher.handleIncomingMessage(message);
+    assert.equal(result.status,"rejected");
+    assert.equal(saved.at(-1).reasonCode,reasonCode);
+    assert.deepEqual(saved.at(-1).replyFiles,[]);
+  }
+  assert.equal(assistantCalls,0);
+  assert.equal(writerCalls,0);
+  assert.equal(replyFileCount,0);
+});
+
+test("false media gates do not block ordinary text, image, Office, or PDF turns",async()=>{
+  let assistantCalls=0;
+  const dispatcher=new PersonalAssistantDispatcher({
+    binding:{senderId:"owner",chatId:"private"},
+    bindings:{
+      feishu:{userId:"owner",conversationId:"private"},
+      wechat:{userId:"wx-owner",conversationId:"wx-owner"}
+    },
+    state:{hasOutcome:()=>false},
+    coordinator:{
+      async handle(){
+        assistantCalls+=1;
+        return {status:"committed"};
+      }
+    },
+    modelMode:{},deepseekEnabled:false,
+    messenger:{async send(){}},
+    mediaInputGates:{
+      nativeVoiceEnabled:false,
+      audioFileEnabled:false,
+      localVideoEnabled:false,
+      webPageEnabled:false,
+      bilibiliEnabled:false,
+      douyinEnabled:false
+    }
+  });
+  for (const message of [
+    incoming({id:"plain",instructionText:"总结今天的计划"}),
+    incoming({
+      id:"image",
+      attachments:[{
+        type:"image",sourceAttachmentId:"img",
+        displayName:"图片.png",extension:"png"
+      }]
+    }),
+    incoming({
+      id:"office",
+      attachments:[attachment("材料.docx","docx")]
+    }),
+    incoming({
+      id:"pdf",
+      attachments:[attachment("材料.pdf","pdf")]
+    })
+  ]) {
+    assert.equal(
+      (await dispatcher.handleIncomingMessage(message)).status,
+      "committed"
+    );
+  }
+  assert.equal(assistantCalls,4);
+});
+
+function incoming({
+  id,instructionText="",attachments=[]
+}) {
+  return {
+    source:"wechat",
+    sourceMessageId:id,
+    userId:"wx-owner",
+    conversationId:"wx-owner",
+    receivedAt:"2026-07-30T00:00:00.000Z",
+    instructionText,
+    attachments,
+    replyTarget:{
+      source:"wechat",
+      sourceMessageId:id,
+      conversationId:"wx-owner",
+      contextToken:`ctx-${id}`
+    }
+  };
+}
+
+function attachment(displayName,extension) {
+  return {
+    type:"file",
+    sourceAttachmentId:`resource-${extension}`,
+    displayName,
+    extension
+  };
+}

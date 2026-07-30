@@ -71,8 +71,15 @@ export async function appendDerivedRepresentation({
 }
 
 function validateOriginal(value) {
+  const fields=new Set([
+    "sourceId","relativePath","byteSize","sha256","mime","durationMs"
+  ]);
+  const hasDuration=Object.hasOwn(value??{},"durationMs");
+  const media=typeof value?.mime==="string"&&
+    /^(?:audio|video)\//u.test(value.mime);
   if (!value||typeof value!=="object"||Array.isArray(value)||
-      Object.keys(value).length!==6||
+      Object.keys(value).length!==(hasDuration?6:5)||
+      Object.keys(value).some(key=>!fields.has(key))||
       !SOURCE_ID.test(value.sourceId||"")||
       !safeRelative(value.relativePath)||
       !value.relativePath.startsWith(`${value.sourceId}.`)||
@@ -80,7 +87,10 @@ function validateOriginal(value) {
       !/^[a-f0-9]{64}$/u.test(value.sha256||"")||
       typeof value.mime!=="string"||
       !/^[a-z0-9.+-]+\/[a-z0-9.+-]+$/u.test(value.mime)||
-      !Number.isSafeInteger(value.durationMs)||value.durationMs<1) {
+      (media&&!hasDuration)||
+      (hasDuration&&(
+        !Number.isSafeInteger(value.durationMs)||value.durationMs<1
+      ))) {
     throw new Error("source_sidecar_invalid");
   }
 }

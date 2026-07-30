@@ -8,7 +8,14 @@ const output=values.get("--output");
 const mode=process.env.FAKE_PDFIUM_MODE||"ok";
 const pages=Number(process.env.FAKE_PDFIUM_PAGES||"2");
 const text=process.env.FAKE_PDFIUM_TEXT??"invoice text";
-const png=Buffer.concat([Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a]),Buffer.alloc(24,1)]);
+const png=Buffer.alloc(33,0);
+Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a]).copy(png,0);
+png.writeUInt32BE(13,8);
+png.write("IHDR",12,"ascii");
+png.writeUInt32BE(12,16);
+png.writeUInt32BE(16,20);
+png[24]=8;
+png[25]=6;
 
 if (process.env.FAKE_PDFIUM_ARGS) await writeFile(process.env.FAKE_PDFIUM_ARGS,JSON.stringify(process.argv.slice(2)));
 if (process.env.FAKE_PDFIUM_COUNT) {
@@ -34,6 +41,7 @@ else await writeFile(textFile,text);
 const pageFiles=Array.from({length:pages},(_,index)=>`page-${index+1}.png`);
 for (const [index,name] of pageFiles.entries()) {
   const file=join(output,name);
+  if (mode==="page_missing"&&index===0) continue;
   if (mode==="page_directory"&&index===0) await mkdir(file);
   else if (mode==="page_link"&&index===0) await symlink("/etc/hosts",file);
   else if (mode==="empty_png"&&index===0) await writeFile(file,Buffer.alloc(0));
