@@ -150,6 +150,28 @@ test("submits bounded Base64 M4A and returns strict final video-audio evidence",
   }
 });
 
+test("does not turn the historical 30-minute candidate bound into a product gate",async()=>{
+  const input=await audioFixture();
+  input.durationMs=1_800_001;
+  const {store,value}=adapter({
+    fetchImpl:async url=>url===SUBMIT
+      ?providerResponse({body:null})
+      :providerResponse({body:successBody({
+        audio_info:{duration:1_800_001},
+        result:{additions:{duration:"1800001"}}
+      })})
+  });
+  try {
+    const result=await value.transcribe(input);
+    assert.equal(result.originalDurationMs,1_800_001);
+    assert.deepEqual(store.calls[0],[
+      "reserve",{audioSha256:SHA,durationMs:1_800_001}
+    ]);
+  } finally {
+    await cleanup(input);
+  }
+});
+
 test("rejects unsafe or out-of-contract audio before Keychain, quota or network",async t=>{
   const input=await audioFixture();
   const store=usageStore();
@@ -182,7 +204,7 @@ test("rejects unsafe or out-of-contract audio before Keychain, quota or network"
       {...input,audioFile:broad},
       {...input,audioSha256:"f".repeat(64)},
       {...input,durationMs:0},
-      {...input,durationMs:1_800_001},
+      {...input,durationMs:18_000_000},
       {...input,audioFile:"relative.m4a"}
     ]) {
       await assert.rejects(

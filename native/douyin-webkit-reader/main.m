@@ -176,7 +176,7 @@ static BOOL CompleteAudioFileCoversPlayer(
     videoTracks.count>0||
     !isfinite(seconds)||
     seconds<=0||
-    seconds>7200.0||
+    seconds>=18000.0||
     !AudioTrackProducesSample(asset,audioTracks.firstObject)
   ) {
     return NO;
@@ -228,7 +228,7 @@ static BOOL CompleteVideoFileCoversPlayer(
     audioTracks.count>0||
     !isfinite(seconds)||
     seconds<=0||
-    seconds>7200.0||
+    seconds>=18000.0||
     !LLWAudioDurationMatchesPlayer(
       llround(seconds*1000.0),playerDurationMs
     )
@@ -594,7 +594,7 @@ static BOOL CompleteVideoFileCoversPlayer(
           ?result[@"duration"]:@0;
       BOOL ready=[result[@"ready"] boolValue];
       if (error==nil&&ready&&urls.count>=2&&
-          duration.doubleValue>0&&duration.doubleValue<=7200.0) {
+          duration.doubleValue>0&&duration.doubleValue<18000.0) {
         selfRef.readyPollCount+=1;
         selfRef.maxObservedDuration=MAX(
           selfRef.maxObservedDuration,duration.doubleValue
@@ -903,7 +903,7 @@ static BOOL CompleteVideoFileCoversPlayer(
         audioHash.length!=64||videoHash.length!=64||
         audioBytes<1||audioBytes>kAudioMaxBytes||
         videoBytes<1||videoBytes>kVideoMaxBytes||
-        durationMs<1||durationMs>7200000||
+        durationMs<1||durationMs>=18000000||
         width<1||height<1||width>7680||height>4320) {
       for (NSString *path in created) {
         unlink(path.fileSystemRepresentation);

@@ -47,6 +47,22 @@ test("delegates one canonical public URL and returns audio plus video evidence",
   assert.equal(Object.isFrozen(result.video),true);
 });
 
+test("does not turn the historical two-hour helper bound into a product gate",async()=>{
+  const value=readerResult();
+  value.durationMs=7_200_001;
+  value.audio.durationMs=7_200_001;
+  value.video.durationMs=7_200_001;
+  const adapter=createDouyinPublicAdapter({
+    reader:{async read(){return value;}}
+  });
+
+  const result=await adapter.prepare({
+    url:PAGE_URL,workspaceDir:WORKSPACE
+  });
+
+  assert.equal(result.durationMs,7_200_001);
+});
+
 test("resolves one bounded Douyin share link before reading media",async()=>{
   const fetchCalls=[];
   const readerCalls=[];

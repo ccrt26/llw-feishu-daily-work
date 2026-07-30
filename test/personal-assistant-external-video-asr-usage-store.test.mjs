@@ -78,6 +78,18 @@ test("serializes concurrent duplicate reservations and charges one duration",asy
   }
 });
 
+test("does not turn the historical 30-minute candidate bound into a product gate",async()=>{
+  const value=await fixture();
+  try {
+    const reservation=await value.store.reserve({
+      audioSha256:SHA_A,durationMs:1_800_001
+    });
+    assert.equal(reservation.durationMs,1_800_001);
+  } finally {
+    await cleanup(value);
+  }
+});
+
 test("charges both completed public probes before enforcing the 19-hour cap",async()=>{
   const value=await fixture();
   try {
@@ -251,7 +263,7 @@ test("rejects invalid constructor, reservation and completion values",async()=>{
     for (const request of [
       {audioSha256:"A".repeat(64),durationMs:1_000},
       {audioSha256:SHA_A,durationMs:0},
-      {audioSha256:SHA_A,durationMs:1_800_001}
+      {audioSha256:SHA_A,durationMs:18_000_000}
     ]) {
       await assert.rejects(
         ()=>value.store.reserve(request),

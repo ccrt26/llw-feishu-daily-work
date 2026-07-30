@@ -12,7 +12,7 @@ const QUERY_ENDPOINT=
   "https://openspeech.bytedance.com/api/v3/auc/bigmodel/query";
 const REQUEST_PROFILE="recording_file_standard_base64_m4a_v1";
 const MAX_AUDIO_BYTES=32*1024*1024;
-const MAX_AUDIO_DURATION_MS=30*60*1_000;
+const MAX_AUDIO_DURATION_MS=5*60*60*1_000-1;
 const MAX_RESPONSE_BYTES=2*1024*1024;
 const MAX_TRANSCRIPT_BYTES=512*1024;
 const MAX_UTTERANCES=2_048;

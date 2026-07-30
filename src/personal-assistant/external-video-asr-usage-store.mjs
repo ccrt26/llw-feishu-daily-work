@@ -7,7 +7,7 @@ import {dirname,isAbsolute,join} from "node:path";
 export const VIDEO_ASR_TRIAL_HARD_LIMIT_MS=19*60*60*1_000;
 export const VIDEO_ASR_INITIAL_CONSUMED_MS=516_317;
 
-const MAX_AUDIO_DURATION_MS=30*60*1_000;
+const MAX_AUDIO_DURATION_MS=5*60*60*1_000-1;
 const MAX_ENTRIES=4_096;
 const MAX_STATE_BYTES=2*1024*1024;
 const SHA=/^[a-f0-9]{64}$/u;

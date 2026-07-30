@@ -59,6 +59,7 @@ test("runs the fixed helper without a shell and publishes verified private media
 
 for (const [mode,durationMs,limitations] of [
   ["complete_short",300_000,["bounded_video_prefix"]],
+  ["over_two_hours_complete",7_200_001,[]],
   [
     "long_prefix",
     3_304_600,

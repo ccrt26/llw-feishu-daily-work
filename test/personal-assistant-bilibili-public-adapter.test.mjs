@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {EventEmitter} from "node:events";
-import {mkdtemp,readdir,stat} from "node:fs/promises";
+import {mkdtemp,readdir,rm,stat} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {Readable} from "node:stream";
@@ -10,7 +10,7 @@ import {
   createBilibiliPublicAdapter
 } from "../src/personal-assistant/bilibili-public-adapter.mjs";
 import {
-  AUDIO_BYTES,TEST_AUDIO_URL,TEST_BVID,TEST_DURATION_MS,
+  AUDIO_BYTES,TEST_AUDIO_URL,TEST_BVID,TEST_CID,TEST_DURATION_MS,
   TEST_PAGE_URL,TEST_PLAY_URL,TEST_SHORT_URL,TEST_VIDEO_URL,
   TEST_VIEW_URL,VIDEO_BYTES,jsonResponse,mediaResponse,playBody,
   publicLookup,redirectResponse,syntheticInspector,viewBody
@@ -104,6 +104,34 @@ test("uses the observed anonymous view to playurl contract",async()=>{
   assert.ok(result.audio.file.endsWith(".m4a"));
   assert.ok(result.video.file.endsWith(".mp4"));
   assert.ok(!JSON.stringify(result).includes("signed=test"));
+});
+
+test("does not turn the historical 30-minute candidate bound into a product gate",async()=>{
+  const root=await privateWorkspace("llw-bilibili-over-thirty-");
+  const durationSeconds=1_801;
+  const durationMs=durationSeconds*1_000;
+  const adapter=workingAdapter(async url=>{
+    if (url===TEST_VIEW_URL) {
+      return jsonResponse(viewBody({data:{
+        duration:durationSeconds,
+        pages:[{cid:TEST_CID,page:1,duration:durationSeconds}]
+      }}));
+    }
+    if (url===TEST_PLAY_URL) {
+      return jsonResponse(playBody({data:{timelength:durationMs}}));
+    }
+    if (url===TEST_AUDIO_URL) return mediaResponse(AUDIO_BYTES);
+    if (url===TEST_VIDEO_URL) return mediaResponse(VIDEO_BYTES);
+    throw new Error("unexpected_url");
+  });
+  try {
+    const result=await adapter.prepare({
+      url:TEST_PAGE_URL,workspaceDir:root
+    });
+    assert.equal(result.durationMs,durationMs);
+  } finally {
+    await rm(root,{recursive:true,force:true});
+  }
 });
 
 test("resolves a bounded b23.tv redirect before fixed API calls",async()=>{
@@ -220,7 +248,7 @@ test("rejects malformed or conflicting view control data before playurl",async()
     "not-json",
     viewBody({code:-404}),
     viewBody({data:{bvid:"BV1Different0"}}),
-    viewBody({data:{duration:1_801}}),
+    viewBody({data:{duration:18_000}}),
     viewBody({data:{pages:[]}}),
     viewBody({data:{pages:[
       {cid:1,page:1,duration:12},

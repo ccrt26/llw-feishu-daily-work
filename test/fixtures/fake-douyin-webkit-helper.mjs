@@ -26,6 +26,8 @@ const audioName="douyin-audio.m4a";
 const videoName="douyin-video.mp4";
 const durationMs=mode==="long_prefix"
   ?3_304_600
+  :mode==="over_two_hours_complete"
+    ?7_200_001
   :mode==="complete_short"
     ?300_000
     :64_689;
