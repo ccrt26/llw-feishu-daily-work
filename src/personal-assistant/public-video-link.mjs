@@ -31,7 +31,7 @@ function platformFor(hostname) {
   if (value==="b23.tv"||value==="www.bilibili.com") {
     return "bilibili";
   }
-  if (value==="www.douyin.com") {
+  if (value==="www.douyin.com"||value==="v.douyin.com") {
     return "douyin";
   }
   return null;

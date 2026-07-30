@@ -14,6 +14,7 @@ const PNG_SIGNATURE=Buffer.from([
 ]);
 const MAX_VIDEO_BYTES=128*1024*1024;
 const MAX_DURATION_MS=7*24*60*60*1_000;
+const MAX_DURATION_ROUNDING_MS=1_000;
 const MAX_SAMPLES=192;
 const MAX_FILES=16;
 const MAX_TOTAL_BYTES=100*1024*1024;
@@ -335,7 +336,8 @@ function parseResult({stdout,expectedDurationMs,maxFiles}) {
     value.status!=="ok"||
     value.contract!=="video_timeline_reader_v1"||
     !bounded(value.durationMs,1,MAX_DURATION_MS)||
-    Math.abs(value.durationMs-expectedDurationMs)>5_000||
+    Math.abs(value.durationMs-expectedDurationMs)>
+      MAX_DURATION_ROUNDING_MS||
     !bounded(value.sampleCount,1,MAX_SAMPLES)||
     !bounded(value.maxGapMs,1,MAX_DURATION_MS)||
     !Array.isArray(value.samples)||
@@ -356,7 +358,29 @@ function parseResult({stdout,expectedDurationMs,maxFiles}) {
   }
   validateSamples(value);
   validateSheets(value);
-  return value;
+  return normalizeDurationRounding(value,expectedDurationMs);
+}
+
+function normalizeDurationRounding(value,expectedDurationMs) {
+  if (value.durationMs===expectedDurationMs) return value;
+  const result=structuredClone(value);
+  const lastSample=result.samples.at(-1);
+  const lastSheet=result.sheets.at(-1);
+  if (
+    expectedDurationMs<=lastSample.startMs||
+    lastSample.sampleMs>=expectedDurationMs
+  ) {
+    throw safeError("video_timeline_helper_invalid");
+  }
+  lastSample.endMs=expectedDurationMs;
+  lastSheet.endMs=expectedDurationMs;
+  result.durationMs=expectedDurationMs;
+  result.maxGapMs=Math.max(
+    ...result.samples.map(item=>item.endMs-item.startMs)
+  );
+  validateSamples(result);
+  validateSheets(result);
+  return result;
 }
 
 function validateSamples(value) {

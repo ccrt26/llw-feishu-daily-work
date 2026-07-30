@@ -257,7 +257,7 @@ test("version 5 requires one exact private Skill root, manifest and expected has
   } finally { await rm(dir,{recursive:true,force:true}); }
 });
 
-test("version 7 allows only the independently approved Bilibili gate",async()=>{
+test("version 7 allows only the approved Bilibili and Douyin gates",async()=>{
   const dir=await mkdtemp(join(tmpdir(),"llw-config-v7-"));
   const file=join(dir,"config.json");
   try {
@@ -268,13 +268,23 @@ test("version 7 allows only the independently approved Bilibili gate",async()=>{
     });
     await saveConfig(file,bilibiliConfig);
     assert.deepEqual(await loadConfig(file),bilibiliConfig);
+    const publicVideoConfig=configV7({
+      mediaInputGates:mediaInputGates({
+        bilibiliEnabled:true,
+        douyinEnabled:true
+      })
+    });
+    await saveConfig(file,publicVideoConfig);
+    assert.deepEqual(await loadConfig(file),publicVideoConfig);
     const {douyinEnabled,...missing}=mediaInputGates();
     for (const gates of [
       missing,
       {...mediaInputGates(),extra:false},
       mediaInputGates({audioFileEnabled:"false"}),
       ...Object.keys(mediaInputGates())
-        .filter(field=>field!=="bilibiliEnabled")
+        .filter(field=>
+          !new Set(["bilibiliEnabled","douyinEnabled"]).has(field)
+        )
         .map(field=>
         mediaInputGates({[field]:true})
       )

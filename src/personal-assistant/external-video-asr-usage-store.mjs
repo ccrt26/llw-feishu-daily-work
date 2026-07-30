@@ -5,7 +5,7 @@ import {
 import {dirname,isAbsolute,join} from "node:path";
 
 export const VIDEO_ASR_TRIAL_HARD_LIMIT_MS=19*60*60*1_000;
-export const VIDEO_ASR_INITIAL_CONSUMED_MS=288_250;
+export const VIDEO_ASR_INITIAL_CONSUMED_MS=516_317;
 
 const MAX_AUDIO_DURATION_MS=30*60*1_000;
 const MAX_ENTRIES=4_096;

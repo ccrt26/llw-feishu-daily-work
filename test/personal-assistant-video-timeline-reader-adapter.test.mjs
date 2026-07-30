@@ -52,6 +52,25 @@ test("publishes verified contact sheets covering the complete timeline",async()=
   }
 });
 
+test("normalizes harmless native millisecond rounding to the expected timeline",async()=>{
+  const fixture=await readerFixture({mode:"rounding_ms"});
+  try {
+    const result=await (await fixture.reader()).read({
+      sourceId:"source-001",
+      videoFile:fixture.videoFile,
+      videoSha256:fixture.videoSha256,
+      durationMs:12_000,
+      workspaceDir:fixture.workspaceDir
+    });
+    assert.equal(result.durationMs,12_000);
+    assert.equal(result.samples.at(-1).endMs,12_000);
+    assert.equal(result.images.at(-1).endMs,12_000);
+    assert.equal(result.maxGapMs,4_000);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 for (const [mode,code,limits] of [
   ["missing_tail","video_timeline_helper_invalid",{}],
   ["out_of_order","video_timeline_helper_invalid",{}],

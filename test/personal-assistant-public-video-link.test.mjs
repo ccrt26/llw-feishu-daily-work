@@ -28,6 +28,18 @@ test("extracts one canonical Douyin public-video request from typed text",()=>{
   );
 });
 
+test("extracts one Douyin share short-link from typed text",()=>{
+  assert.deepEqual(
+    extractPublicVideoRequest(
+      "分析这个作品 https://v.douyin.com/hhw45Popmfc/"
+    ),
+    {
+      platform:"douyin",
+      url:"https://v.douyin.com/hhw45Popmfc/"
+    }
+  );
+});
+
 test("leaves ordinary text and unrelated web links unchanged",()=>{
   assert.equal(extractPublicVideoRequest("继续推进"),null);
   assert.equal(

@@ -78,6 +78,12 @@ import {
   createBilibiliPublicAdapter
 } from "./personal-assistant/bilibili-public-adapter.mjs";
 import {
+  createDouyinPublicAdapter
+} from "./personal-assistant/douyin-public-adapter.mjs";
+import {
+  createDouyinWebKitReaderAdapter
+} from "./personal-assistant/douyin-webkit-reader-adapter.mjs";
+import {
   ExternalVideoAsrUsageStore
 } from "./personal-assistant/external-video-asr-usage-store.mjs";
 import {
@@ -97,10 +103,14 @@ import {
   createVolcengineVideoAsrAdapter
 } from "./personal-assistant/volcengine-video-asr-adapter.mjs";
 
-export const BILIBILI_TIMELINE_HELPER_PATH=
+export const VIDEO_TIMELINE_HELPER_PATH=
   "/Users/ccrt/Library/Application Support/LLW Assistant/runtime/video-timeline-reader-v1/video_timeline_reader_v1";
-export const BILIBILI_TIMELINE_HELPER_SHA256=
+export const VIDEO_TIMELINE_HELPER_SHA256=
   "b3b79f1770b49b75223d4a085ba41001256c985a3bde36d3317b9dd90a8f5a3f";
+export const DOUYIN_WEBKIT_HELPER_PATH=
+  "/Users/ccrt/Library/Application Support/LLW Assistant/runtime/douyin-webkit-reader-v1/douyin_webkit_reader_v1";
+export const DOUYIN_WEBKIT_HELPER_SHA256=
+  "1d78fd0141e8ff1efcc575ab41c63221c33d5052880394a507c4fbbe4ff2440c";
 
 const run=promisify(execFile);
 
@@ -222,8 +232,9 @@ async function runPersonalAssistantMain(config) {
     maxFileBytes:config.personalAssistant.maxSourceFileBytes,
     maxTurnSourceBytes:config.personalAssistant.maxTurnSourceBytes
   });
-  const publicVideoRuntime=await createBilibiliProductionComposition({
-    enabled:config.mediaInputGates.bilibiliEnabled,
+  const publicVideoRuntime=await createPublicVideoProductionComposition({
+    bilibiliEnabled:config.mediaInputGates.bilibiliEnabled,
+    douyinEnabled:config.mediaInputGates.douyinEnabled,
     basePreparer:basePrepareTurnSources,
     stateRoot:dirname(config.stateFile)
   });
@@ -407,15 +418,16 @@ async function runPersonalAssistantMain(config) {
   }
 }
 
-export async function createBilibiliProductionComposition({
-  enabled,basePreparer,stateRoot
+export async function createPublicVideoProductionComposition({
+  bilibiliEnabled,douyinEnabled,basePreparer,stateRoot
 }={}) {
-  if (typeof enabled!=="boolean"||
+  if (typeof bilibiliEnabled!=="boolean"||
+      typeof douyinEnabled!=="boolean"||
       typeof basePreparer!=="function"||
       typeof stateRoot!=="string"||!stateRoot.startsWith("/")) {
-    throw new Error("bilibili_production_configuration_invalid");
+    throw new Error("public_video_production_configuration_invalid");
   }
-  if (!enabled) {
+  if (!bilibiliEnabled&&!douyinEnabled) {
     return Object.freeze({
       prepareTurnSources:basePreparer,
       publicVideoReader:null
@@ -433,22 +445,39 @@ export async function createBilibiliProductionComposition({
     keychainAccount:"llw-assistant"
   });
   const timelineReader=createVideoTimelineReaderAdapter({
-    helperPath:BILIBILI_TIMELINE_HELPER_PATH,
-    helperSha256:BILIBILI_TIMELINE_HELPER_SHA256,
+    helperPath:VIDEO_TIMELINE_HELPER_PATH,
+    helperSha256:VIDEO_TIMELINE_HELPER_SHA256,
     tempRoot:timelineTempRoot,
-    jobCwd:dirname(BILIBILI_TIMELINE_HELPER_PATH)
+    jobCwd:dirname(VIDEO_TIMELINE_HELPER_PATH)
   });
-  const bilibiliAdapter=createBilibiliPublicAdapter({
-    inspectMediaHeader:inspectIsoBmffMediaHeader
+  const disabled=platform=>Object.freeze({
+    async prepare() {
+      throw new Error(`${platform}_disabled`);
+    }
   });
+  const bilibiliAdapter=bilibiliEnabled
+    ?createBilibiliPublicAdapter({
+      inspectMediaHeader:inspectIsoBmffMediaHeader
+    })
+    :disabled("bilibili");
+  let douyinAdapter=disabled("douyin");
+  if (douyinEnabled) {
+    const douyinTempRoot=join(stateRoot,"douyin-webkit-jobs");
+    await ensurePrivateRuntimeDirectory(douyinTempRoot);
+    douyinAdapter=createDouyinPublicAdapter({
+      reader:createDouyinWebKitReaderAdapter({
+        helperPath:DOUYIN_WEBKIT_HELPER_PATH,
+        helperSha256:DOUYIN_WEBKIT_HELPER_SHA256,
+        tempRoot:douyinTempRoot,
+        jobCwd:dirname(DOUYIN_WEBKIT_HELPER_PATH),
+        timeoutMs:120_000
+      })
+    });
+  }
   const publicVideoSourcePreparer=createPublicVideoSourcePreparer({
     tempRoot:join(stateRoot,"public-video-intake"),
     bilibiliAdapter,
-    douyinAdapter:Object.freeze({
-      async prepare() {
-        throw new Error("douyin_disabled");
-      }
-    })
+    douyinAdapter
   });
   return Object.freeze({
     prepareTurnSources:createTurnSourcePreparerWithPublicVideo({
@@ -467,7 +496,7 @@ async function ensurePrivateRuntimeDirectory(directory) {
   const info=await lstat(directory);
   if (!info.isDirectory()||info.isSymbolicLink()||
       info.uid!==process.getuid()||(info.mode&0o077)!==0) {
-    throw new Error("bilibili_production_configuration_invalid");
+    throw new Error("public_video_production_configuration_invalid");
   }
 }
 

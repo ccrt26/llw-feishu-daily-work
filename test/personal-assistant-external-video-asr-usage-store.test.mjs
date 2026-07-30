@@ -11,6 +11,10 @@ import {
   VIDEO_ASR_TRIAL_HARD_LIMIT_MS
 } from "../src/personal-assistant/external-video-asr-usage-store.mjs";
 
+test("includes every approved real ASR call in the retained trial baseline",()=>{
+  assert.equal(VIDEO_ASR_INITIAL_CONSUMED_MS,516_317);
+});
+
 const SHA_A="a".repeat(64);
 const SHA_B="b".repeat(64);
 
@@ -84,7 +88,7 @@ test("charges both completed public probes before enforcing the 19-hour cap",asy
       });
     }
     await value.store.reserve({
-      audioSha256:"e".repeat(64),durationMs:1_511_291
+      audioSha256:"e".repeat(64),durationMs:1_283_224
     });
     await assert.rejects(
       ()=>value.store.reserve({audioSha256:SHA_B,durationMs:460}),

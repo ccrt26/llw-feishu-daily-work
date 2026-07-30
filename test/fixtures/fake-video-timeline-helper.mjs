@@ -5,7 +5,7 @@ import {join} from "node:path";
 
 const values=parseArgs(process.argv.slice(2));
 const mode=process.env.LLW_FAKE_TIMELINE_MODE||"ok";
-const durationMs=12_000;
+const durationMs=mode==="rounding_ms"?11_999:12_000;
 const baseSamples=[
   {startMs:0,endMs:4_000,sampleMs:2_000},
   {startMs:4_000,endMs:8_000,sampleMs:6_000},
@@ -13,6 +13,7 @@ const baseSamples=[
 ];
 const samples=structuredClone(baseSamples);
 if (mode==="missing_tail") samples[2].endMs=11_000;
+if (mode==="rounding_ms") samples[2].endMs=11_999;
 if (mode==="out_of_order") [samples[1],samples[2]]=[samples[2],samples[1]];
 
 const count=mode==="too_many_images"?17:1;
@@ -36,7 +37,9 @@ for (let index=0;index<count;index++) {
     width:mode==="wide_image"?4:2,
     height:2,
     startMs:0,
-    endMs:mode==="missing_tail"?11_000:12_000,
+    endMs:new Set(["missing_tail","rounding_ms"]).has(mode)
+      ?samples[2].endMs
+      :12_000,
     firstSampleIndex:0,
     lastSampleIndex:2
   });

@@ -58,11 +58,13 @@ test("version 7 enters one personal-assistant composition before legacy routing"
     "createPublicVideoSourcePreparer",
     "createTurnSourcePreparerWithPublicVideo",
     "TaskPublicVideoReader",
-    "inspectIsoBmffMediaHeader"
+    "inspectIsoBmffMediaHeader",
+    "createDouyinPublicAdapter",
+    "createDouyinWebKitReaderAdapter"
   ]) assert.equal(source.includes(expected),true);
   assert.match(
     source,
-    /config\.mediaInputGates\.bilibiliEnabled[\s\S]*?BILIBILI_TIMELINE_HELPER_PATH[\s\S]*?BILIBILI_TIMELINE_HELPER_SHA256/
+    /config\.mediaInputGates\.bilibiliEnabled[\s\S]*?config\.mediaInputGates\.douyinEnabled[\s\S]*?VIDEO_TIMELINE_HELPER_PATH[\s\S]*?VIDEO_TIMELINE_HELPER_SHA256[\s\S]*?DOUYIN_WEBKIT_HELPER_PATH[\s\S]*?DOUYIN_WEBKIT_HELPER_SHA256/
   );
   assert.match(
     source,
@@ -162,23 +164,25 @@ test("production model selection executes the real V6 wiring",async()=>{
   assert.equal(reads,1);
 });
 
-test("Bilibili production composition stays inert while disabled",async()=>{
+test("public-video production composition stays inert until one approved gate is enabled",async()=>{
   const {
-    createBilibiliProductionComposition
+    createPublicVideoProductionComposition
   }=await import("../src/main.mjs");
   const root=await mkdtemp(join(tmpdir(),"llw-bili-composition-"));
   const basePreparer=async()=>({
     instructionText:"text",sources:[],cleanup:async()=>{}
   });
   try {
-    const disabled=await createBilibiliProductionComposition({
-      enabled:false,basePreparer,stateRoot:root
+    const disabled=await createPublicVideoProductionComposition({
+      bilibiliEnabled:false,douyinEnabled:false,
+      basePreparer,stateRoot:root
     });
     assert.equal(disabled.prepareTurnSources,basePreparer);
     assert.equal(disabled.publicVideoReader,null);
 
-    const enabled=await createBilibiliProductionComposition({
-      enabled:true,basePreparer,stateRoot:root
+    const enabled=await createPublicVideoProductionComposition({
+      bilibiliEnabled:true,douyinEnabled:true,
+      basePreparer,stateRoot:root
     });
     assert.notEqual(enabled.prepareTurnSources,basePreparer);
     assert.equal(

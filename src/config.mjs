@@ -163,9 +163,10 @@ function validateConfig(config,requireBinding,configFile) {
 function validateMediaInputGates(value) {
   exact(value,MEDIA_INPUT_GATE_FIELDS,"media_input_gates");
   if (typeof value.bilibiliEnabled!=="boolean"||
+      typeof value.douyinEnabled!=="boolean"||
       [
         "nativeVoiceEnabled","audioFileEnabled","localVideoEnabled",
-        "webPageEnabled","douyinEnabled"
+        "webPageEnabled"
       ].some(field=>value[field]!==false)) {
     throw new Error("invalid_media_input_gates");
   }
