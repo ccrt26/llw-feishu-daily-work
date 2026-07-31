@@ -137,7 +137,9 @@ export class PersonalAssistantCoordinator {
           workspaceDir:prepared.workspaceDir,
           sources:prepared.sources,
           signal:taskController.signal,
-          now:turnMessage.receivedAt
+          now:turnMessage.receivedAt,
+          onProcessingAccepted:()=>
+            this.sendProcessingReceipt(snapshot)
         });
       }
       phase="content_safety_rejected";
@@ -293,6 +295,29 @@ export class PersonalAssistantCoordinator {
       throw error;
     } finally {
       this.releaseTaskController(snapshot.taskId,taskController);
+    }
+  }
+
+  async sendProcessingReceipt(snapshot) {
+    let reserved=false;
+    try {
+      reserved=await this.taskManager
+        .attemptProcessingReceipt(snapshot);
+    } catch {
+      return false;
+    }
+    if (!reserved) return false;
+    try {
+      await this.messenger.send({
+        capability:"personal-assistant",
+        replyTarget:structuredClone(snapshot.message.replyTarget),
+        text:"已收到，正在处理。",
+        idempotencyKey:`processing:${snapshot.taskId}`,
+        replyFiles:[]
+      });
+      return true;
+    } catch {
+      return false;
     }
   }
 

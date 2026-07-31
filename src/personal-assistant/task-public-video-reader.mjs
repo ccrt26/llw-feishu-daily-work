@@ -27,14 +27,21 @@ export class TaskPublicVideoReader {
     this.timelineReader=timelineReader;
   }
 
-  async prepare({workspaceDir,sources,signal,now}) {
+  async prepare({
+    workspaceDir,sources,signal,now,onProcessingAccepted
+  }) {
     if (typeof workspaceDir!=="string"||!isAbsolute(workspaceDir)||
         !Array.isArray(sources)||sources.length>8||
         !(signal===undefined||signal instanceof AbortSignal)||
+        !(onProcessingAccepted===undefined||
+          typeof onProcessingAccepted==="function")||
         !canonicalIso(now)) {
       throw invalid();
     }
     await privateDirectory(workspaceDir);
+    const notifyProcessingAccepted=onceBestEffort(
+      onProcessingAccepted
+    );
     const observations=[];
     const modelImageFiles=[];
     for (const source of sources) {
@@ -42,7 +49,8 @@ export class TaskPublicVideoReader {
       if (handle.mediaClass!=="video") continue;
       signal?.throwIfAborted();
       const evidence=await this.prepareSource({
-        workspaceDir,source,handle,signal,now
+        workspaceDir,source,handle,signal,now,
+        notifyProcessingAccepted
       });
       observations.push(evidence.observation);
       modelImageFiles.push(...evidence.modelImageFiles);
@@ -54,7 +62,8 @@ export class TaskPublicVideoReader {
   }
 
   async prepareSource({
-    workspaceDir,source,handle,signal,now
+    workspaceDir,source,handle,signal,now,
+    notifyProcessingAccepted
   }) {
     const videoFile=await validateOriginal({
       workspaceDir,source,handle
@@ -102,7 +111,8 @@ export class TaskPublicVideoReader {
         raw=await this.asr.transcribe({
           audioFile,audioSha256,
           durationMs:handle.durationMs,
-          signal
+          signal,
+          onProcessingAccepted:notifyProcessingAccepted
         });
       } catch (error) {
         if (error?.name==="AbortError") throw error;
@@ -158,6 +168,7 @@ export class TaskPublicVideoReader {
       }
     }
     if (timeline===null) {
+      await notifyProcessingAccepted();
       let raw;
       try {
         raw=await this.timelineReader.read({
@@ -228,6 +239,19 @@ export class TaskPublicVideoReader {
       )
     });
   }
+}
+
+function onceBestEffort(operation) {
+  let invoked=false;
+  let result=Promise.resolve();
+  return ()=>{
+    if (invoked) return result;
+    invoked=true;
+    result=typeof operation==="function"
+      ?Promise.resolve().then(operation).catch(()=>{})
+      :Promise.resolve();
+    return result;
+  };
 }
 
 async function ensureSidecar({

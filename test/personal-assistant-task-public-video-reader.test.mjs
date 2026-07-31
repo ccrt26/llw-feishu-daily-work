@@ -17,13 +17,15 @@ const NOW="2026-07-30T06:00:00.000Z";
 
 test("publishes and reloads timestamped transcript plus full-timeline images",async()=>{
   const fixture=await workspaceFixture();
-  let asrCalls=0,timelineCalls=0;
+  let asrCalls=0,timelineCalls=0,processingSignals=0;
   try {
     const reader=new TaskPublicVideoReader({
       asr:{
         async transcribe(input) {
           asrCalls+=1;
           assert.equal(input.audioFile,fixture.audioFile);
+          await input.onProcessingAccepted();
+          await input.onProcessingAccepted();
           return transcriptResult(fixture);
         }
       },
@@ -38,10 +40,12 @@ test("publishes and reloads timestamped transcript plus full-timeline images",as
     const first=await reader.prepare({
       workspaceDir:fixture.root,
       sources:[fixture.source],
-      now:NOW
+      now:NOW,
+      onProcessingAccepted:async()=>{processingSignals+=1;}
     });
     assert.equal(asrCalls,1);
     assert.equal(timelineCalls,1);
+    assert.equal(processingSignals,1);
     assert.equal(first.observations.length,1);
     assert.equal(first.modelImageFiles.length,1);
     const content=JSON.parse(first.observations[0].content);
@@ -53,10 +57,12 @@ test("publishes and reloads timestamped transcript plus full-timeline images",as
     const second=await reader.prepare({
       workspaceDir:fixture.root,
       sources:[fixture.source],
-      now:"2026-07-30T06:01:00.000Z"
+      now:"2026-07-30T06:01:00.000Z",
+      onProcessingAccepted:async()=>{processingSignals+=1;}
     });
     assert.equal(asrCalls,1);
     assert.equal(timelineCalls,1);
+    assert.equal(processingSignals,1);
     assert.deepEqual(second,first);
     assert.equal(
       JSON.parse(await readFile(
@@ -72,17 +78,20 @@ test("publishes and reloads timestamped transcript plus full-timeline images",as
 test("a timeline retry reuses the already durable transcript without another ASR call",async()=>{
   const fixture=await workspaceFixture();
   let asrCalls=0,timelineCalls=0;
+  const events=[];
   try {
     const reader=new TaskPublicVideoReader({
       asr:{
-        async transcribe() {
+        async transcribe(input) {
           asrCalls+=1;
+          await input.onProcessingAccepted();
           return transcriptResult(fixture);
         }
       },
       timelineReader:{
         async read(input) {
           timelineCalls+=1;
+          events.push(`timeline-${timelineCalls}`);
           if (timelineCalls===1) {
             throw new Error("video_timeline_media_invalid");
           }
@@ -94,7 +103,8 @@ test("a timeline retry reuses the already durable transcript without another ASR
       reader.prepare({
         workspaceDir:fixture.root,
         sources:[fixture.source],
-        now:NOW
+        now:NOW,
+        onProcessingAccepted:async()=>{events.push("processing");}
       }),
       /public_video_timeline_failed/
     );
@@ -109,11 +119,15 @@ test("a timeline retry reuses the already durable transcript without another ASR
     const recovered=await reader.prepare({
       workspaceDir:fixture.root,
       sources:[fixture.source],
-      now:"2026-07-30T06:02:00.000Z"
+      now:"2026-07-30T06:02:00.000Z",
+      onProcessingAccepted:async()=>{events.push("processing");}
     });
     assert.equal(recovered.observations.length,1);
     assert.equal(asrCalls,1);
     assert.equal(timelineCalls,2);
+    assert.deepEqual(events,[
+      "processing","timeline-1","processing","timeline-2"
+    ]);
   } finally {
     await rm(fixture.root,{recursive:true,force:true});
   }

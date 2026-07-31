@@ -266,6 +266,82 @@ test("marks source read available when a reader is injected",async()=>{
   }
 });
 
+test("sends one processing receipt without consuming the final Outcome",async()=>{
+  const h=await taskHarness();
+  const sent=[];
+  const coordinator=createTaskCoordinator(h,{
+    publicVideoReader:{
+      async prepare({onProcessingAccepted}) {
+        await onProcessingAccepted();
+        await onProcessingAccepted();
+        return {observations:[],modelImageFiles:[]};
+      }
+    },
+    assistant:{async decide(){
+      return {kind:"reply",text:"视频总结完成。"};
+    }},
+    messenger:{async send(value){
+      sent.push(structuredClone(value));
+    }}
+  });
+  try {
+    await h.manager.accept(taskMessage());
+    const snapshot=await h.manager.claim("feishu");
+    const result=await coordinator.handleTask(snapshot);
+
+    assert.equal(result.outcome.status,"committed");
+    assert.equal(sent.length,2);
+    assert.equal(sent[0].text,"已收到，正在处理。");
+    assert.equal(
+      sent[0].idempotencyKey,
+      `processing:${snapshot.taskId}`
+    );
+    assert.equal(sent[1].text,"视频总结完成。");
+    assert.equal(
+      h.state.getOutcome(`processing:${snapshot.taskId}`),
+      null
+    );
+    assert.equal(h.state.getOutcome("feishu:m1").status,"committed");
+  } finally {
+    await rm(h.root,{recursive:true,force:true});
+  }
+});
+
+test("a processing receipt send failure does not block the final reply",async()=>{
+  const h=await taskHarness();
+  const sent=[];
+  const coordinator=createTaskCoordinator(h,{
+    publicVideoReader:{
+      async prepare({onProcessingAccepted}) {
+        await onProcessingAccepted();
+        return {observations:[],modelImageFiles:[]};
+      }
+    },
+    assistant:{async decide(){
+      return {kind:"reply",text:"最终结果仍然送达。"};
+    }},
+    messenger:{async send(value){
+      if (value.idempotencyKey.startsWith("processing:")) {
+        throw new Error("processing_reply_failed");
+      }
+      sent.push(structuredClone(value));
+    }}
+  });
+  try {
+    await h.manager.accept(taskMessage());
+    const result=await coordinator.handleTask(
+      await h.manager.claim("feishu")
+    );
+
+    assert.equal(result.outcome.status,"committed");
+    assert.equal(sent.length,1);
+    assert.equal(sent[0].text,"最终结果仍然送达。");
+    assert.equal(h.state.getOutcome("feishu:m1").status,"committed");
+  } finally {
+    await rm(h.root,{recursive:true,force:true});
+  }
+});
+
 test("drops an AI reply when a supplement changes the task revision",async()=>{
   const h=await taskHarness();
   const started=deferred(),release=deferred(),sent=[];
