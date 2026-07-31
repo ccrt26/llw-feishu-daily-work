@@ -14,6 +14,10 @@ import {publicTaskContext} from "./task-session.mjs";
 import {
   extractPublicVideoRequest
 } from "./public-video-link.mjs";
+import {
+  MODEL_VISUAL_EVIDENCE_SPLIT_REPLY,
+  planModelVisualEvidence
+} from "./model-visual-evidence-plan.mjs";
 
 export class PersonalAssistantCoordinator {
   constructor({
@@ -168,6 +172,21 @@ export class PersonalAssistantCoordinator {
       ];
       let sourceReadRounds=0;
       while (true) {
+        const visualPlan=planModelVisualEvidence({
+          imageFiles,modelImageFiles
+        });
+        if (visualPlan.kind==="requires_split") {
+          return this.commitTaskResult(snapshot,{
+            status:"rejected",
+            reply:MODEL_VISUAL_EVIDENCE_SPLIT_REPLY,
+            artifacts:[],
+            replyFiles:[],
+            noReplyRequired:false,
+            waiting:null,
+            taskUpdate:null
+          });
+        }
+        modelImageFiles=visualPlan.modelImageFiles;
         phase="agent_turn_context_invalid";
         const context=buildAgentTurnContext({
           message:turnMessage,

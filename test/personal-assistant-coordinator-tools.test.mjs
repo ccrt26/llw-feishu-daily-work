@@ -153,6 +153,78 @@ test("rejects a Feishu cloud-document source in DeepSeek mode before export or A
   assert.equal(sends,1);
 });
 
+test("rejects twenty PDF pages before AI or Writer",async()=>{
+  const h=await taskHarness();
+  let assistantCalls=0,writerCalls=0;
+  const pdfSource=number=>({
+    handle:{
+      sourceId:`source-00${number}`,
+      displayName:`扫描材料${number}.pdf`,
+      mediaClass:"pdf",format:"pdf",
+      relativePath:`source-00${number}.pdf`,
+      byteSize:2_000,sha256:String(number).repeat(64),
+      availability:"ready",instructionRole:"source_content",
+      representationIndexPath:null,limitations:[]
+    },
+    absolutePath:`/private/task/source-00${number}.pdf`,
+    archiveExtension:"pdf"
+  });
+  const pages=[1,2].flatMap(sourceNumber=>
+    Array.from({length:10},(_,index)=>({
+      sourceId:`source-00${sourceNumber}`,
+      relativePath:
+        `source-00${sourceNumber}.page-${String(index+1)
+          .padStart(3,"0")}.png`,
+      sha256:String(sourceNumber).repeat(64),
+      pageNumber:index+1
+    }))
+  );
+  const coordinator=createTaskCoordinator(h,{
+    taskWorkspace:{
+      async prepareAndMerge(){
+        return {
+          workspaceDir:"/private/task",
+          sources:[pdfSource(1),pdfSource(2)],
+          instructionText:"总结两份扫描材料",
+          addedSourceIds:["source-001","source-002"]
+        };
+      }
+    },
+    pdfReader:{async prepare(){
+      return {observations:[],modelImageFiles:pages};
+    }},
+    assistant:{async decide(){
+      assistantCalls+=1;
+      return {kind:"reply",text:"must not run"};
+    }},
+    writer:{async commit(){writerCalls+=1;}}
+  });
+  try {
+    await h.manager.accept(taskMessage({
+      text:"总结两份扫描材料",
+      attachments:[
+        {
+          type:"file",sourceAttachmentId:"p1",
+          displayName:"扫描材料1.pdf",extension:"pdf"
+        },
+        {
+          type:"file",sourceAttachmentId:"p2",
+          displayName:"扫描材料2.pdf",extension:"pdf"
+        }
+      ]
+    }));
+    const result=await coordinator.handleTask(
+      await h.manager.claim("feishu")
+    );
+    assert.equal(result.outcome.status,"rejected");
+    assert.match(result.outcome.reply,/开始新任务/u);
+    assert.equal(assistantCalls,0);
+    assert.equal(writerCalls,0);
+  } finally {
+    await rm(h.root,{recursive:true,force:true});
+  }
+});
+
 test("drops an AI reply when a supplement changes the task revision",async()=>{
   const h=await taskHarness();
   const started=deferred(),release=deferred(),sent=[];
@@ -434,7 +506,7 @@ function createTaskCoordinator(h,overrides={}) {
       workspaceDir:null,sources:[],cleanup:async()=>{}
     }),
     assistant:overrides.assistant,
-    writer:{},dailyWriter:{},invoiceWriter:{},
+    writer:overrides.writer??{},dailyWriter:{},invoiceWriter:{},
     documentWorkspace:overrides.documentWorkspace??{
       async generate(){throw new Error("must_not_generate");},
       async verifyPublished(){return true;}
@@ -453,6 +525,8 @@ function createTaskCoordinator(h,overrides={}) {
     personalRules:[],
     model:"codex",
     skillVersion:"4.1.0",
+    sourceReader:overrides.sourceReader??null,
+    pdfReader:overrides.pdfReader??null,
     publicVideoReader:overrides.publicVideoReader??null,
     taskManager:overrides.taskManager??h.manager,
     taskWorkspace
