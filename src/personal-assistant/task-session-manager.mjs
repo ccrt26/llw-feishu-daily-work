@@ -161,6 +161,26 @@ export class PersonalAssistantTaskSessionManager {
     });
   }
 
+  attemptProcessingReceipt(snapshot) {
+    validateSnapshot(snapshot);
+    const source=snapshot.session.source;
+    return this.mutate(source,async()=>{
+      const attemptedAt=new Date(this.now()).toISOString();
+      const current=await this.load(source,attemptedAt);
+      if (!current||current.status!=="active"||
+          current.taskId!==snapshot.taskId||
+          typeof this.state
+            .reservePersonalAssistantProcessingReceipt!=="function") {
+        return false;
+      }
+      return this.state.reservePersonalAssistantProcessingReceipt({
+        source,
+        taskId:snapshot.taskId,
+        attemptedAt
+      });
+    });
+  }
+
   attachSources(snapshot,{addedSourceIds}) {
     validateSnapshot(snapshot);
     validateAddedSourceIds(addedSourceIds);

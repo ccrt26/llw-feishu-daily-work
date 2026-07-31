@@ -10,6 +10,8 @@ import {
   validateTaskSession as validatePersonalAssistantTaskSession
 } from "./personal-assistant/task-session.mjs";
 
+const PERSONAL_ASSISTANT_TASK_ID=/^[A-Za-z0-9_-]{43}$/u;
+
 export class StateStore {
   constructor(file, data, maxOutcomes, taskSessionPolicy) {
     this.file = file;
@@ -244,6 +246,8 @@ export class StateStore {
       };
     }
     sessions[source]=null;
+    this.data.capabilityState["personal-assistant"]
+      .processingReceiptAttempts[source]=null;
     await this.persist();
     return {
       session:null,
@@ -271,6 +275,11 @@ export class StateStore {
         throw new Error("invalid_personal_assistant_state");
       }
     }
+    if (current===null||
+        validatePersonalAssistantTaskSession(current).taskId!==next.taskId) {
+      this.data.capabilityState["personal-assistant"]
+        .processingReceiptAttempts[source]=null;
+    }
     sessions[source]=next;
     await this.persist();
     return structuredClone(next);
@@ -278,10 +287,45 @@ export class StateStore {
 
   async clearPersonalAssistantTaskSession(source) {
     validateKnowledgeSource(source);
-    const sessions=this.data.capabilityState["personal-assistant"].sessions;
-    if (sessions[source]===null) return;
+    const slot=this.data.capabilityState["personal-assistant"];
+    const sessions=slot.sessions;
+    if (sessions[source]===null&&
+        slot.processingReceiptAttempts[source]===null) return;
     sessions[source]=null;
+    slot.processingReceiptAttempts[source]=null;
     await this.persist();
+  }
+
+  async reservePersonalAssistantProcessingReceipt({
+    source,taskId,attemptedAt
+  }={}) {
+    validateKnowledgeSource(source);
+    if (!PERSONAL_ASSISTANT_TASK_ID.test(taskId||"")||
+        !canonicalIso(attemptedAt)) {
+      throw new Error("invalid_personal_assistant_state");
+    }
+    const slot=this.data.capabilityState["personal-assistant"];
+    const session=slot.sessions[source]===null
+      ?null
+      :validatePersonalAssistantTaskSession(slot.sessions[source]);
+    if (!session||session.status!=="active"||
+        session.taskId!==taskId||
+        Date.parse(attemptedAt)<Date.parse(session.startedAt)||
+        Date.parse(attemptedAt)>Date.parse(session.expiresAt)) {
+      return false;
+    }
+    const current=slot.processingReceiptAttempts[source];
+    if (current?.taskId===taskId) return false;
+    const next={taskId,attemptedAt};
+    validateProcessingReceiptAttempt(next);
+    slot.processingReceiptAttempts[source]=next;
+    try {
+      await this.persist();
+    } catch (error) {
+      slot.processingReceiptAttempts[source]=current;
+      throw error;
+    }
+    return true;
   }
 
   async commitPersonalAssistantTaskStage({
@@ -321,7 +365,14 @@ export class StateStore {
       });
     }
     const previous=structuredClone(sessions[source]);
+    const receiptAttempts=
+      this.data.capabilityState["personal-assistant"]
+        .processingReceiptAttempts;
+    const previousReceiptAttempt=structuredClone(
+      receiptAttempts[source]
+    );
     sessions[source]=next;
+    if (next===null) receiptAttempts[source]=null;
     for (const entry of prepared) {
       this.data.outcomes[entry.key]=entry.value;
     }
@@ -330,6 +381,7 @@ export class StateStore {
       await this.persist();
     } catch (error) {
       sessions[source]=previous;
+      receiptAttempts[source]=previousReceiptAttempt;
       for (const entry of prepared) delete this.data.outcomes[entry.key];
       throw error;
     }
@@ -492,7 +544,8 @@ function emptyState() {
       "task-session":{session:null}
       ,"personal-assistant":{
         conversations:{feishu:null,wechat:null},
-        sessions:{feishu:null,wechat:null}
+        sessions:{feishu:null,wechat:null},
+        processingReceiptAttempts:{feishu:null,wechat:null}
       }
     },
     outcomes: {}
@@ -510,7 +563,8 @@ function migratedState(conversation, outcomes) {
       "task-session":{session:null}
       ,"personal-assistant":{
         conversations:{feishu:null,wechat:null},
-        sessions:{feishu:null,wechat:null}
+        sessions:{feishu:null,wechat:null},
+        processingReceiptAttempts:{feishu:null,wechat:null}
       }
     },
     outcomes: structuredClone(outcomes)
@@ -576,7 +630,8 @@ function ensurePersonalAssistantSlot(data) {
   if (!Object.hasOwn(data.capabilityState,"personal-assistant")) {
     data.capabilityState["personal-assistant"]={
       conversations:{feishu:null,wechat:null},
-      sessions:{feishu:null,wechat:null}
+      sessions:{feishu:null,wechat:null},
+      processingReceiptAttempts:{feishu:null,wechat:null}
     };
     return true;
   }
@@ -584,13 +639,20 @@ function ensurePersonalAssistantSlot(data) {
   let migrated=false;
   if (slot&&typeof slot==="object"&&!Array.isArray(slot)&&
       Object.getPrototypeOf(slot)===Object.prototype&&
-      Object.keys(slot).length===1&&
-      Object.hasOwn(slot,"conversations")) {
+    Object.keys(slot).length===1&&
+    Object.hasOwn(slot,"conversations")) {
     slot.sessions={feishu:null,wechat:null};
     migrated=true;
   }
+  if (slot&&typeof slot==="object"&&!Array.isArray(slot)&&
+      Object.hasOwn(slot,"conversations")&&
+      Object.hasOwn(slot,"sessions")&&
+      !Object.hasOwn(slot,"processingReceiptAttempts")) {
+    slot.processingReceiptAttempts={feishu:null,wechat:null};
+    migrated=true;
+  }
   if (!slot||typeof slot!=="object"||Array.isArray(slot)||
-      Object.keys(slot).length!==2||!slot.conversations||
+      Object.keys(slot).length!==3||!slot.conversations||
       typeof slot.conversations!=="object"||
       Array.isArray(slot.conversations)||
       Object.keys(slot.conversations).length!==2||
@@ -600,7 +662,13 @@ function ensurePersonalAssistantSlot(data) {
       Array.isArray(slot.sessions)||
       Object.keys(slot.sessions).length!==2||
       !Object.hasOwn(slot.sessions,"feishu")||
-      !Object.hasOwn(slot.sessions,"wechat")) {
+      !Object.hasOwn(slot.sessions,"wechat")||
+      !slot.processingReceiptAttempts||
+      typeof slot.processingReceiptAttempts!=="object"||
+      Array.isArray(slot.processingReceiptAttempts)||
+      Object.keys(slot.processingReceiptAttempts).length!==2||
+      !Object.hasOwn(slot.processingReceiptAttempts,"feishu")||
+      !Object.hasOwn(slot.processingReceiptAttempts,"wechat")) {
     throw new Error("invalid_personal_assistant_state");
   }
   for (const source of ["feishu","wechat"]) {
@@ -613,8 +681,24 @@ function ensurePersonalAssistantSlot(data) {
         throw new Error("invalid_personal_assistant_state");
       }
     }
+    validateProcessingReceiptAttempt(
+      slot.processingReceiptAttempts[source]
+    );
   }
   return migrated;
+}
+
+function validateProcessingReceiptAttempt(value) {
+  if (value===null) return;
+  const fields=new Set(["taskId","attemptedAt"]);
+  if (!value||typeof value!=="object"||Array.isArray(value)||
+      Object.getPrototypeOf(value)!==Object.prototype||
+      Object.keys(value).length!==fields.size||
+      Object.keys(value).some(field=>!fields.has(field))||
+      !PERSONAL_ASSISTANT_TASK_ID.test(value.taskId||"")||
+      !canonicalIso(value.attemptedAt)) {
+    throw new Error("invalid_personal_assistant_state");
+  }
 }
 
 function migrateLegacyPersonalAssistantConversations(data) {
