@@ -5,6 +5,9 @@ import {
 } from "node:fs/promises";
 import {isAbsolute,join,relative,resolve} from "node:path";
 import {createSourceHandle} from "./source-handle.mjs";
+import {
+  createKnowledgeEvidenceDigest
+} from "../capabilities/knowledge-ingest/evidence-source-contract.mjs";
 
 const MAX_MANIFEST_BYTES=768*1024;
 const HASH=/^[a-f0-9]{64}$/u;
@@ -54,31 +57,6 @@ export async function resolveKnowledgeEvidence({
         evidenceSources,sourceIds
       })
     });
-  } catch (error) {
-    if (error?.message==="knowledge_evidence_invalid") throw error;
-    reject();
-  }
-}
-
-export function createKnowledgeEvidenceDigest({
-  evidenceSources,sourceIds
-}) {
-  try {
-    if (!Array.isArray(evidenceSources)||!sourceIdList(sourceIds)) reject();
-    const identity=evidenceSources.map(source=>({
-      sourceId:source.sourceId,
-      sha256:source.sha256,
-      derivedEvidence:source.derivedEvidence.map(item=>({
-        kind:item.kind,sha256:item.sha256
-      }))
-    }));
-    return createHash("sha256")
-      .update("llw-knowledge-evidence-v1\0")
-      .update(JSON.stringify({
-        evidenceSources:identity,
-        copiedSourceIds:[...sourceIds].sort()
-      }))
-      .digest("hex");
   } catch (error) {
     if (error?.message==="knowledge_evidence_invalid") throw error;
     reject();

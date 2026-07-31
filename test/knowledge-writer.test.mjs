@@ -7,6 +7,9 @@ import {
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {KnowledgeWriter} from "../src/capabilities/knowledge-ingest/knowledge-writer.mjs";
+import {
+  createKnowledgeEvidenceDigest
+} from "../src/capabilities/knowledge-ingest/evidence-source-contract.mjs";
 
 const FIRST_TEXT="原始交流内容。";
 const FIRST_SHA="8a080d37fb08374496545f410ff755f79b6e1688766f4bae92fd32e1bc787a32";
@@ -424,6 +427,62 @@ test("rejects source paths outside the turn workspace, symlinks and changed hash
   } finally {
     await rm(workspace,{recursive:true,force:true});
     await rm(outside,{recursive:true,force:true});
+    await rm(h.root,{recursive:true,force:true});
+  }
+});
+
+test("writes v3 video evidence without copying media and remains idempotent",async()=>{
+  const h=await harness();
+  const evidenceSources=[{
+    sourceId:"source-001",displayName:"公开视频.mp4",
+    mediaClass:"video",format:"mp4",byteSize:49_536_667,
+    sha256:"a".repeat(64),durationMs:228_067,
+    derivedEvidence:[
+      {
+        kind:"timeline",sha256:"b".repeat(64),
+        limitations:["完整时间线导航"]
+      },
+      {
+        kind:"transcript",sha256:"c".repeat(64),
+        limitations:["时间戳不是逐字级"]
+      }
+    ],
+    limitations:["公开链接临时取得"]
+  }];
+  const sourceSetDigest=createKnowledgeEvidenceDigest({
+    evidenceSources,sourceIds:[]
+  });
+  const input={
+    ...sourceSetInput([]),
+    libraryKey:"personal-knowledge",
+    folderSegments:["视频"],
+    title:"公开视频总结",
+    evidenceSources,sourceSetDigest,
+    skillVersion:"4.2.7"
+  };
+  try {
+    const created=await h.writer.commit(input);
+    assert.equal(created.status,"created");
+    const item=join(h.root,created.relativePath);
+    assert.deepEqual(await readdir(item),["knowledge.md"]);
+    const markdown=await readFile(join(item,"knowledge.md"),"utf8");
+    assert.match(markdown,/llw_schema: "knowledge-item\/v3"/u);
+    assert.match(markdown,/evidence_sources:/u);
+    assert.match(markdown,new RegExp(`sha256: "${"a".repeat(64)}"`,"u"));
+    assert.match(markdown,new RegExp(`sha256: "${"b".repeat(64)}"`,"u"));
+    assert.match(markdown,new RegExp(`sha256: "${"c".repeat(64)}"`,"u"));
+    assert.match(markdown,/sources:\n  \[\]/u);
+    assert.doesNotMatch(markdown,/\/private\/|\/Users\/|absolutePath|relativePath/u);
+    const duplicate=await h.writer.commit({
+      ...input,title:"模型换了标题也不能重复"
+    });
+    assert.equal(duplicate.status,"existing");
+    assert.equal(duplicate.relativePath,created.relativePath);
+    await assert.rejects(
+      h.writer.commit({...input,sourceSetDigest:"f".repeat(64)}),
+      /knowledge_write_rejected/u
+    );
+  } finally {
     await rm(h.root,{recursive:true,force:true});
   }
 });

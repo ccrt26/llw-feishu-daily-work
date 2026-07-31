@@ -3,6 +3,9 @@ import {
   chmod,copyFile,lstat,mkdir,mkdtemp,open,readFile,readdir,realpath,rename,rm
 } from "node:fs/promises";
 import {basename,dirname,isAbsolute,join,relative,resolve,sep} from "node:path";
+import {
+  createKnowledgeEvidenceDigest,normalizeKnowledgeEvidenceSources
+} from "./evidence-source-contract.mjs";
 
 const TEXT_SOURCE_FIELDS=new Set([
   "version","sourceKind","detectedFormat","displayName","sizeBytes","sha256",
@@ -92,11 +95,28 @@ export class KnowledgeWriter {
   async #commitSourceSet(input) {
     let stage="",lock;
     try {
-      validateSourceSetCommitInput(input);
+      const evidenceMode=Object.hasOwn(input??{},"evidenceSources");
+      validateSourceSetCommitInput(input,{evidenceMode});
       const context=await this.#openContext(input.libraryKey);
       const sources=await verifySourceInputs(
-        input.sources,input.sourceSetDigest
+        input.sources,evidenceMode?null:input.sourceSetDigest
       );
+      const evidenceSources=evidenceMode
+        ?normalizeKnowledgeEvidenceSources(input.evidenceSources)
+        :null;
+      if (evidenceMode) {
+        const evidenceById=new Map(
+          evidenceSources.map(source=>[source.sourceId,source])
+        );
+        if (sources.some(source=>
+          evidenceById.get(source.sourceId)?.sha256!==source.sha256
+        )||createKnowledgeEvidenceDigest({
+          evidenceSources,
+          sourceIds:sources.map(source=>source.sourceId)
+        })!==input.sourceSetDigest) {
+          throw new Error("source_digest_invalid");
+        }
+      }
       const knowledgeId=knowledgeIdentifier(
         input.libraryKey,input.sourceSetDigest
       );
@@ -107,7 +127,13 @@ export class KnowledgeWriter {
       const existing=await findExisting(context.libraryReal,knowledgeId);
       if (existing) {
         const verified=await verifySourceSetItem(existing.path,{
-          knowledgeId,sources
+          knowledgeId,sources,
+          ...(evidenceMode
+            ?{
+              schemaVersion:3,sourceSetDigest:input.sourceSetDigest,
+              evidenceSources
+            }
+            :{})
         });
         return resultFor(
           "existing",context,input.libraryKey,knowledgeId,
@@ -122,7 +148,11 @@ export class KnowledgeWriter {
         category.path,`.llw-knowledge-stage-${randomUUID()}-`
       ));
       await chmod(stage,0o700);
-      const markdown=renderSourceSetMarkdown({...input,knowledgeId});
+      const markdown=evidenceMode
+        ?renderEvidenceSourceSetMarkdown({
+          ...input,evidenceSources,knowledgeId
+        })
+        :renderSourceSetMarkdown({...input,knowledgeId});
       await writeSynced(join(stage,"knowledge.md"),markdown);
       for (const source of sources) {
         await verifyOneSourceInput(source);
@@ -133,14 +163,26 @@ export class KnowledgeWriter {
       }
       await syncDirectory(stage);
       await verifySourceSetItem(stage,{
-        knowledgeId,expectedMarkdown:markdown,sources
+        knowledgeId,expectedMarkdown:markdown,sources,
+        ...(evidenceMode
+          ?{
+            schemaVersion:3,sourceSetDigest:input.sourceSetDigest,
+            evidenceSources
+          }
+          :{})
       });
       await assertMissing(target);
       await rename(stage,target);
       stage="";
       await syncDirectory(category.path);
       const verified=await verifySourceSetItem(target,{
-        knowledgeId,expectedMarkdown:markdown,sources
+        knowledgeId,expectedMarkdown:markdown,sources,
+        ...(evidenceMode
+          ?{
+            schemaVersion:3,sourceSetDigest:input.sourceSetDigest,
+            evidenceSources
+          }
+          :{})
       });
       return resultFor(
         "created",context,input.libraryKey,knowledgeId,
@@ -237,11 +279,11 @@ function validateCommitInput(input) {
   validateSegments(input.folderSegments,{allowRoot:true});
 }
 
-function validateSourceSetCommitInput(input) {
+function validateSourceSetCommitInput(input,{evidenceMode}) {
   const fields=new Set([
     "libraryKey","folderSegments","title","summary","tags",
     "knowledgeSections","sources","sourceSetDigest","skillVersion",
-    "ingestedAt"
+    "ingestedAt",...(evidenceMode?["evidenceSources"]:[])
   ]);
   if (!input||typeof input!=="object"||Array.isArray(input)||
       Object.getPrototypeOf(input)!==Object.prototype||
@@ -258,6 +300,7 @@ function validateSourceSetCommitInput(input) {
       input.tags.some(tag=>typeof tag!=="string"||!tag||
         [...tag].length>64||tag.includes("\0"))||
       !Array.isArray(input.sources)||input.sources.length>8||
+      (evidenceMode&&!Array.isArray(input.evidenceSources))||
       !/^[a-f0-9]{64}$/u.test(input.sourceSetDigest||"")||
       !/^\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?$/iu.test(
         input.skillVersion||""
@@ -287,14 +330,16 @@ async function verifySourceInputs(sources,sourceSetDigest) {
     if (total>80*1024*1024) throw new Error("source_set_too_large");
     verified.push({...source});
   }
-  const expected=sources.length
-    ?createHash("sha256").update(
-      sources.map(source=>
-        `${source.sourceId}\0${source.sha256}`
-      ).join("\0")
-    ).digest("hex")
-    :sourceSetDigest;
-  if (expected!==sourceSetDigest) throw new Error("source_digest_invalid");
+  if (sourceSetDigest!==null) {
+    const expected=sources.length
+      ?createHash("sha256").update(
+        sources.map(source=>
+          `${source.sourceId}\0${source.sha256}`
+        ).join("\0")
+      ).digest("hex")
+      :sourceSetDigest;
+    if (expected!==sourceSetDigest) throw new Error("source_digest_invalid");
+  }
   return verified;
 }
 
@@ -649,6 +694,113 @@ function renderSourceSetMarkdown({
   ].join("\n");
 }
 
+function renderEvidenceSourceSetMarkdown({
+  libraryKey,title,summary,tags,knowledgeSections,sources,evidenceSources,
+  sourceSetDigest,skillVersion,ingestedAt,knowledgeId
+}) {
+  const tagLines=tags.length
+    ?tags.map(tag=>`  - ${JSON.stringify(tag)}`).join("\n")
+    :"  []";
+  const evidenceLines=evidenceSources.length
+    ?evidenceSources.flatMap(source=>{
+      const lines=[
+        `  - source_id: ${JSON.stringify(source.sourceId)}`,
+        `    display_name: ${JSON.stringify(source.displayName)}`,
+        `    media_class: ${JSON.stringify(source.mediaClass)}`,
+        `    format: ${JSON.stringify(source.format)}`,
+        `    sha256: ${JSON.stringify(source.sha256)}`,
+        `    size_bytes: ${source.byteSize}`
+      ];
+      if (Object.hasOwn(source,"durationMs")) {
+        lines.push(`    duration_ms: ${source.durationMs}`);
+      }
+      lines.push("    limitations:");
+      lines.push(...yamlStringList(source.limitations,6));
+      lines.push("    derived_evidence:");
+      if (!source.derivedEvidence.length) {
+        lines.push("      []");
+      } else {
+        for (const item of source.derivedEvidence) {
+          lines.push(`      - kind: ${JSON.stringify(item.kind)}`);
+          lines.push(`        sha256: ${JSON.stringify(item.sha256)}`);
+          lines.push("        limitations:");
+          lines.push(...yamlStringList(item.limitations,10));
+        }
+      }
+      return lines;
+    })
+    :["  []"];
+  const sourceLines=sources.length
+    ?sources.flatMap(source=>[
+      `  - source_id: ${JSON.stringify(source.sourceId)}`,
+      `    display_name: ${JSON.stringify(source.displayName)}`,
+      `    format: ${JSON.stringify(source.format)}`,
+      `    file: ${JSON.stringify(`${source.sourceId}.${source.format}`)}`,
+      `    sha256: ${JSON.stringify(source.sha256)}`,
+      `    size_bytes: ${source.byteSize}`
+    ])
+    :["  []"];
+  return [
+    "---",
+    'llw_schema: "knowledge-item/v3"',
+    `knowledge_id: ${JSON.stringify(knowledgeId)}`,
+    `library_key: ${JSON.stringify(libraryKey)}`,
+    `title: ${JSON.stringify(title.normalize("NFC").trim())}`,
+    "tags:",
+    tagLines,
+    `source_set_digest: ${JSON.stringify(sourceSetDigest)}`,
+    `source_ingested_at: ${JSON.stringify(ingestedAt)}`,
+    `skill_version: ${JSON.stringify(skillVersion)}`,
+    "evidence_sources:",
+    ...evidenceLines,
+    "sources:",
+    ...sourceLines,
+    "---",
+    "",
+    `# ${title.normalize("NFC").trim()}`,
+    "",
+    "## 摘要",
+    "",
+    summary.normalize("NFC").trim(),
+    "",
+    "## 关键事实",
+    "",
+    renderList(knowledgeSections.keyFacts),
+    "",
+    "## 结构与主要内容",
+    "",
+    knowledgeSections.structureAndMainContent,
+    "",
+    "## 可复用内容",
+    "",
+    renderList(knowledgeSections.reusableContent),
+    "",
+    "## 来源说明",
+    "",
+    knowledgeSections.sourceNotes,
+    "",
+    "## 结构化原文或内容索引",
+    "",
+    knowledgeSections.contentIndex,
+    "",
+    "## 证据来源索引",
+    "",
+    evidenceSources.length
+      ?evidenceSources.map(source=>
+        `- ${source.sourceId}: ${source.displayName}（${source.mediaClass}/${source.format}，仅保留证据哈希）`
+      ).join("\n")
+      :"- 本知识项没有外部来源证据。",
+    ""
+  ].join("\n");
+}
+
+function yamlStringList(items,indent) {
+  const prefix=" ".repeat(indent);
+  return items.length
+    ?items.map(item=>`${prefix}- ${JSON.stringify(item)}`)
+    :[`${prefix}[]`];
+}
+
 function renderList(items) {
   if (!items.length) return "- （无）";
   return items.map(item=>`- ${item.replace(/\n/gu,"\n  ")}`).join("\n");
@@ -721,7 +873,8 @@ async function verifyItem(path,{knowledgeId,expectedMarkdown,source,preserveSour
 }
 
 async function verifySourceSetItem(path,{
-  knowledgeId,expectedMarkdown,sources
+  knowledgeId,expectedMarkdown,sources,
+  schemaVersion=null,sourceSetDigest=null,evidenceSources=null
 }) {
   const directory=await lstat(path);
   if (!directory.isDirectory()||directory.isSymbolicLink()||
@@ -756,6 +909,28 @@ async function verifySourceSetItem(path,{
   if (!markdown.includes(`knowledge_id: "${knowledgeId}"`)||
       (expectedMarkdown!==undefined&&markdown!==expectedMarkdown)) {
     throw new Error("invalid_item_content");
+  }
+  if (schemaVersion===3) {
+    if (!markdown.includes('llw_schema: "knowledge-item/v3"')||
+        !markdown.includes(
+          `source_set_digest: ${JSON.stringify(sourceSetDigest)}`
+        )||
+        !Array.isArray(evidenceSources)||
+        evidenceSources.some(source=>
+          !markdown.includes(
+            `  - source_id: ${JSON.stringify(source.sourceId)}`
+          )||
+          !markdown.includes(
+            `    sha256: ${JSON.stringify(source.sha256)}`
+          )||
+          source.derivedEvidence.some(item=>
+            !markdown.includes(
+              `        sha256: ${JSON.stringify(item.sha256)}`
+            )
+          )
+        )) {
+      throw new Error("invalid_evidence_item");
+    }
   }
   for (const source of sources) {
     const file=join(path,`${source.sourceId}.${source.format}`);
