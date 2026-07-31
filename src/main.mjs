@@ -117,7 +117,7 @@ const run=promisify(execFile);
 export const V6_PRIVATE_SKILL_ALLOWLIST=[{
   name:"llw-personal-assistant",
   capability:"personal-assistant",
-  versions:["4.2.9"],
+  versions:["4.3.0"],
   semanticTasks:["personal-assistant.turn"],
   modelSupport:["codex","deepseek"],
   enabled:true
@@ -313,7 +313,7 @@ async function runPersonalAssistantMain(config) {
     taskManager,taskWorkspace,pdfReader,
     publicVideoReader:publicVideoRuntime.publicVideoReader,
     model:"codex",
-    skillVersion:"4.2.9"
+    skillVersion:"4.3.0"
   });
   const dispatcher=new PersonalAssistantDispatcher({
     binding,bindings,state,coordinator,modelMode,
