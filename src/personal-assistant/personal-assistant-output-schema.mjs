@@ -14,15 +14,12 @@ export function buildPersonalAssistantOutputSchema(
   const toolNames=tools.map(tool=>tool.name);
   const sourceReadRequestSchema=nullable(strictObject({
     requests:{
-      type:"array",minItems:1,maxItems:8,
+      type:"array",minItems:1,maxItems:1,
       items:strictObject({
         sourceId:{type:"string",pattern:SOURCE_ID_PATTERN},
         view:{
           type:"string",
-          enum:[
-            "probe_media","read_existing_subtitles","transcribe_audio",
-            "build_navigation_overview","inspect_time_range"
-          ]
+          enum:["inspect_time_range"]
         },
         startMs:nullable({type:"integer",minimum:0}),
         endMs:nullable({type:"integer",minimum:1})
@@ -141,16 +138,15 @@ function decodeWithoutToolArguments(value,{allowSourceRead}) {
         if (!exactObject(request,[
           "sourceId","view","startMs","endMs"
         ])) reject();
-        if (request.view==="inspect_time_range") {
-          if (!Number.isSafeInteger(request.startMs)||
-              !Number.isSafeInteger(request.endMs)) reject();
-          return {
-            sourceId:request.sourceId,view:request.view,
-            startMs:request.startMs,endMs:request.endMs
-          };
-        }
-        if (request.startMs!==null||request.endMs!==null) reject();
-        return {sourceId:request.sourceId,view:request.view};
+        if (request.view!=="inspect_time_range"||
+            !Number.isSafeInteger(request.startMs)||
+            !Number.isSafeInteger(request.endMs)||
+            request.endMs<=request.startMs||
+            request.endMs-request.startMs>60_000) reject();
+        return {
+          sourceId:request.sourceId,view:request.view,
+          startMs:request.startMs,endMs:request.endMs
+        };
       })
     };
   }

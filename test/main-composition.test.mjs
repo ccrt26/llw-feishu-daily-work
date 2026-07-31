@@ -58,6 +58,7 @@ test("version 7 enters one personal-assistant composition before legacy routing"
     "createPublicVideoSourcePreparer",
     "createTurnSourcePreparerWithPublicVideo",
     "TaskPublicVideoReader",
+    "SourceReader",
     "inspectIsoBmffMediaHeader",
     "createDouyinPublicAdapter",
     "createDouyinWebKitReaderAdapter"
@@ -72,7 +73,7 @@ test("version 7 enters one personal-assistant composition before legacy routing"
   );
   assert.match(
     source,
-    /new PersonalAssistantCoordinator\(\{[\s\S]*?publicVideoReader:publicVideoRuntime\.publicVideoReader/
+    /new PersonalAssistantCoordinator\(\{[\s\S]*?sourceReader:publicVideoRuntime\.sourceReader[\s\S]*?publicVideoReader:publicVideoRuntime\.publicVideoReader/
   );
   assert.match(
     source,
@@ -183,6 +184,7 @@ test("public-video production composition stays inert until one approved gate is
     });
     assert.equal(disabled.prepareTurnSources,basePreparer);
     assert.equal(disabled.publicVideoReader,null);
+    assert.equal(disabled.sourceReader,null);
 
     const enabled=await createPublicVideoProductionComposition({
       bilibiliEnabled:true,douyinEnabled:true,
@@ -193,6 +195,7 @@ test("public-video production composition stays inert until one approved gate is
       typeof enabled.publicVideoReader.prepare,
       "function"
     );
+    assert.equal(typeof enabled.sourceReader.read,"function");
   } finally {
     await rm(root,{recursive:true,force:true});
   }

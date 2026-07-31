@@ -201,28 +201,43 @@ export class PersonalAssistantCoordinator {
           dailyCandidates
         });
         phase="assistant_model_failed";
+        const allowSourceRead=Boolean(this.sourceReader)&&
+          sourceReadRounds<this.maxSourceReadRounds&&
+          imageFiles.length+modelImageFiles.length<16;
         decision=await this.assistant.decide(context,{
           workspaceDir:prepared.workspaceDir,
           imageFiles,
           modelImageFiles,
-          allowSourceRead:Boolean(this.sourceReader)
+          allowSourceRead
         });
         if (decision.kind!=="source_read") break;
-        if (!this.sourceReader||
-            sourceReadRounds>=this.maxSourceReadRounds) {
+        if (!allowSourceRead) {
           decision={
             kind:"reply",
-            text:"当前只读环境无法继续取得足够的媒体观察，本次没有执行保存或其他写入。"
+            text:"本轮可用的视频区间读取次数或图片容量已经用完，本次没有执行保存或其他写入。"
           };
           break;
         }
         phase="source_read_failed";
-        const evidence=await this.sourceReader.read({
-          requests:decision.requests,
-          sources:prepared.sources,
-          workspaceDir:prepared.workspaceDir,
-          signal:taskController.signal
-        });
+        let evidence;
+        try {
+          evidence=await this.sourceReader.read({
+            requests:decision.requests,
+            sources:prepared.sources,
+            workspaceDir:prepared.workspaceDir,
+            signal:taskController.signal
+          });
+        } catch (error) {
+          if (error?.name==="AbortError") throw error;
+          decision={
+            kind:"reply",
+            text:"未能取得模型请求的视频时间区间画面；本次仅保留已有证据，没有执行保存或其他写入。"
+          };
+          break;
+        }
+        if (!await this.taskManager.isCurrent(snapshot)) {
+          return {status:"stale"};
+        }
         sourceObservations=[
           ...sourceObservations,...(evidence?.observations||[])
         ];

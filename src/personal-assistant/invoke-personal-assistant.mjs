@@ -78,7 +78,7 @@ export async function invokePersonalAssistantCodex({
       :"reply、ask 或 tool_call";
     const sourceReadInstruction=allowSourceRead
       ?[
-        "sourceReadRequest 只填 requests；非 inspect_time_range 请求的 startMs/endMs 必须为 null。这只是请求 Controller 提供只读观察，不是工具调用。"
+        "sourceReadRequest 只允许 inspect_time_range，每次只请求一个与用户问题直接相关且不超过 60 秒的时间区间；填写 sourceId、startMs 和 endMs。这只是请求 Controller 提供只读观察，不是工具调用。"
       ]
       :[];
     const prompt=[

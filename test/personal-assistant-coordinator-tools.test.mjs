@@ -247,6 +247,12 @@ test("marks source read unavailable when no reader is injected",async()=>{
 test("marks source read available when a reader is injected",async()=>{
   const h=await taskHarness();
   const coordinator=createTaskCoordinator(h,{
+    taskWorkspace:{async ensure(){
+      return {
+        workspaceDir:"/private/task",
+        sources:[videoBinding()]
+      };
+    }},
     sourceReader:{async read(){
       throw new Error("must_not_read");
     }},
@@ -261,6 +267,181 @@ test("marks source read available when a reader is injected",async()=>{
       await h.manager.claim("feishu")
     );
     assert.equal(result.outcome.status,"committed");
+  } finally {
+    await rm(h.root,{recursive:true,force:true});
+  }
+});
+
+test("does not advertise source read without one remaining image slot",async()=>{
+  const h=await taskHarness();
+  const coordinator=createTaskCoordinator(h,{
+    sourceReader:{async read(){throw new Error("must_not_read");}},
+    publicVideoReader:{async prepare(){
+      return {
+        observations:[],
+        modelImageFiles:Array.from({length:16},(_,index)=>({
+          sourceId:"source-001",
+          relativePath:`source-001.timeline-${index}.png`,
+          sha256:"a".repeat(64),
+          startMs:index,
+          endMs:index+1
+        }))
+      };
+    }},
+    assistant:{async decide(_context,options){
+      assert.equal(options.allowSourceRead,false);
+      return {kind:"reply",text:"图片预算已用满"};
+    }}
+  });
+  try {
+    await h.manager.accept(taskMessage());
+    const result=await coordinator.handleTask(
+      await h.manager.claim("feishu")
+    );
+    assert.equal(result.outcome.status,"committed");
+  } finally {
+    await rm(h.root,{recursive:true,force:true});
+  }
+});
+
+test("adds one inspected interval observation and image to the next model call",async()=>{
+  const h=await taskHarness();
+  let assistantCalls=0,readerCalls=0;
+  const intervalImage={
+    sourceId:"source-001",
+    relativePath:"source-001.inspect-5000-7000.png",
+    sha256:"b".repeat(64),
+    startMs:5_000,
+    endMs:7_000
+  };
+  const observation={
+    sourceId:"source-001",
+    view:"inspect_time_range",
+    derivedRelativePath:"source-001.inspect-5000-7000.json",
+    sha256:"c".repeat(64),
+    producedBy:"synthetic-range-reader",
+    content:JSON.stringify({startMs:5_000,endMs:7_000}),
+    limitations:["uniform_range_sampling"]
+  };
+  const coordinator=createTaskCoordinator(h,{
+    taskWorkspace:{async ensure(){
+      return {
+        workspaceDir:"/private/task",
+        sources:[videoBinding()]
+      };
+    }},
+    sourceReader:{async read(){
+      readerCalls+=1;
+      return {
+        observations:[observation],
+        modelImageFiles:[intervalImage]
+      };
+    }},
+    assistant:{async decide(context,options){
+      assistantCalls+=1;
+      if (assistantCalls===1) {
+        assert.equal(options.allowSourceRead,true);
+        return {
+          kind:"source_read",
+          requests:[{
+            sourceId:"source-001",
+            view:"inspect_time_range",
+            startMs:5_000,
+            endMs:7_000
+          }]
+        };
+      }
+      assert.equal(options.allowSourceRead,true);
+      assert.deepEqual(options.modelImageFiles,[intervalImage]);
+      assert.deepEqual(context.sourceObservations,[observation]);
+      return {kind:"reply",text:"区间画面已核对"};
+    }}
+  });
+  try {
+    await h.manager.accept(taskMessage());
+    const result=await coordinator.handleTask(
+      await h.manager.claim("feishu")
+    );
+    assert.equal(result.outcome.status,"committed");
+    assert.equal(readerCalls,1);
+    assert.equal(assistantCalls,2);
+  } finally {
+    await rm(h.root,{recursive:true,force:true});
+  }
+});
+
+test("turns an interval backend failure into one truthful zero-write reply",async()=>{
+  const h=await taskHarness();
+  let writerCalls=0;
+  const coordinator=createTaskCoordinator(h,{
+    sourceReader:{async read(){
+      throw new Error("video_timeline_media_invalid");
+    }},
+    assistant:{async decide(){
+      return {
+        kind:"source_read",
+        requests:[{
+          sourceId:"source-001",
+          view:"inspect_time_range",
+          startMs:5_000,
+          endMs:7_000
+        }]
+      };
+    }},
+    writer:{async commit(){writerCalls+=1;}}
+  });
+  try {
+    await h.manager.accept(taskMessage());
+    const result=await coordinator.handleTask(
+      await h.manager.claim("feishu")
+    );
+    assert.equal(result.outcome.status,"committed");
+    assert.match(result.outcome.reply,/未能取得.*时间区间/u);
+    assert.match(result.outcome.reply,/没有执行保存或其他写入/u);
+    assert.equal(writerCalls,0);
+  } finally {
+    await rm(h.root,{recursive:true,force:true});
+  }
+});
+
+test("stops a stale task after interval reading before a second model call",async()=>{
+  const h=await taskHarness();
+  let assistantCalls=0,writerCalls=0;
+  const coordinator=createTaskCoordinator(h,{
+    sourceReader:{async read(){
+      await h.manager.accept(taskMessage({
+        id:"m2",
+        text:"补充：关注最后的数字",
+        receivedAt:"2026-07-28T00:01:00.000Z"
+      }));
+      return {
+        observations:[],
+        modelImageFiles:[]
+      };
+    }},
+    assistant:{async decide(){
+      assistantCalls+=1;
+      return {
+        kind:"source_read",
+        requests:[{
+          sourceId:"source-001",
+          view:"inspect_time_range",
+          startMs:5_000,
+          endMs:7_000
+        }]
+      };
+    }},
+    writer:{async commit(){writerCalls+=1;}}
+  });
+  try {
+    await h.manager.accept(taskMessage());
+    const result=await coordinator.handleTask(
+      await h.manager.claim("feishu")
+    );
+    assert.deepEqual(result,{status:"stale"});
+    assert.equal(assistantCalls,1);
+    assert.equal(writerCalls,0);
+    assert.equal(h.state.getOutcome("feishu:m1"),null);
   } finally {
     await rm(h.root,{recursive:true,force:true});
   }
@@ -680,6 +861,26 @@ function syntheticReplyFile(displayName="result.docx") {
     mime:"application/docx",
     sha256:"a".repeat(64),
     size:100
+  };
+}
+
+function videoBinding() {
+  return {
+    handle:{
+      sourceId:"source-001",
+      displayName:"测试公开视频.mp4",
+      mediaClass:"video",
+      format:"mp4",
+      relativePath:"source-001.mp4",
+      byteSize:100,
+      sha256:"a".repeat(64),
+      availability:"ready",
+      durationMs:20_000,
+      instructionRole:"source_content",
+      representationIndexPath:"source-001.manifest.json",
+      limitations:[]
+    },
+    absolutePath:"/private/task/source-001.mp4"
   };
 }
 

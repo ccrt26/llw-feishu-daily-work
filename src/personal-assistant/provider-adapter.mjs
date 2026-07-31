@@ -15,11 +15,19 @@ export function adaptProviderResult({
         raw.type==="source_read_request"&&
         Object.keys(raw).length===2&&
         Object.hasOwn(raw,"requests")) {
+      const requests=validateSourceReadRequest({
+        raw:raw.requests,
+        availableSources,
+        maxRequests:1,
+        maxRangeMs:60_000,
+        maxTotalRangeMs:60_000
+      });
+      if (requests.some(request=>
+        request.view!=="inspect_time_range"
+      )) reject();
       return {
         kind:"source_read",
-        requests:validateSourceReadRequest({
-          raw:raw.requests,availableSources
-        })
+        requests
       };
     }
     if ((raw.type==="reply"||raw.action==="reply")&&safeText(raw.text,32_000)) {

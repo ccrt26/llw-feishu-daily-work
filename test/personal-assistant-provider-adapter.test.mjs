@@ -107,6 +107,36 @@ test("rejects a Codex source read when the backend capability is disabled",()=>{
     }),
     /provider_result_invalid/u
   );
+  assert.throws(
+    ()=>adaptProviderResult({
+      provider:"codex",
+      raw,
+      availableSources,
+      allowSourceRead:true
+    }),
+    /provider_result_invalid/u
+  );
+  assert.throws(
+    ()=>adaptProviderResult({
+      provider:"codex",
+      raw:{
+        type:"source_read_request",
+        requests:[
+          {
+            sourceId:"source-001",view:"inspect_time_range",
+            startMs:1_000,endMs:2_000
+          },
+          {
+            sourceId:"source-001",view:"inspect_time_range",
+            startMs:2_000,endMs:3_000
+          }
+        ]
+      },
+      availableSources,
+      allowSourceRead:true
+    }),
+    /provider_result_invalid/u
+  );
 });
 
 test("never lets DeepSeek or a mixed envelope request source access",()=>{

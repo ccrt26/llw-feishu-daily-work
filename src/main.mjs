@@ -97,6 +97,9 @@ import {
   TaskPublicVideoReader
 } from "./personal-assistant/task-public-video-reader.mjs";
 import {
+  SourceReader
+} from "./personal-assistant/source-reader.mjs";
+import {
   createVideoTimelineReaderAdapter
 } from "./personal-assistant/video-timeline-reader-adapter.mjs";
 import {
@@ -311,6 +314,7 @@ async function runPersonalAssistantMain(config) {
     personalRules:[],
     personalRulesStore,
     taskManager,taskWorkspace,pdfReader,
+    sourceReader:publicVideoRuntime.sourceReader,
     publicVideoReader:publicVideoRuntime.publicVideoReader,
     model:"codex",
     skillVersion:"4.3.1"
@@ -430,7 +434,8 @@ export async function createPublicVideoProductionComposition({
   if (!bilibiliEnabled&&!douyinEnabled) {
     return Object.freeze({
       prepareTurnSources:basePreparer,
-      publicVideoReader:null
+      publicVideoReader:null,
+      sourceReader:null
     });
   }
   const timelineTempRoot=join(stateRoot,"video-timeline-jobs");
@@ -479,14 +484,26 @@ export async function createPublicVideoProductionComposition({
     bilibiliAdapter,
     douyinAdapter
   });
+  const publicVideoReader=new TaskPublicVideoReader({
+    asr,timelineReader
+  });
+  const sourceReader=new SourceReader({
+    backends:{
+      inspect_time_range:input=>
+        publicVideoReader.inspectTimeRange(input)
+    },
+    maxRequests:1,
+    maxRangeMs:60_000,
+    maxTotalRangeMs:60_000,
+    maxModelImageFiles:1
+  });
   return Object.freeze({
     prepareTurnSources:createTurnSourcePreparerWithPublicVideo({
       basePreparer,
       publicVideoSourcePreparer
     }),
-    publicVideoReader:new TaskPublicVideoReader({
-      asr,timelineReader
-    })
+    publicVideoReader,
+    sourceReader
   });
 }
 

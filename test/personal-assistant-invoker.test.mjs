@@ -256,6 +256,16 @@ test("source-read is absent unless a real backend enables it",()=>{
     enabled.properties.type.enum.includes("source_read_request"),
     true
   );
+  assert.equal(
+    enabled.properties.sourceReadRequest.anyOf[0]
+      .properties.requests.maxItems,
+    1
+  );
+  assert.deepEqual(
+    enabled.properties.sourceReadRequest.anyOf[0]
+      .properties.requests.items.properties.view.enum,
+    ["inspect_time_range"]
+  );
 
   const envelope={
     type:"source_read_request",
@@ -304,7 +314,8 @@ test("Codex prompt advertises source-read only when enabled",async()=>{
     true
   );
   assert.match(
-    enabled.prompt,/sourceReadRequest.*inspect_time_range/su
+    enabled.prompt,
+    /sourceReadRequest.*inspect_time_range.*一个.*60 秒/su
   );
 });
 
@@ -348,18 +359,15 @@ test("decodes every strict Codex envelope into the existing runtime contract",()
       preparedTool:"save_knowledge",preparedRule:null
     }
   );
-  assert.deepEqual(
-    decodePersonalAssistantOutputEnvelopeForTools({
+  assert.throws(
+    ()=>decodePersonalAssistantOutputEnvelopeForTools({
       ...empty,type:"source_read_request",
       sourceReadRequest:{requests:[{
         sourceId:"source-001",view:"transcribe_audio",
         startMs:null,endMs:null
       }]}
     },tools,{allowSourceRead:true}),
-    {
-      type:"source_read_request",
-      requests:[{sourceId:"source-001",view:"transcribe_audio"}]
-    }
+    /assistant_output_invalid/u
   );
   assert.deepEqual(
     decodePersonalAssistantOutputEnvelopeForTools({
