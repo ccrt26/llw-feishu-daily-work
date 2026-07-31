@@ -123,6 +123,7 @@ function executeCli({command,args,cwd,timeoutMs}) {
     const child=spawn(command,args,{
       cwd,stdio:["ignore","pipe","ignore"],
       env:{
+        ...process.env,
         PATH:"/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
         LARKSUITE_CLI_NO_UPDATE_NOTIFIER:"1",
         LARKSUITE_CLI_NO_SKILLS_NOTIFIER:"1",
