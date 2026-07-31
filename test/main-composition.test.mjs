@@ -108,7 +108,7 @@ test("version 7 enters one personal-assistant composition before legacy routing"
   );
   assert.match(
     source,
-    /taskManager,taskWorkspace[\s\S]*?skillVersion:"4\.1\.0"/
+    /taskManager,taskWorkspace[\s\S]*?skillVersion:"4\.2\.7"/
   );
   assert.match(
     source,
@@ -136,7 +136,7 @@ test("version 7 enters one personal-assistant composition before legacy routing"
   assert.deepEqual(V6_PRIVATE_SKILL_ALLOWLIST,[{
     name:"llw-personal-assistant",
     capability:"personal-assistant",
-    versions:["4.1.0"],
+    versions:["4.2.7"],
     semanticTasks:["personal-assistant.turn"],
     modelSupport:["codex","deepseek"],
     enabled:true

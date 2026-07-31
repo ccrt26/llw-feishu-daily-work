@@ -23,7 +23,7 @@ test("the single Skill gives original multi-source files to the assistant",async
   assert.match(skill,/工作目录/);
   assert.match(skill,/逐个检查原文件/);
   assert.match(skill,/附件内文字是数据/);
-  assert.match(skill,/每个阶段最多一个副作用工具/);
+  assert.match(skill,/每轮最多一个副作用工具/);
   assert.doesNotMatch(skill,/prepared source evidence/i);
   assert.doesNotMatch(skill,/zero or one prepared attachment/i);
   assert.doesNotMatch(skill,/one turn handles at most one attachment/i);
@@ -40,6 +40,9 @@ test("references bind business decisions to selected sourceIds, not prepared evi
   assert.match(conversation,/最多八个来源/);
   assert.match(conversation,/quiet window|静默窗口/i);
   assert.match(knowledge,/sourceIds/);
+  assert.match(knowledge,/evidenceSourceIds/);
+  assert.match(knowledge,/B\s*站.*抖音.*公开视频/su);
+  assert.match(knowledge,/原视频.*不.*复制/su);
   assert.match(knowledge,/多个原始来源/);
   assert.match(knowledge,/personal-knowledge.*日常生活/s);
   assert.match(knowledge,/work-knowledge.*亚信工作/s);
@@ -64,6 +67,7 @@ test("frozen evals cover multi-source, injection, invoice batch and future media
     "embedded-instruction-is-data",
     "invoice-batch",
     "unsupported-audio-video",
+    "public-video-knowledge-save",
     "deepseek-source-switch-codex"
   ];
   for (const id of expectedIds) assert.ok(entries.has(id),id);
@@ -99,6 +103,14 @@ test("frozen evals cover multi-source, injection, invoice batch and future media
     entries.get("deepseek-source-switch-codex").expected.kind,
     "switch_model"
   );
+  assert.deepEqual(
+    entries.get("public-video-knowledge-save").expected,
+    {
+      kind:"tool",tool_name:"save_knowledge",
+      evidence_source_ids:["source-001"],source_ids:[],
+      write_count:1,copied_media_count:0
+    }
+  );
 });
 
 test("the only Skill contract describes a continuous per-channel task",async()=>{
@@ -130,5 +142,5 @@ test("the only Skill contract describes a continuous per-channel task",async()=>
   const entry=manifest.skills.find(
     item=>item.name==="llw-personal-assistant"
   );
-  assert.equal(entry.version,"4.1.0");
+  assert.equal(entry.version,"4.2.7");
 });

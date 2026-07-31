@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {createHash} from "node:crypto";
 import {
-  chmod,mkdtemp,rm,writeFile
+  chmod,mkdtemp,mkdir,readFile,readdir,rm,writeFile
 } from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
@@ -35,14 +35,44 @@ import {
   TaskSourceWorkspace
 } from "../src/personal-assistant/task-source-workspace.mjs";
 import {StateStore} from "../src/state-store.mjs";
+import {
+  KnowledgeWriter
+} from "../src/capabilities/knowledge-ingest/knowledge-writer.mjs";
 
-test("a WeChat typed Bilibili link reaches one assistant and reuses durable evidence",async()=>{
-  const root=await mkdtemp(join(tmpdir(),"llw-v425-bili-journey-"));
+test("a WeChat video summary is saved from retained evidence without copying media",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"llw-v427-video-save-"));
   const firstTime=Date.parse("2026-07-30T07:00:00.000Z");
   let nowMs=firstTime;
   let siteCalls=0,asrCalls=0,timelineCalls=0,writerCalls=0;
   try {
     await chmod(root,0o700);
+    await mkdir(join(root,"vault",".obsidian"),{
+      recursive:true,mode:0o700
+    });
+    await mkdir(join(root,"vault",".llw-system"),{
+      recursive:true,mode:0o700
+    });
+    await writeFile(
+      join(root,"vault",".llw-system","SYSTEM_MAP.md"),
+      "# synthetic\n",{mode:0o600}
+    );
+    const workLibrary=join(root,"vault","work-library");
+    const personalLibrary=join(root,"vault","personal-library");
+    await mkdir(workLibrary,{mode:0o700});
+    await mkdir(personalLibrary,{mode:0o700});
+    const knowledgeWriter=new KnowledgeWriter({
+      vaultRoot:join(root,"vault"),
+      libraries:[
+        {
+          libraryKey:"work-knowledge",
+          displayName:"Synthetic Work",aliases:[],root:workLibrary
+        },
+        {
+          libraryKey:"personal-knowledge",
+          displayName:"Synthetic Personal",aliases:[],root:personalLibrary
+        }
+      ]
+    });
     const audioBytes=Buffer.from("0000ftypM4A WeChat journey audio");
     const videoBytes=Buffer.from("0000ftypmp42 WeChat journey video");
     const bilibiliAdapter={
@@ -164,11 +194,30 @@ test("a WeChat typed Bilibili link reaches one assistant and reuses durable evid
         assert.equal(
           evidence.visualTimeline.coverageStatus,"complete"
         );
+        if (decisions.length===1) {
+          return {
+            type:"reply",
+            text:"已结合完整音频转写和全时间线画面完成总结；没有保存。"
+          };
+        }
         return {
-          type:"reply",
-          text:decisions.length===1
-            ?"已结合完整音频转写和全时间线画面完成总结；没有保存。"
-            :"补充说明：画面是全时间线均匀取样，不是逐帧查看；没有保存。"
+          type:"tool_call",toolName:"save_knowledge",
+          arguments:{
+            libraryKey:"personal-knowledge",
+            folderSegments:[],
+            title:"公开视频总结",
+            summary:"视频结合声音和画面说明了真实经营数据。",
+            tags:["视频总结"],
+            evidenceSourceIds:["source-001"],
+            sourceIds:[],
+            knowledgeSections:{
+              keyFacts:["声音中提到真实经营数据。"],
+              structureAndMainContent:"按完整音轨与画面时间线整理。",
+              reusableContent:[],
+              sourceNotes:"公开视频证据，仅保存总结和证据哈希。",
+              contentIndex:"完整音轨转写与完整画面时间线。"
+            }
+          }
         };
       },
       deepseek:async()=>{throw new Error("unexpected_model");}
@@ -180,7 +229,10 @@ test("a WeChat typed Bilibili link reaches one assistant and reuses durable evid
     const coordinator=new PersonalAssistantCoordinator({
       prepareSource:prepareTurnSources,
       assistant,
-      writer:{async commit(){writerCalls+=1;}},
+      writer:{async commit(input){
+        writerCalls+=1;
+        return knowledgeWriter.commit(input);
+      }},
       dailyWriter:{async write(){writerCalls+=1;}},
       invoiceWriter:{async commit(){writerCalls+=1;}},
       outcomeStore:{
@@ -188,7 +240,7 @@ test("a WeChat typed Bilibili link reaches one assistant and reuses durable evid
         markReplied:key=>state.markReplied(key)
       },
       messenger,personalRules:[],model:"codex",
-      skillVersion:"4.1.0",
+      skillVersion:"4.2.7",
       taskManager,taskWorkspace,publicVideoReader
     });
     const dispatcher=new PersonalAssistantDispatcher({
@@ -227,7 +279,7 @@ test("a WeChat typed Bilibili link reaches one assistant and reuses durable evid
         userId:"wx-owner",conversationId:"wx-owner",
         createTimeMs:nowMs,type:"text",
         contextToken:"ctx-bili-2",
-        text:"再说明画面理解的限制，不保存"
+        text:"再帮我入库吧，放在日常生活目录下面"
       })
     );
     assert.equal(second.status,"committed");
@@ -235,9 +287,19 @@ test("a WeChat typed Bilibili link reaches one assistant and reuses durable evid
     assert.equal(siteCalls,1);
     assert.equal(asrCalls,1);
     assert.equal(timelineCalls,1);
-    assert.equal(writerCalls,0);
+    assert.equal(writerCalls,1);
     assert.equal(decisions.length,2);
     assert.equal(sent.length,2);
+    assert.deepEqual(await readdir(personalLibrary),["公开视频总结"]);
+    const knowledgeDir=join(personalLibrary,"公开视频总结");
+    assert.deepEqual(await readdir(knowledgeDir),["knowledge.md"]);
+    const markdown=await readFile(
+      join(knowledgeDir,"knowledge.md"),"utf8"
+    );
+    assert.match(markdown,/llw_schema: "knowledge-item\/v3"/u);
+    assert.match(markdown,/evidence_sources:/u);
+    assert.match(markdown,/sources:\n  \[\]/u);
+    assert.doesNotMatch(markdown,/\/private\/|\/Users\//u);
   } finally {
     await rm(root,{recursive:true,force:true});
   }
