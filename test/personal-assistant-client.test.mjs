@@ -86,7 +86,10 @@ test("validates a Codex observation against only the current source set",async()
   const client=new PersonalAssistantClient({
     codex:async()=>({
       type:"source_read_request",
-      requests:[{sourceId:"source-001",view:"probe_media"}]
+      requests:[{
+        sourceId:"source-001",view:"inspect_time_range",
+        startMs:5_000,endMs:7_000
+      }]
     }),
     deepseek:async()=>{throw new Error("unexpected_deepseek");}
   });
@@ -101,7 +104,10 @@ test("validates a Codex observation against only the current source set",async()
   },{allowSourceRead:true});
   assert.deepEqual(decision,{
     kind:"source_read",
-    requests:[{sourceId:"source-001",view:"probe_media"}]
+    requests:[{
+      sourceId:"source-001",view:"inspect_time_range",
+      startMs:5_000,endMs:7_000
+    }]
   });
 });
 
