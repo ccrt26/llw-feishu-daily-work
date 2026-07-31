@@ -9,85 +9,6 @@ import {
 } from "../src/personal-assistant/task-session-manager.mjs";
 import {StateStore} from "../src/state-store.mjs";
 
-const base={
-  source:"feishu",sourceMessageId:"m1",
-  receivedAt:"2026-07-28T00:00:00.000Z",
-  instructionText:"生成 Word",attachments:[],
-  replyTarget:{source:"feishu",sourceMessageId:"m1",conversationId:"c1"}
-};
-
-test("dispatches create_document through its one registered executor",async()=>{
-  let generated=0,saved=0;
-  const coordinator=new PersonalAssistantCoordinator({
-    prepareSource:async()=>({
-      workspaceDir:"/private/tmp/llw-turn-document-test",
-      sources:[],cleanup:async()=>{}
-    }),
-    assistant:{async decide(){return {kind:"tool",toolCall:{
-      name:"create_document",arguments:{
-        sourceIds:[],format:"docx",title:"交流方案",content:"正文"
-      }
-    }};}},
-    writer:{},dailyWriter:{},invoiceWriter:{},
-    documentWorkspace:{async generate(){
-      generated+=1;
-      return {
-        kind:"docx",path:"/private/output/交流方案.docx",
-        displayName:"交流方案.docx",mime:"application/docx",
-        sha256:"a".repeat(64),size:100
-      };
-    },async verifyPublished(){return true;}},
-    artifactGenerator:async()=>{},
-    outcomeStore:{async get(){return null;},async save(){saved+=1;}},
-    messenger:{async send(){}},personalRules:[],model:"codex",skillVersion:"4.0.1"
-  });
-  const result=await coordinator.handle(base);
-  assert.equal(generated,1);
-  assert.equal(saved,1);
-  assert.equal(result.replyFile.kind,"docx");
-});
-
-test("labels an unknown post-decision failure with its bounded phase",async()=>{
-  const coordinator=new PersonalAssistantCoordinator({
-    prepareSource:async()=>({
-      workspaceDir:"/private/tmp/llw-turn-stage-test",
-      sources:[],cleanup:async()=>{}
-    }),
-    assistant:{async decide(){return {kind:"reply",text:"只读回答"};}},
-    writer:{},dailyWriter:{},invoiceWriter:{},
-    outcomeStore:{async get(){return null;},async save(){}},
-    messenger:{async send(){}},
-    conversationStore:{
-      async get(){return null;},
-      async clear(){throw new Error("private_state_detail");}
-    },
-    personalRules:[],model:"codex",skillVersion:"4.0.1"
-  });
-  await assert.rejects(
-    coordinator.handle({...base,instructionText:"只读回答"}),
-    error=>error.message==="private_state_detail"&&
-      error.failurePhase==="conversation_state_failed"
-  );
-});
-
-test("labels an unknown model-selection failure before source preparation",async()=>{
-  const coordinator=new PersonalAssistantCoordinator({
-    prepareSource:async()=>{throw new Error("must_not_prepare");},
-    assistant:{async decide(){throw new Error("must_not_decide");}},
-    writer:{},dailyWriter:{},invoiceWriter:{},
-    outcomeStore:{async get(){return null;},async save(){}},
-    messenger:{async send(){}},
-    conversationStore:{async get(){return null;}},
-    selectModel:async()=>{throw new Error("private_model_state_detail");},
-    personalRules:[],model:"codex",skillVersion:"4.0.1"
-  });
-  await assert.rejects(
-    coordinator.handle(base),
-    error=>error.message==="private_model_state_detail"&&
-      error.failurePhase==="model_selection_failed"
-  );
-});
-
 test("labels a Douyin workspace acquisition failure as public-video source preparation",async()=>{
   const h=await taskHarness();
   try {
@@ -114,43 +35,35 @@ test("labels a Douyin workspace acquisition failure as public-video source prepa
 });
 
 test("rejects a Feishu cloud-document source in DeepSeek mode before export or AI",async()=>{
-  let prepares=0,assistantCalls=0,saves=0,sends=0;
-  const coordinator=new PersonalAssistantCoordinator({
-    prepareSource:async()=>{
+  const h=await taskHarness({model:"deepseek"});
+  let prepares=0,assistantCalls=0,sends=0;
+  const coordinator=createTaskCoordinator(h,{
+    taskWorkspace:{async prepareAndMerge(){
       prepares+=1;
-      return {
-        instructionText:"总结[飞书文档快照]",
-        workspaceDir:"/private/tmp/must-not-prepare",
-        sources:[],cleanup:async()=>{}
-      };
-    },
+      throw new Error("must_not_prepare");
+    }},
     assistant:{async decide(){
       assistantCalls+=1;
       return {kind:"reply",text:"must not decide"};
     }},
-    writer:{},dailyWriter:{},invoiceWriter:{},
-    outcomeStore:{
-      async get(){return null;},
-      async save(){saves+=1;}
-    },
-    messenger:{async send(){sends+=1;}},
-    selectModel:async()=>"deepseek",
-    personalRules:[],model:"codex",skillVersion:"4.0.1"
+    messenger:{async send(){sends+=1;}}
   });
-  const result=await coordinator.handle({
-    ...base,sourceMessageId:"cloud-deepseek",
-    instructionText:
-      "总结https://example.feishu.cn/docx/synthetic_token",
-    replyTarget:{
-      source:"feishu",sourceMessageId:"cloud-deepseek",conversationId:"c1"
-    }
-  });
-  assert.equal(result.status,"rejected");
-  assert.match(result.reply,/附件任务请先切换为 Codex/u);
-  assert.equal(prepares,0);
-  assert.equal(assistantCalls,0);
-  assert.equal(saves,1);
-  assert.equal(sends,1);
+  try {
+    await h.manager.accept(taskMessage({
+      id:"cloud-deepseek",
+      text:"总结https://example.feishu.cn/docx/synthetic_token"
+    }));
+    const result=await coordinator.handleTask(
+      await h.manager.claim("feishu")
+    );
+    assert.equal(result.outcome.status,"rejected");
+    assert.match(result.outcome.reply,/附件任务请先切换为 Codex/u);
+    assert.equal(prepares,0);
+    assert.equal(assistantCalls,0);
+    assert.equal(sends,1);
+  } finally {
+    await rm(h.root,{recursive:true,force:true});
+  }
 });
 
 test("rejects twenty PDF pages before AI or Writer",async()=>{
@@ -773,7 +686,7 @@ test("keeps one task source available across an AI question and later answer",as
   }
 });
 
-async function taskHarness() {
+async function taskHarness({model="codex"}={}) {
   const root=await mkdtemp(join(tmpdir(),"llw-coordinator-task-"));
   const state=await StateStore.open(join(root,"state.json"));
   const manager=new PersonalAssistantTaskSessionManager({
@@ -782,7 +695,7 @@ async function taskHarness() {
       feishu:{userId:"owner",conversationId:"c1"},
       wechat:{userId:"wx-owner",conversationId:"wx-owner"}
     },
-    selectModel:async()=>"codex",
+    selectModel:async()=>model,
     createId:()=>"T".repeat(43),
     now:()=>Date.parse("2026-07-28T00:01:00.000Z")
   });
@@ -800,9 +713,6 @@ function createTaskCoordinator(h,overrides={}) {
     ...overrides.taskWorkspace
   };
   return new PersonalAssistantCoordinator({
-    prepareSource:async()=>({
-      workspaceDir:null,sources:[],cleanup:async()=>{}
-    }),
     assistant:overrides.assistant,
     writer:overrides.writer??{},dailyWriter:{},invoiceWriter:{},
     documentWorkspace:overrides.documentWorkspace??{
@@ -821,7 +731,6 @@ function createTaskCoordinator(h,overrides={}) {
     },
     messenger:overrides.messenger??{async send(){}},
     personalRules:[],
-    model:"codex",
     skillVersion:"4.1.0",
     sourceReader:overrides.sourceReader??null,
     pdfReader:overrides.pdfReader??null,

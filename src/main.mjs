@@ -131,13 +131,8 @@ async function runMain() {
   const configFile=process.argv[2] ||
     "/Users/ccrt/Library/Application Support/LLW Assistant/state/feishu-daily-work/config.json";
   const config=await loadConfig(configFile);
-  if (config.version===6) {
-    throw new Error("config_migration_required");
-  }
   if (config.version!==7) {
-    const {runLegacyMain}=await import("./legacy-main.mjs");
-    await runLegacyMain(configFile);
-    return;
+    throw new Error("config_migration_required");
   }
   await runPersonalAssistantMain(config);
 }
@@ -298,7 +293,7 @@ async function runPersonalAssistantMain(config) {
     timeoutMs:invoiceConfig.pdfPrepareTimeoutMs
   });
   const coordinator=new PersonalAssistantCoordinator({
-    prepareSource:prepareTurnSources,assistant,
+    assistant,
     writer:new KnowledgeWriter({
       vaultRoot:config.vaultRoot,libraries:knowledgeConfig.libraries
     }),
@@ -316,7 +311,6 @@ async function runPersonalAssistantMain(config) {
     taskManager,taskWorkspace,pdfReader,
     sourceReader:publicVideoRuntime.sourceReader,
     publicVideoReader:publicVideoRuntime.publicVideoReader,
-    model:"codex",
     skillVersion:"4.3.2"
   });
   const dispatcher=new PersonalAssistantDispatcher({

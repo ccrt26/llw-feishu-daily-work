@@ -8,7 +8,6 @@ import {
   classifyDisabledMediaInput,DEFAULT_MEDIA_INPUT_GATES,
   isUnsupportedMediaExtension,normalizeMediaInputGates
 } from "../core/media-support.mjs";
-import {isConversationCancellation} from "./conversation.mjs";
 import {SourceBurstCollector} from "./source-burst-collector.mjs";
 import {
   classifyTaskControl
@@ -17,9 +16,8 @@ import {
 export class PersonalAssistantDispatcher {
   constructor({
     binding,bindings,state,coordinator,modelMode,deepseekEnabled,messenger,
-    taskManager=null,taskWorkspace=null,cancelTaskWork=async()=>{},
-    onFailure=()=>{},coalesceWindowMs=0,
-    sourceBurstQuietMs=coalesceWindowMs,
+    taskManager,taskWorkspace=null,cancelTaskWork=async()=>{},
+    onFailure=()=>{},sourceBurstQuietMs=0,
     sourceBurstMaxMs=sourceBurstQuietMs?15_000:0,
     sourceBurstAttachmentQuietMs=sourceBurstQuietMs,
     mediaInputGates=DEFAULT_MEDIA_INPUT_GATES,
@@ -39,7 +37,8 @@ export class PersonalAssistantDispatcher {
     this.messenger=messenger;
     this.onFailure=typeof onFailure==="function"?onFailure:()=>{};
     this.mediaInputGates=normalizeMediaInputGates(mediaInputGates);
-    if (!Number.isSafeInteger(sourceBurstQuietMs)||
+    if (!taskManager||
+        !Number.isSafeInteger(sourceBurstQuietMs)||
         sourceBurstQuietMs<0||sourceBurstQuietMs>5_000||
         !Number.isSafeInteger(sourceBurstAttachmentQuietMs)||
         (sourceBurstQuietMs===0&&(
@@ -62,22 +61,9 @@ export class PersonalAssistantDispatcher {
         attachmentQuietMs:sourceBurstAttachmentQuietMs,
         maxMs:sourceBurstMaxMs,
         maxSources:maxSourcesPerTurn,now,setTimer,clearTimer,
-        onReady:({message,aliases})=>this.taskManager
-          ?this.scheduleTask(message.source)
-          :this.scheduleAccepted(message,aliases)
+        onReady:({message})=>this.scheduleTask(message.source)
       })
       :null;
-  }
-
-  handleRawEvent(raw) {
-    return this.enqueue(()=>this.processRawEvent(raw));
-  }
-
-  handleIncomingMessage(message) {
-    if (this.taskManager) {
-      return this.handleTaskIncomingMessage(message);
-    }
-    return this.enqueue(()=>this.processIncomingMessage(message));
   }
 
   acceptRawEvent(raw) {
@@ -128,30 +114,7 @@ export class PersonalAssistantDispatcher {
       this.scheduleUnsupportedMedia(message,unsupportedMediaCommand());
       return {handled:true,status:"rejected"};
     }
-    if (this.taskManager) {
-      return this.acceptTaskInput(message);
-    }
-    if (!this.sourceCollector) {
-      this.scheduleAccepted(message);
-      return {handled:true,status:"accepted"};
-    }
-    if (isConversationCancellation(message.instructionText)) {
-      const cancelled=this.sourceCollector.cancel(message);
-      if (cancelled.messages.length) {
-        this.scheduleAliasOutcomes(cancelled.messages,"cancelled");
-      }
-      this.scheduleAccepted(message);
-      return {handled:true,status:"accepted"};
-    }
-    const collected=this.sourceCollector.accept(message);
-    if (collected.status==="rejected") {
-      this.scheduleRejectedSource(message);
-      return {handled:true,status:"rejected"};
-    }
-    if (collected.reason==="duplicate") {
-      return {handled:false,reason:"duplicate"};
-    }
-    return {handled:true,status:"accepted"};
+    return this.acceptTaskInput(message);
   }
 
   async handleTaskIncomingMessage(message) {
@@ -469,23 +432,6 @@ export class PersonalAssistantDispatcher {
     this.trackTask(task,[key]);
   }
 
-  scheduleAliasOutcomes(messages,reasonCode) {
-    const keys=messages.map(personalOutcomeKey);
-    const task=this.enqueue(async()=>{
-      for (let index=0;index<messages.length;index+=1) {
-        const key=keys[index];
-        if (this.state.hasOutcome(key)) continue;
-        await this.state.saveOutcome(key,{
-          capability:"personal-assistant",
-          status:"ignored",reply:null,artifacts:[],replyFiles:[],
-          noReplyRequired:true,reasonCode,
-          createdAt:new Date().toISOString()
-        });
-      }
-    });
-    this.trackTask(task,keys);
-  }
-
   trackTask(task,keys=[]) {
     for (const key of keys) this.acceptedMessageKeys.add(key);
     this.acceptedTasks.add(task);
@@ -509,100 +455,6 @@ export class PersonalAssistantDispatcher {
     const next=this.queue.then(operation);
     this.queue=next.catch(()=>{});
     return next;
-  }
-
-  scheduleAccepted(message,aliases=[]) {
-    const messages=[message,...aliases];
-    const keys=messages.map(personalOutcomeKey);
-    const task=this.enqueue(async()=>{
-      const result=await this.processIncomingMessage(message);
-      if (aliases.length) {
-        await this.saveCoalescedAliases(aliases);
-      }
-      return result;
-    });
-    this.trackTask(task,keys);
-  }
-
-  async saveCoalescedAliases(messages) {
-    for (const message of messages) {
-      const key=personalOutcomeKey(message);
-      if (this.state.hasOutcome(key)) continue;
-      await this.state.saveOutcome(key,{
-        capability:"personal-assistant",
-        status:"ignored",reply:null,artifacts:[],replyFiles:[],
-        noReplyRequired:true,reasonCode:"coalesced_into_turn",
-        createdAt:new Date().toISOString()
-      });
-    }
-  }
-
-  async processRawEvent(raw) {
-    let event;
-    try {
-      event=normalizeEvent(raw);
-    } catch {
-      return {handled:false,reason:"invalid_event"};
-    }
-    const security=checkSecurity(event,this.binding);
-    if (!security.ok) return {handled:false,reason:security.reason};
-    let message;
-    try {
-      message=createFeishuIncomingMessage(event);
-    } catch {
-      return {handled:false,reason:"invalid_message"};
-    }
-    return this.processIncomingMessage(message);
-  }
-
-  async processIncomingMessage(message) {
-    const security=checkIncomingSecurity(message,this.bindings);
-    if (!security.ok) return {handled:false,reason:security.reason};
-    if (!message.instructionText.trim()&&!message.attachments.length) {
-      return {handled:false,reason:"empty_message"};
-    }
-    const key=personalOutcomeKey(message);
-    if (this.state.hasOutcome(key)) {
-      return {handled:false,reason:"duplicate"};
-    }
-    const mediaGate=classifyDisabledMediaInput(
-      message,this.mediaInputGates
-    );
-    if (mediaGate) {
-      await this.persistAndSendCommand(
-        key,message,mediaInputGateCommand(mediaGate)
-      );
-      return {handled:true,status:"rejected"};
-    }
-    if (hasUnsupportedMedia(message)) {
-      await this.persistAndSendCommand(
-        key,message,unsupportedMediaCommand()
-      );
-      return {handled:true,status:"rejected"};
-    }
-    if (!message.attachments.length) {
-      const command=await handleModelCommand(message.instructionText,{
-        modelMode:this.modelMode,deepseekEnabled:this.deepseekEnabled
-      });
-      if (command) {
-        await this.persistAndSendCommand(key,message,command);
-        return {handled:true,status:command.status};
-      }
-    }
-    try {
-      const outcome=await this.coordinator.handle(message);
-      return {handled:true,status:outcome.status};
-    } catch (error) {
-      if (this.state.hasOutcome(key)) throw error;
-      const reasonCode=boundedFailureCode(error);
-      try { this.onFailure(reasonCode); } catch {}
-      await this.persistAndSendCommand(key,message,{
-        status:"failed",
-        reply:failureReply(reasonCode),
-        reasonCode
-      });
-      return {handled:true,status:"failed"};
-    }
   }
 
   async persistAndSendCommand(key,message,draft) {

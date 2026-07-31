@@ -5,12 +5,9 @@ import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {fileURLToPath} from "node:url";
 
-test("version 7 production entry does not statically load legacy routing layers",async()=>{
+test("production entry accepts only V7 and loads no retired routing layer",async()=>{
   const main=await readFile(
     fileURLToPath(new URL("../src/main.mjs",import.meta.url)),"utf8"
-  );
-  const legacy=await readFile(
-    fileURLToPath(new URL("../src/legacy-main.mjs",import.meta.url)),"utf8"
   );
   for (const forbidden of [
     "feishu-intent-router",
@@ -24,20 +21,18 @@ test("version 7 production entry does not statically load legacy routing layers"
   ]) assert.equal(main.includes(forbidden),false,forbidden);
   assert.match(
     main,
-    /if \(config\.version===6\) \{\s*throw new Error\("config_migration_required"\);\s*\}[\s\S]*?if \(config\.version!==7\) \{\s*const \{runLegacyMain\}=await import\("\.\/legacy-main\.mjs"\)/
+    /if \(config\.version!==7\) \{\s*throw new Error\("config_migration_required"\);\s*\}/
   );
-  assert.match(legacy,/feishu-intent-router/);
-  assert.match(legacy,/buildCapabilityRegistry/);
-  assert.match(legacy,/createRouterTextTask/);
+  assert.equal(main.includes("legacy-main"),false);
 });
 
-test("version 7 enters one personal-assistant composition before legacy routing",async()=>{
+test("version 7 enters one personal-assistant composition",async()=>{
   const source=await readFile(
     fileURLToPath(new URL("../src/main.mjs",import.meta.url)),"utf8"
   );
   assert.match(
     source,
-    /if \(config\.version===6\) \{[\s\S]*?config_migration_required[\s\S]*?\}[\s\S]*?if \(config\.version!==7\) \{[\s\S]*?runLegacyMain\(configFile\);[\s\S]*?return;[\s\S]*?\}\s*await runPersonalAssistantMain\(config\);/
+    /if \(config\.version!==7\) \{[\s\S]*?config_migration_required[\s\S]*?\}\s*await runPersonalAssistantMain\(config\);/
   );
   for (const expected of [
     "PersonalAssistantClient","createAssistantSourcePreparer",
@@ -160,7 +155,7 @@ test("version 7 enters one personal-assistant composition before legacy routing"
   );
 });
 
-test("version 6 explicitly migrates a live per-channel waiting conversation",async()=>{
+test("startup explicitly migrates a live per-channel waiting conversation",async()=>{
   const source=await readFile(
     fileURLToPath(new URL("../src/main.mjs",import.meta.url)),"utf8"
   );
@@ -170,7 +165,7 @@ test("version 6 explicitly migrates a live per-channel waiting conversation",asy
   );
 });
 
-test("production model selection executes the real V6 wiring",async()=>{
+test("production model selection executes the unified wiring",async()=>{
   const {createPersonalAssistantModelSelector}=await import("../src/main.mjs");
   let reads=0;
   const selectModel=createPersonalAssistantModelSelector({
@@ -244,125 +239,7 @@ test("main validates one protected PDFium runtime before state and injects one b
   for (const legacy of ["pdfInfoPath","pdfToTextPath","pdfToPpmPath","validatePdfTools"]) assert.equal(source.includes(legacy),false);
 });
 
-test("legacy rollback module retains its routing contracts without entering the V6 composition",async () => {
-  const source=await readFile(fileURLToPath(new URL("../src/legacy-main.mjs",import.meta.url)),"utf8");
-  assert.match(source,/import \{loadPrivateSkillManifest\} from "\.\/core\/private-skill-manifest\.mjs"/);
-  assert.match(source,/import \{loadRoutingContract\} from "\.\/core\/routing-contract\.mjs"/);
-  assert.match(source,/import \{validateIntentRouterSkill\} from "\.\/core\/intent-router-client\.mjs"/);
-  assert.match(source,/createAssistantWorkTask/);
-  assert.match(source,/import \{createPreparedVisualRunner\} from "\.\/core\/prepared-visual\.mjs"/);
-  assert.match(source,/import \{parseInvoiceResource\} from "\.\/capabilities\/invoice\/resource-marker\.mjs"/);
-  assert.match(source,/import \{ModelMode\} from "\.\/core\/model-mode\.mjs"/);
-  assert.match(source,/deepseekModel:config\.deepseekModel/);
-  assert.match(source,/deepseekKeychainService:config\.deepseekKeychainService/);
-  assert.match(source,/deepseekKeychainAccount:config\.deepseekKeychainAccount/);
-  assert.match(source,/deepseekEnabled:config\.deepseekEnabled/);
-  for (const name of [
-    "feishu-intent-router","feishu-daily-work","filing-invoices",
-    "llw-knowledge-ingest","llw-assistant-work"
-  ]) assert.match(source,new RegExp(name));
-  assert.match(source,/name:"feishu-intent-router",capability:"router",versions:\["1\.2\.0"\]/);
-  assert.match(source,/name:"llw-knowledge-ingest",capability:"knowledge-ingest",versions:\["1\.3\.0"\][\s\S]*?enabled:true/);
-  assert.match(source,/name:"llw-assistant-work",capability:"assistant-work",versions:\["1\.1\.0"\][\s\S]*?enabled:true/);
-  assert.ok(source.indexOf("await loadPrivateSkillManifest")<source.indexOf("StateStore.open"));
-  const legacyRouterValidation=source.indexOf(
-    "await validateIntentRouterSkill(routerSkillRoot)"
-  );
-  assert.ok(
-    legacyRouterValidation<
-      source.indexOf("StateStore.open",legacyRouterValidation)
-  );
-  assert.match(source,/loadRoutingContract\(dailySkillRoot,"daily-work"\)/);
-  assert.match(source,/loadRoutingContract\(invoiceSkillRoot,"invoice"\)/);
-  assert.equal(source.includes('join(config.vaultRoot,".agents","skills","feishu-intent-router")'),false);
-  assert.match(source,/createDailyWorkInterpretTask\(\{[\s\S]*?skillRoot:dailySkillRoot/);
-  assert.match(source,/createInvoiceVisualTask\(\{[\s\S]*?skillRoot:invoiceSkillRoot/);
-  assert.match(source,/knowledgeIngest:knowledgeCapability/);
-  assert.match(source,/assistantWork:assistantCapability/);
-  assert.match(source,/taskSessionManager/);
-  assert.match(source,/const routerText=createRouterTextTask\(\{/);
-  assert.match(source,/const routerVisual=createRouterVisualTask\(\{/);
-  assert.match(source,/const dailyWorkInterpret=createDailyWorkInterpretTask\(\{/);
-  assert.match(source,/const invoiceVisual=createInvoiceVisualTask\(\{/);
-  assert.match(source,/decide:dailyWorkInterpret/);
-  assert.match(source,/decide:invoiceVisual/);
-  assert.match(source,/const withPreparedVisual=createPreparedVisualRunner\(\{/);
-  assert.match(source,/preparePdf\n\}\)/);
-  assert.match(source,/const intentRouter=\{decide:routerText,decideVisual:routerVisual\}/);
-});
-
-test("allows assistant work statically but requires the protected configuration gate",async()=>{
-  const source=await readFile(fileURLToPath(new URL("../src/legacy-main.mjs",import.meta.url)),"utf8");
-  for (const expected of [
-    "createAssistantWorkCapability","createAssistantWorkTask","TaskSessionManager",
-    "TaskWorkspace","searchKnowledge","loadKnowledgeSources"
-  ]) assert.equal(source.includes(expected),true);
-  assert.match(source,/const assistantEnabled=assistantCandidateEnabled\(\{/);
-  assert.match(source,/allowlistEnabled:assistantPolicy\.enabled/);
-  assert.match(source,/configurationEnabled:assistantConfig\?\.enabled/);
-  assert.match(source,/"assistant-work":assistantEnabled/);
-  const {
-    PRIVATE_SKILL_ALLOWLIST,assistantCandidateEnabled
-  }=await import("../src/legacy-main.mjs");
-  const policy=PRIVATE_SKILL_ALLOWLIST.find(item=>item.name==="llw-assistant-work");
-  assert.equal(policy.enabled,true);
-  assert.equal(assistantCandidateEnabled({
-    allowlistEnabled:policy.enabled,configurationEnabled:false
-  }),false);
-  assert.equal(assistantCandidateEnabled({
-    allowlistEnabled:true,configurationEnabled:false
-  }),false);
-  assert.equal(assistantCandidateEnabled({
-    allowlistEnabled:false,configurationEnabled:true
-  }),false);
-  assert.equal(assistantCandidateEnabled({
-    allowlistEnabled:true,configurationEnabled:true
-  }),true);
-});
-
-test("allows knowledge ingest statically but requires the protected configuration gate",async()=>{
-  const source=await readFile(fileURLToPath(new URL("../src/legacy-main.mjs",import.meta.url)),"utf8");
-  for (const expected of [
-    'createKnowledgeIngestCapability',
-    'createKnowledgeIngestTask',
-    'createKnowledgeLibraryCatalog',
-    'prepareKnowledgeText',
-    'prepareKnowledgeFile',
-    'KnowledgeWriter',
-    'prepareKnowledgeOfficeFile',
-    'createFeishuDocumentExporter'
-  ]) assert.equal(source.includes(expected),true);
-  assert.match(source,/const knowledgeEnabled=knowledgeCandidateEnabled\(\{/);
-  assert.match(source,/allowlistEnabled:knowledgePolicy\.enabled/);
-  assert.match(source,/configurationEnabled:knowledgeConfig\?\.enabled/);
-  assert.match(source,/if \(knowledgeEnabled\) \{/);
-  assert.match(source,/knowledgeIngest:knowledgeCapability/);
-  assert.match(source,/"knowledge-ingest":knowledgeEnabled/);
-  assert.match(source,/allowedFileExtensions:\["txt","md","docx","pptx","xlsx"\]/);
-  assert.match(source,/documentExporter:feishuDocumentExporter\.exportSnapshot/);
-  assert.match(source,/onFailureStage:\(\{code,stderrBytes,retryCount\}\)=>/);
-  assert.match(source,/safeLog\(\{stage:"analyze",code,stderrBytes,retryCount\}\)/);
-  assert.equal(source.includes("console.log(knowledge"),false);
-  const {
-    PRIVATE_SKILL_ALLOWLIST,knowledgeCandidateEnabled
-  }=await import("../src/legacy-main.mjs");
-  const policy=PRIVATE_SKILL_ALLOWLIST.find(item=>item.name==="llw-knowledge-ingest");
-  assert.equal(policy.enabled,true);
-  assert.equal(knowledgeCandidateEnabled({
-    allowlistEnabled:policy.enabled,configurationEnabled:false
-  }),false);
-  assert.equal(knowledgeCandidateEnabled({
-    allowlistEnabled:true,configurationEnabled:false
-  }),false);
-  assert.equal(knowledgeCandidateEnabled({
-    allowlistEnabled:false,configurationEnabled:true
-  }),false);
-  assert.equal(knowledgeCandidateEnabled({
-    allowlistEnabled:true,configurationEnabled:true
-  }),true);
-});
-
-test("requires configured legacy Skill roots to match the validated private catalog",async()=>{
+test("requires configured Skill roots to match the validated private catalog",async()=>{
   const {selectPrivateSkillRoot}=await import("../src/main.mjs");
   const outer=await mkdtemp(join(tmpdir(),"llw-main-private-root-"));
   const skillRoot=join(outer,"skill");
