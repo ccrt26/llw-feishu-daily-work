@@ -24,7 +24,7 @@ test("returns one verified observation and reuses it on an identical retry",asyn
   let backendCalls=0;
   const reader=new SourceReader({
     backends:{
-      inspect_time_range:async()=>{
+      probe_media:async()=>{
         backendCalls+=1;
         const content="画面中出现固定测试代号。";
         const derivedRelativePath="source-001.inspect-001.txt";
@@ -41,10 +41,7 @@ test("returns one verified observation and reuses it on an identical retry",asyn
     }
   });
   const input={
-    requests:[{
-      sourceId:"source-001",view:"inspect_time_range",
-      startMs:5_000,endMs:7_000
-    }],
+    requests:[{sourceId:"source-001",view:"probe_media"}],
     sources:[source],workspaceDir
   };
   const first=await reader.read(input);
@@ -57,6 +54,7 @@ test("returns one verified observation and reuses it on an identical retry",asyn
     first.observations[0].derivedRelativePath,
     "source-001.inspect-001.txt"
   );
+  assert.deepEqual(first.modelImageFiles,[]);
 });
 
 test("does not call a source backend after cancellation",async()=>{
@@ -79,3 +77,199 @@ test("does not call a source backend after cancellation",async()=>{
     error=>error?.name==="AbortError"
   );
 });
+
+test("returns one verified interval image with its bounded observation",async()=>{
+  const workspaceDir=await mkdtemp(join(tmpdir(),"llw-source-reader-image-"));
+  await chmod(workspaceDir,0o700);
+  const content=JSON.stringify({
+    kind:"public_video_interval",
+    startMs:5_000,
+    endMs:7_000
+  });
+  const derivedRelativePath="source-001.inspect-5000-7000.json";
+  const imageRelativePath="source-001.inspect-5000-7000.png";
+  const imageBytes=png(2,2,33);
+  await Promise.all([
+    writeFile(join(workspaceDir,derivedRelativePath),content,{mode:0o600}),
+    writeFile(join(workspaceDir,imageRelativePath),imageBytes,{mode:0o600})
+  ]);
+  let backendCalls=0;
+  const reader=new SourceReader({
+    backends:{
+      inspect_time_range:async()=>{
+        backendCalls+=1;
+        return {
+          content,
+          derivedRelativePath,
+          sha256:sha256(content),
+          producedBy:"synthetic-range-reader",
+          limitations:["uniform_range_sampling"],
+          modelImageFiles:[{
+            sourceId:"source-001",
+            relativePath:imageRelativePath,
+            sha256:sha256(imageBytes),
+            startMs:5_000,
+            endMs:7_000
+          }]
+        };
+      }
+    },
+    maxRequests:1,
+    maxRangeMs:60_000,
+    maxTotalRangeMs:60_000,
+    maxModelImageFiles:1
+  });
+  const input={
+    requests:[{
+      sourceId:"source-001",
+      view:"inspect_time_range",
+      startMs:5_000,
+      endMs:7_000
+    }],
+    sources:[source],
+    workspaceDir
+  };
+  const first=await reader.read(input);
+  const second=await reader.read(input);
+  assert.deepEqual(second,first);
+  assert.equal(backendCalls,1);
+  assert.equal(first.observations[0].content,content);
+  assert.deepEqual(first.modelImageFiles,[{
+    sourceId:"source-001",
+    relativePath:imageRelativePath,
+    sha256:sha256(imageBytes),
+    startMs:5_000,
+    endMs:7_000
+  }]);
+});
+
+test("rejects forged or excessive interval image evidence",async()=>{
+  for (const mode of [
+    "wrong_source","wrong_hash","wrong_range","too_many"
+  ]) {
+    const workspaceDir=await mkdtemp(
+      join(tmpdir(),`llw-source-reader-${mode}-`)
+    );
+    await chmod(workspaceDir,0o700);
+    const content=JSON.stringify({mode});
+    const derivedRelativePath="source-001.inspect-5000-7000.json";
+    const imageRelativePath="source-001.inspect-5000-7000.png";
+    const imageBytes=png(2,2,33);
+    await Promise.all([
+      writeFile(join(workspaceDir,derivedRelativePath),content,{mode:0o600}),
+      writeFile(join(workspaceDir,imageRelativePath),imageBytes,{mode:0o600})
+    ]);
+    const descriptor={
+      sourceId:mode==="wrong_source"?"source-002":"source-001",
+      relativePath:imageRelativePath,
+      sha256:mode==="wrong_hash"?"f".repeat(64):sha256(imageBytes),
+      startMs:mode==="wrong_range"?4_000:5_000,
+      endMs:7_000
+    };
+    const reader=new SourceReader({
+      backends:{
+        inspect_time_range:async()=>({
+          content,
+          derivedRelativePath,
+          sha256:sha256(content),
+          producedBy:"synthetic-range-reader",
+          limitations:["uniform_range_sampling"],
+          modelImageFiles:mode==="too_many"
+            ?[descriptor,{...descriptor,
+              relativePath:"source-001.inspect-extra.png"
+            }]
+            :[descriptor]
+        })
+      },
+      maxRequests:1,
+      maxRangeMs:60_000,
+      maxTotalRangeMs:60_000,
+      maxModelImageFiles:1
+    });
+    await assert.rejects(
+      ()=>reader.read({
+        requests:[{
+          sourceId:"source-001",
+          view:"inspect_time_range",
+          startMs:5_000,
+          endMs:7_000
+        }],
+        sources:[source],
+        workspaceDir
+      }),
+      /source_reader_result_invalid/u
+    );
+  }
+});
+
+test("applies configured request and total interval bounds before a backend",async()=>{
+  let backendCalls=0;
+  const workspaceDir=await mkdtemp(join(tmpdir(),"llw-source-reader-limits-"));
+  await chmod(workspaceDir,0o700);
+  const reader=new SourceReader({
+    backends:{
+      inspect_time_range:async()=>{
+        backendCalls+=1;
+        throw new Error("backend_must_not_run");
+      }
+    },
+    maxRequests:1,
+    maxRangeMs:60_000,
+    maxTotalRangeMs:60_000,
+    maxModelImageFiles:1
+  });
+  await assert.rejects(
+    ()=>reader.read({
+      requests:[
+        {
+          sourceId:"source-001",
+          view:"inspect_time_range",
+          startMs:0,
+          endMs:10_000
+        },
+        {
+          sourceId:"source-001",
+          view:"inspect_time_range",
+          startMs:10_000,
+          endMs:20_000
+        }
+      ],
+      sources:[source],
+      workspaceDir
+    }),
+    /source_read_request_invalid/u
+  );
+  await assert.rejects(
+    ()=>reader.read({
+      requests:[{
+        sourceId:"source-001",
+        view:"inspect_time_range",
+        startMs:0,
+        endMs:60_001
+      }],
+      sources:[{
+        handle:{...source.handle,durationMs:120_000}
+      }],
+      workspaceDir
+    }),
+    /source_read_request_invalid/u
+  );
+  assert.equal(backendCalls,0);
+});
+
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function png(width,height,totalBytes) {
+  const value=Buffer.alloc(Math.max(33,totalBytes),0);
+  Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a])
+    .copy(value,0);
+  value.writeUInt32BE(13,8);
+  value.write("IHDR",12,"ascii");
+  value.writeUInt32BE(width,16);
+  value.writeUInt32BE(height,20);
+  value[24]=8;
+  value[25]=6;
+  return value;
+}
