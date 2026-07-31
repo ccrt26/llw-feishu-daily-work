@@ -240,7 +240,7 @@ test("a WeChat video summary is saved from retained evidence without copying med
         markReplied:key=>state.markReplied(key)
       },
       messenger,personalRules:[],model:"codex",
-      skillVersion:"4.2.7",
+      skillVersion:"4.2.8",
       taskManager,taskWorkspace,publicVideoReader
     });
     const dispatcher=new PersonalAssistantDispatcher({
@@ -298,7 +298,11 @@ test("a WeChat video summary is saved from retained evidence without copying med
     );
     assert.match(markdown,/llw_schema: "knowledge-item\/v3"/u);
     assert.match(markdown,/evidence_sources:/u);
-    assert.match(markdown,/sources:\n  \[\]/u);
+    assert.match(
+      markdown,
+      /^> \[!abstract\]- 内部数据（程序使用）\n/u
+    );
+    assert.match(markdown,/^> sources:\n>   \[\]$/mu);
     assert.doesNotMatch(markdown,/\/private\/|\/Users\//u);
   } finally {
     await rm(root,{recursive:true,force:true});
