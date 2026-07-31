@@ -167,7 +167,7 @@ function strictifySchema(schema) {
   if (!schema||typeof schema!=="object") return schema;
   const clean=Object.fromEntries(
     Object.entries(schema)
-      .filter(([key])=>!key.startsWith("x-"))
+      .filter(([key])=>!key.startsWith("x-")&&key!=="uniqueItems")
       .map(([key,item])=>[key,strictifySchema(item)])
   );
   if (clean.type==="object") {

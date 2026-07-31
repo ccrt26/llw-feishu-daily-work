@@ -13,6 +13,13 @@ import {
 import {
   loadPersonalAssistantSkillBundle
 } from "../src/personal-assistant/skill-bundle.mjs";
+import {
+  buildPersonalAssistantOutputSchema,
+  decodePersonalAssistantOutputEnvelopeForTools
+} from "../src/personal-assistant/personal-assistant-output-schema.mjs";
+import {
+  getModelToolDeclarations
+} from "../src/personal-assistant/tool-definitions.mjs";
 
 const fixture=fileURLToPath(
   new URL("./fixtures/fake-codex.mjs",import.meta.url)
@@ -215,6 +222,85 @@ test("rejects every DeepSeek turn containing an original source",async()=>{
   assert.equal(keyReads,0);
 });
 
+test("strictifies all four tool schemas for the Codex output subset",()=>{
+  const schema=buildPersonalAssistantOutputSchema(
+    getModelToolDeclarations()
+  );
+  const serialized=JSON.stringify(schema);
+  assert.doesNotMatch(serialized,/"uniqueItems"|"x-[^"]+"/u);
+  assert.equal(allObjectPropertiesRequired(schema),true);
+});
+
+test("decodes every strict Codex envelope into the existing runtime contract",()=>{
+  const tools=[{
+    name:"save_knowledge",
+    parameters:{
+      type:"object",additionalProperties:false,
+      required:["title","sourceIds"],
+      properties:{
+        title:{type:"string"},
+        evidenceSourceIds:{
+          type:"array",items:{type:"string"}
+        },
+        sourceIds:{
+          type:"array",items:{type:"string"}
+        }
+      }
+    }
+  }];
+  const empty={
+    reply:null,ask:null,sourceReadRequest:null,toolCall:null,taskUpdate:null
+  };
+  assert.deepEqual(
+    decodePersonalAssistantOutputEnvelopeForTools({
+      ...empty,type:"reply",reply:{text:"完成"}
+    },tools),
+    {type:"reply",text:"完成"}
+  );
+  assert.deepEqual(
+    decodePersonalAssistantOutputEnvelopeForTools({
+      ...empty,type:"ask",
+      ask:{
+        question:"保存吗？",waitingType:"waiting_confirmation",
+        preparedTool:"save_knowledge",preparedRule:null
+      }
+    },tools),
+    {
+      type:"ask",question:"保存吗？",
+      waitingType:"waiting_confirmation",
+      preparedTool:"save_knowledge",preparedRule:null
+    }
+  );
+  assert.deepEqual(
+    decodePersonalAssistantOutputEnvelopeForTools({
+      ...empty,type:"source_read_request",
+      sourceReadRequest:{requests:[{
+        sourceId:"source-001",view:"transcribe_audio",
+        startMs:null,endMs:null
+      }]}
+    },tools),
+    {
+      type:"source_read_request",
+      requests:[{sourceId:"source-001",view:"transcribe_audio"}]
+    }
+  );
+  assert.deepEqual(
+    decodePersonalAssistantOutputEnvelopeForTools({
+      ...empty,type:"tool_call",
+      toolCall:{
+        toolName:"save_knowledge",
+        arguments:{
+          title:"视频摘要",evidenceSourceIds:null,sourceIds:[]
+        }
+      }
+    },tools),
+    {
+      type:"tool_call",toolName:"save_knowledge",
+      arguments:{title:"视频摘要",sourceIds:[]}
+    }
+  );
+});
+
 test("reports a bounded assistant timeout without exposing child details",async()=>{
   await assert.rejects(
     invokeSyntheticCodex({FAKE_CODEX_MODE:"timeout"},50),
@@ -273,4 +359,18 @@ async function invokeSyntheticCodex(environment,timeoutMs=2_000) {
   } finally {
     await rm(root,{recursive:true,force:true});
   }
+}
+
+function allObjectPropertiesRequired(value) {
+  if (Array.isArray(value)) return value.every(allObjectPropertiesRequired);
+  if (!value||typeof value!=="object") return true;
+  if (value.type==="object") {
+    const propertyNames=Object.keys(value.properties??{}).sort();
+    if (!Array.isArray(value.required)||
+        JSON.stringify([...value.required].sort())!==
+          JSON.stringify(propertyNames)) {
+      return false;
+    }
+  }
+  return Object.values(value).every(allObjectPropertiesRequired);
 }
