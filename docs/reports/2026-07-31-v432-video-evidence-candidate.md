@@ -36,7 +36,7 @@ operation was added. The only model-visible media read is
 - Component base:
   `abe1aeaae899b8173c582b773eb29de59dad3acf`
 - Verified component candidate:
-  `3b0696518f37fe9756dac87190ed562b468b4cc21`
+  `3b0696518f37fe9756dac87190ed562b468b4cc2`
 - Component branch: `agent/v432-video-evidence`
 - Skills base:
   `a7d26e6cb8df750e3b028e3fce7ed6a5d7e8582f`
