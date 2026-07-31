@@ -225,6 +225,47 @@ test("rejects twenty PDF pages before AI or Writer",async()=>{
   }
 });
 
+test("marks source read unavailable when no reader is injected",async()=>{
+  const h=await taskHarness();
+  const coordinator=createTaskCoordinator(h,{
+    assistant:{async decide(_context,options){
+      assert.equal(options.allowSourceRead,false);
+      return {kind:"reply",text:"只读完成"};
+    }}
+  });
+  try {
+    await h.manager.accept(taskMessage());
+    const result=await coordinator.handleTask(
+      await h.manager.claim("feishu")
+    );
+    assert.equal(result.outcome.status,"committed");
+  } finally {
+    await rm(h.root,{recursive:true,force:true});
+  }
+});
+
+test("marks source read available when a reader is injected",async()=>{
+  const h=await taskHarness();
+  const coordinator=createTaskCoordinator(h,{
+    sourceReader:{async read(){
+      throw new Error("must_not_read");
+    }},
+    assistant:{async decide(_context,options){
+      assert.equal(options.allowSourceRead,true);
+      return {kind:"reply",text:"只读完成"};
+    }}
+  });
+  try {
+    await h.manager.accept(taskMessage());
+    const result=await coordinator.handleTask(
+      await h.manager.claim("feishu")
+    );
+    assert.equal(result.outcome.status,"committed");
+  } finally {
+    await rm(h.root,{recursive:true,force:true});
+  }
+});
+
 test("drops an AI reply when a supplement changes the task revision",async()=>{
   const h=await taskHarness();
   const started=deferred(),release=deferred(),sent=[];

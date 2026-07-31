@@ -120,6 +120,10 @@ test("version 7 enters one personal-assistant composition before legacy routing"
   );
   assert.match(
     source,
+    /workspaceDir,imageFiles,modelImageFiles,allowSourceRead[\s\S]*?invokePersonalAssistantCodex\(\{[\s\S]*?allowSourceRead/
+  );
+  assert.match(
+    source,
     /taskManager,taskWorkspace,[\s\S]*?new PersonalAssistantDispatcher/
   );
   assert.match(source,/await dispatcher\.recoverPendingTasks\(\)/);

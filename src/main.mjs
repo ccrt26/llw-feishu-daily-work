@@ -241,10 +241,10 @@ async function runPersonalAssistantMain(config) {
   const prepareTurnSources=publicVideoRuntime.prepareTurnSources;
   const assistant=new PersonalAssistantClient({
     codex:(context,{
-      workspaceDir,imageFiles,modelImageFiles
+      workspaceDir,imageFiles,modelImageFiles,allowSourceRead
     })=>invokePersonalAssistantCodex({
       codexPath:config.codexPath,workspaceDir,
-      skillBundle,context,imageFiles,modelImageFiles,
+      skillBundle,context,imageFiles,modelImageFiles,allowSourceRead,
       timeoutMs:config.personalAssistant.aiTimeoutMs
     }),
     deepseek:(context,{

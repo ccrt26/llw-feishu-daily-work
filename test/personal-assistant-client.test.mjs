@@ -98,9 +98,26 @@ test("validates a Codex observation against only the current source set",async()
       displayName:"测试.mov",format:"mov",relativePath:"source-001.mov",
       byteSize:2_000,sha256:"a".repeat(64),availability:"ready"
     }]
-  });
+  },{allowSourceRead:true});
   assert.deepEqual(decision,{
     kind:"source_read",
     requests:[{sourceId:"source-001",view:"probe_media"}]
   });
+});
+
+test("forwards source-read availability as an explicit boolean",async()=>{
+  const flags=[];
+  const client=new PersonalAssistantClient({
+    codex:async(_context,options)=>{
+      flags.push(options.allowSourceRead);
+      return {type:"reply",text:"完成"};
+    },
+    deepseek:async()=>{throw new Error("unexpected_deepseek");}
+  });
+  await client.decide({model:"codex",tools:[],sources:[]});
+  await client.decide(
+    {model:"codex",tools:[],sources:[]},
+    {allowSourceRead:true}
+  );
+  assert.deepEqual(flags,[false,true]);
 });

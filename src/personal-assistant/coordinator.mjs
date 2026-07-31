@@ -202,7 +202,8 @@ export class PersonalAssistantCoordinator {
         decision=await this.assistant.decide(context,{
           workspaceDir:prepared.workspaceDir,
           imageFiles,
-          modelImageFiles
+          modelImageFiles,
+          allowSourceRead:Boolean(this.sourceReader)
         });
         if (decision.kind!=="source_read") break;
         if (!this.sourceReader||
@@ -507,7 +508,8 @@ export class PersonalAssistantCoordinator {
         failurePhase="assistant_model_failed";
         decision=await this.assistant.decide(context,{
           workspaceDir:prepared?.workspaceDir,
-          imageFiles
+          imageFiles,
+          allowSourceRead:Boolean(this.sourceReader)
         });
         if (decision.kind!=="source_read") break;
         if (!this.sourceReader||
