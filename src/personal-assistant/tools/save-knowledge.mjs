@@ -1,9 +1,13 @@
 import {createHash} from "node:crypto";
 import {validateToolCall} from "../tool-definitions.mjs";
 import {createSourceHandle} from "../source-handle.mjs";
+import {
+  resolveKnowledgeEvidence
+} from "../knowledge-evidence-resolver.mjs";
 
 export async function executeSaveKnowledge({
-  toolCall,sourceBindings,instructionText,writer,skillVersion,ingestedAt
+  toolCall,sourceBindings,workspaceDir,instructionText,writer,
+  skillVersion,ingestedAt,resolveEvidence=resolveKnowledgeEvidence
 }) {
   const call=validateToolCall(toolCall);
   if (call.name!=="save_knowledge") throw new Error("tool_call_invalid");
@@ -38,6 +42,22 @@ export async function executeSaveKnowledge({
       :`text\0${instructionText}`)
     .digest("hex");
   const args=call.arguments;
+  let evidenceInput=null;
+  if (Object.hasOwn(args,"evidenceSourceIds")) {
+    try {
+      evidenceInput=await resolveEvidence({
+        workspaceDir,sourceBindings,
+        evidenceSourceIds:args.evidenceSourceIds,
+        sourceIds:args.sourceIds
+      });
+    } catch {
+      return {
+        status:"rejected",
+        reply:"本次视频证据不完整或已变化，系统没有写入。请重新处理当前视频后再保存。",
+        artifacts:[]
+      };
+    }
+  }
   try {
     const result=await writer.commit({
       libraryKey:args.libraryKey,
@@ -47,7 +67,12 @@ export async function executeSaveKnowledge({
       tags:[...args.tags],
       knowledgeSections:structuredClone(args.knowledgeSections),
       sources:selected,
-      sourceSetDigest,
+      ...(evidenceInput===null
+        ?{sourceSetDigest}
+        :{
+          evidenceSources:structuredClone(evidenceInput.evidenceSources),
+          sourceSetDigest:evidenceInput.sourceSetDigest
+        }),
       skillVersion,
       ingestedAt
     });

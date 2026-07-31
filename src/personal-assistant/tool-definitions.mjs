@@ -99,6 +99,7 @@ const definitions={
         title:string(200),
         summary:string(2_000),
         tags:stringArray(20,64),
+        evidenceSourceIds:sourceIds(),
         sourceIds:sourceIds(),
         knowledgeSections:{
           type:"object",additionalProperties:false,
@@ -153,6 +154,11 @@ export function validateToolCall(call) {
       reject();
     }
     validateSchema(TOOL_DEFINITIONS[call.name].parameters,call.arguments);
+    if (call.name==="save_knowledge"&&
+        Object.hasOwn(call.arguments,"evidenceSourceIds")) {
+      const evidence=new Set(call.arguments.evidenceSourceIds);
+      if (call.arguments.sourceIds.some(id=>!evidence.has(id))) reject();
+    }
     return structuredClone(call);
   } catch (error) {
     if (error?.message==="tool_call_invalid") throw error;

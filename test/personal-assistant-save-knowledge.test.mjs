@@ -27,6 +27,16 @@ function toolCall(sourceIds=["source-001","source-002"]) {
   };
 }
 
+function evidenceToolCall() {
+  return {
+    ...toolCall([]),
+    arguments:{
+      ...toolCall([]).arguments,
+      evidenceSourceIds:["source-001"]
+    }
+  };
+}
+
 function binding(sourceId,format,sha256) {
   return {
     handle:{
@@ -134,4 +144,58 @@ test("reports Writer failure without claiming success or retrying the Writer",as
     artifacts:[],
     failureCode:"knowledge_writer_failed"
   });
+});
+
+test("passes explicit verified evidence to Writer without selecting the video",async()=>{
+  const sourceBindings=[
+    {
+      handle:{
+        sourceId:"source-001",displayName:"公开视频.mp4",
+        mediaClass:"video",format:"mp4",
+        relativePath:"source-001.mp4",byteSize:100,
+        sha256:"c".repeat(64),availability:"ready",
+        durationMs:12_000,
+        representationIndexPath:"source-001.manifest.json"
+      },
+      absolutePath:"/private/task/source-001.mp4",
+      archiveExtension:"mp4"
+    }
+  ];
+  const evidenceSources=[{
+    sourceId:"source-001",displayName:"公开视频.mp4",
+    mediaClass:"video",format:"mp4",byteSize:100,
+    sha256:"c".repeat(64),durationMs:12_000,
+    derivedEvidence:[
+      {kind:"timeline",sha256:"d".repeat(64),limitations:[]},
+      {kind:"transcript",sha256:"e".repeat(64),limitations:[]}
+    ],
+    limitations:[]
+  }];
+  let committed;
+  const result=await executeSaveKnowledge({
+    toolCall:evidenceToolCall(),sourceBindings,
+    workspaceDir:"/private/task",
+    instructionText:"保存视频总结",
+    resolveEvidence:async input=>{
+      assert.deepEqual(input.evidenceSourceIds,["source-001"]);
+      assert.deepEqual(input.sourceIds,[]);
+      return {
+        evidenceSources,
+        sourceSetDigest:"f".repeat(64)
+      };
+    },
+    writer:{async commit(input) {
+      committed=input;
+      return {
+        status:"created",
+        relativePath:"日常生活/视频总结",
+        files:["日常生活/视频总结/knowledge.md"]
+      };
+    }},
+    skillVersion:"4.2.7",ingestedAt:"2026-07-31T00:00:00.000Z"
+  });
+  assert.deepEqual(committed.sources,[]);
+  assert.deepEqual(committed.evidenceSources,evidenceSources);
+  assert.equal(committed.sourceSetDigest,"f".repeat(64));
+  assert.equal(result.status,"committed");
 });

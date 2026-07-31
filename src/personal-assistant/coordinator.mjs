@@ -302,6 +302,7 @@ export class PersonalAssistantCoordinator {
       return executeSaveKnowledge({
         toolCall:decision.toolCall,
         sourceBindings:prepared.sources,
+        workspaceDir:prepared.workspaceDir,
         instructionText:message.instructionText,
         writer:this.writer,
         skillVersion:this.skillVersion,
@@ -525,6 +526,7 @@ export class PersonalAssistantCoordinator {
         result=await executeSaveKnowledge({
           toolCall:decision.toolCall,
           sourceBindings:prepared.sources,
+          workspaceDir:prepared.workspaceDir,
           instructionText:turnMessage.instructionText,
           writer:this.writer,
           skillVersion:this.skillVersion,

@@ -58,6 +58,20 @@ test("accepts one business-only save_knowledge call",() => {
     name:"save_knowledge",
     arguments:knowledge()
   });
+  assert.doesNotThrow(()=>validateToolCall({
+    name:"save_knowledge",
+    arguments:{
+      ...knowledge([]),
+      evidenceSourceIds:["source-001"]
+    }
+  }));
+  assert.throws(()=>validateToolCall({
+    name:"save_knowledge",
+    arguments:{
+      ...knowledge(["source-002"]),
+      evidenceSourceIds:["source-001"]
+    }
+  }),/tool_call_invalid/u);
 });
 
 test("rejects guessed knowledge library keys before Writer execution",() => {
