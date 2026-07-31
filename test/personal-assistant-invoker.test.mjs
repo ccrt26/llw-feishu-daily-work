@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {createHash} from "node:crypto";
 import {
-  chmod,mkdtemp,mkdir,readFile,realpath,rm,writeFile
+  chmod,lstat,mkdtemp,mkdir,readFile,realpath,rm,writeFile
 } from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
@@ -41,6 +41,7 @@ test("invokes one private Skill read-only with bounded context and visual pages"
   const skillRoot=join(root,"llw-personal-assistant");
   const workspaceDir=join(root,"llw-turn-private");
   const argsFile=join(root,"args.json");
+  const schemaCopyFile=join(root,"schema.json");
   const stdinFile=join(root,"stdin.txt");
   const cwdFile=join(root,"cwd.txt");
   try {
@@ -112,7 +113,14 @@ test("invokes one private Skill read-only with bounded context and visual pages"
         }
       ],
       conversation:null,confirmedPersonalRules:[],
-      tools:[{name:"save_knowledge",description:"save",parameters:{type:"object"}}],
+      tools:[{
+        name:"save_knowledge",description:"save",
+        parameters:{
+          type:"object",additionalProperties:false,
+          required:["title"],
+          properties:{title:{type:"string"}}
+        }
+      }],
       priority:["program_safety"]
     };
     const result=await invokePersonalAssistantCodex({
@@ -121,7 +129,12 @@ test("invokes one private Skill read-only with bounded context and visual pages"
       environment:{
         ...process.env,FAKE_ARGS_FILE:argsFile,FAKE_STDIN_FILE:stdinFile,
         FAKE_CWD_ONLY_FILE:cwdFile,
-        FAKE_RESPONSE:JSON.stringify({type:"reply",text:"只读总结。"})
+        FAKE_SCHEMA_FILE_COPY:schemaCopyFile,
+        FAKE_RESPONSE:JSON.stringify({
+          type:"reply",
+          reply:{text:"只读总结。"},
+          ask:null,sourceReadRequest:null,toolCall:null,taskUpdate:null
+        })
       }
     });
     assert.deepEqual(result,{type:"reply",text:"只读总结。"});
@@ -130,6 +143,27 @@ test("invokes one private Skill read-only with bounded context and visual pages"
       "exec","--ephemeral","--sandbox","read-only","--skip-git-repo-check"
     ]);
     assert.equal(args.filter(value=>value==="--image").length,3);
+    const schemaIndex=args.indexOf("--output-schema");
+    assert.ok(schemaIndex>0);
+    const schemaCopy=JSON.parse(await readFile(schemaCopyFile,"utf8"));
+    assert.equal(schemaCopy.path,args[schemaIndex+1]);
+    assert.equal(schemaCopy.mode,0o600);
+    await assert.rejects(()=>lstat(schemaCopy.path),{code:"ENOENT"});
+    assert.equal(schemaCopy.content.type,"object");
+    assert.equal(schemaCopy.content.additionalProperties,false);
+    assert.deepEqual(schemaCopy.content.required,[
+      "type","reply","ask","sourceReadRequest","toolCall","taskUpdate"
+    ]);
+    assert.equal(
+      schemaCopy.content.properties.toolCall.anyOf[1]
+        .properties.toolName.const,
+      "save_knowledge"
+    );
+    assert.deepEqual(
+      schemaCopy.content.properties.toolCall.anyOf[1]
+        .properties.arguments,
+      context.tools[0].parameters
+    );
     assert.ok(args.includes("source-001.png"));
     assert.ok(args.includes("source-002.png"));
     assert.ok(args.includes("source-003.page-001.png"));

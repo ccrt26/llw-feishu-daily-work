@@ -1,9 +1,23 @@
 #!/usr/bin/env node
-import { readFile, readdir, writeFile } from "node:fs/promises";
+import { readFile, readdir, stat, writeFile } from "node:fs/promises";
 import {join} from "node:path";
 
 const args = process.argv.slice(2);
 const outputIndex = args.indexOf("--output-last-message");
+const schemaIndex = args.indexOf("--output-schema");
+if (process.env.FAKE_SCHEMA_FILE_COPY) {
+  if (schemaIndex<0) throw new Error("missing --output-schema");
+  const schemaPath=args[schemaIndex+1];
+  const info=await stat(schemaPath);
+  await writeFile(
+    process.env.FAKE_SCHEMA_FILE_COPY,
+    JSON.stringify({
+      path:schemaPath,
+      mode:info.mode&0o777,
+      content:JSON.parse(await readFile(schemaPath,"utf8"))
+    })
+  );
+}
 if (process.env.FAKE_CODEX_ATTEMPTS) {
   let attempts = 0;
   try { attempts = Number(await readFile(process.env.FAKE_CODEX_ATTEMPTS,"utf8")); } catch {}
