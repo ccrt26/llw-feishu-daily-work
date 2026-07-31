@@ -179,6 +179,9 @@ test("a WeChat video summary is saved from retained evidence without copying med
               "uniform_timeline_sampling","not_frame_by_frame"
             ]
           };
+        },
+        async readRange() {
+          throw new Error("range_must_not_run");
         }
       }
     });

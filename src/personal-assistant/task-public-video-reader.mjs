@@ -18,13 +18,19 @@ const MAX_INDEX_BYTES=768*1024;
 const MAX_OBSERVATION_BYTES=256*1024;
 
 export class TaskPublicVideoReader {
-  constructor({asr,timelineReader}) {
+  constructor({
+    asr,timelineReader,
+    clock=()=>new Date().toISOString()
+  }) {
     if (typeof asr?.transcribe!=="function"||
-        typeof timelineReader?.read!=="function") {
+        typeof timelineReader?.read!=="function"||
+        typeof timelineReader?.readRange!=="function"||
+        typeof clock!=="function") {
       throw invalid();
     }
     this.asr=asr;
     this.timelineReader=timelineReader;
+    this.clock=clock;
   }
 
   async prepare({
@@ -239,6 +245,133 @@ export class TaskPublicVideoReader {
       )
     });
   }
+
+  async inspectTimeRange({
+    request,source,workspaceDir,signal
+  }) {
+    if (typeof workspaceDir!=="string"||!isAbsolute(workspaceDir)||
+        !(signal===undefined||signal instanceof AbortSignal)||
+        !plain(request)||Object.keys(request).length!==4||
+        request.view!=="inspect_time_range"||
+        !Number.isSafeInteger(request.startMs)||request.startMs<0||
+        !Number.isSafeInteger(request.endMs)||
+        request.endMs<=request.startMs||
+        request.endMs-request.startMs>60_000) {
+      throw invalid();
+    }
+    signal?.throwIfAborted();
+    await privateDirectory(workspaceDir);
+    const handle=createSourceHandle(source?.handle??source);
+    if (request.sourceId!==handle.sourceId||
+        request.endMs>handle.durationMs) {
+      throw invalid();
+    }
+    const videoFile=await validateOriginal({
+      workspaceDir,source,handle
+    });
+    const now=this.clock();
+    if (!canonicalIso(now)) throw invalid();
+    const manifestPath=join(
+      workspaceDir,`${handle.sourceId}.manifest.json`
+    );
+    const manifest=await ensureSidecar({
+      workspaceDir,manifestPath,handle,now
+    });
+    const relativePath=[
+      `${handle.sourceId}.inspect`,
+      `${request.startMs}`,
+      `${request.endMs}.json`
+    ].join("-");
+    const indexPath=join(workspaceDir,relativePath);
+    const entries=manifest.derived.filter(item=>
+      item?.kind==="inspection"&&
+      item?.relativePath===relativePath
+    );
+    if (entries.length>1) throw invalid();
+    let inspection=await loadOptionalJson(indexPath);
+    if (entries.length===1) {
+      if (inspection===null) throw invalid();
+      inspection=await validateInspection({
+        value:inspection,request,handle,workspaceDir
+      });
+      const entry=entries[0];
+      if (entry.sha256!==await sha256File(indexPath)||
+          entry.producedBy!==PRODUCED_BY||
+          !sameArray(entry.limitations,inspection.limitations)) {
+        throw invalid();
+      }
+      return buildInspectionObservation({
+        inspection,relativePath,indexPath
+      });
+    }
+    if (inspection!==null) {
+      inspection=await validateInspection({
+        value:inspection,request,handle,workspaceDir
+      });
+      await appendDerivedRepresentation({
+        workspaceDir,manifestPath,
+        entry:{
+          kind:"inspection",
+          relativePath,
+          producedBy:PRODUCED_BY,
+          limitations:inspection.limitations
+        },
+        now
+      });
+      return buildInspectionObservation({
+        inspection,relativePath,indexPath
+      });
+    }
+    let raw;
+    try {
+      raw=await this.timelineReader.readRange({
+        sourceId:handle.sourceId,
+        videoFile,
+        videoSha256:handle.sha256,
+        durationMs:handle.durationMs,
+        startMs:request.startMs,
+        endMs:request.endMs,
+        workspaceDir,
+        signal
+      });
+    } catch (error) {
+      if (error?.name==="AbortError") throw error;
+      throw invalid();
+    }
+    signal?.throwIfAborted();
+    inspection=await validateInspection({
+      value:{
+        version:1,
+        sourceId:handle.sourceId,
+        originalSha256:handle.sha256,
+        kind:"video_interval_inspection",
+        durationMs:raw?.durationMs,
+        startMs:raw?.startMs,
+        endMs:raw?.endMs,
+        sampleCount:raw?.sampleCount,
+        maxGapMs:raw?.maxGapMs,
+        samples:raw?.samples,
+        images:raw?.images,
+        coverageStatus:"complete",
+        limitations:raw?.limitations
+      },
+      request,handle,workspaceDir
+    });
+    await atomicWriteJson(indexPath,inspection);
+    await appendDerivedRepresentation({
+      workspaceDir,manifestPath,
+      entry:{
+        kind:"inspection",
+        relativePath,
+        producedBy:PRODUCED_BY,
+        limitations:inspection.limitations
+      },
+      now
+    });
+    return buildInspectionObservation({
+      inspection,relativePath,indexPath
+    });
+  }
 }
 
 function onceBestEffort(operation) {
@@ -427,6 +560,95 @@ async function validateTimeline({value,handle,workspaceDir}) {
   return structuredClone(value);
 }
 
+async function validateInspection({
+  value,request,handle,workspaceDir
+}) {
+  const fields=new Set([
+    "version","sourceId","originalSha256","kind","durationMs",
+    "startMs","endMs","sampleCount","maxGapMs","samples","images",
+    "coverageStatus","limitations"
+  ]);
+  if (!plain(value)||
+      Object.keys(value).length!==fields.size||
+      Object.keys(value).some(key=>!fields.has(key))||
+      value.version!==1||
+      value.sourceId!==handle.sourceId||
+      value.originalSha256!==handle.sha256||
+      value.kind!=="video_interval_inspection"||
+      value.durationMs!==handle.durationMs||
+      value.startMs!==request.startMs||
+      value.endMs!==request.endMs||
+      !Number.isSafeInteger(value.sampleCount)||
+      value.sampleCount<1||value.sampleCount>12||
+      !Number.isSafeInteger(value.maxGapMs)||
+      value.maxGapMs<1||value.maxGapMs>60_000||
+      !Array.isArray(value.samples)||
+      value.samples.length!==value.sampleCount||
+      !Array.isArray(value.images)||value.images.length!==1||
+      value.coverageStatus!=="complete"||
+      !limitations(value.limitations)) {
+    throw invalid();
+  }
+  let previousEnd=request.startMs,maxGap=0;
+  for (const sample of value.samples) {
+    if (!plain(sample)||
+        Object.keys(sample).length!==3||
+        sample.startMs!==previousEnd||
+        !Number.isSafeInteger(sample.endMs)||
+        sample.endMs<=sample.startMs||
+        sample.endMs>request.endMs||
+        !Number.isSafeInteger(sample.sampleMs)||
+        sample.sampleMs<sample.startMs||
+        sample.sampleMs>=sample.endMs) {
+      throw invalid();
+    }
+    maxGap=Math.max(maxGap,sample.endMs-sample.startMs);
+    previousEnd=sample.endMs;
+  }
+  if (previousEnd!==request.endMs||maxGap!==value.maxGapMs) {
+    throw invalid();
+  }
+  const image=value.images[0];
+  if (!plain(image)||
+      image.sourceId!==handle.sourceId||
+      image.startMs!==request.startMs||
+      image.endMs!==request.endMs) {
+    throw invalid();
+  }
+  await validateModelImageEvidence({
+    workspaceDir,files:value.images,maxFiles:1
+  });
+  return structuredClone(value);
+}
+
+async function buildInspectionObservation({
+  inspection,relativePath,indexPath
+}) {
+  const content=JSON.stringify({
+    kind:"public_video_interval",
+    sourceId:inspection.sourceId,
+    startMs:inspection.startMs,
+    endMs:inspection.endMs,
+    coverageStatus:inspection.coverageStatus,
+    samples:inspection.samples,
+    images:inspection.images,
+    limitations:inspection.limitations
+  });
+  if (Buffer.byteLength(content,"utf8")>MAX_OBSERVATION_BYTES) {
+    throw invalid();
+  }
+  return Object.freeze({
+    content,
+    derivedRelativePath:relativePath,
+    sha256:await sha256File(indexPath),
+    producedBy:PRODUCED_BY,
+    limitations:Object.freeze([...inspection.limitations]),
+    modelImageFiles:Object.freeze(
+      inspection.images.map(value=>Object.freeze({...value}))
+    )
+  });
+}
+
 async function validateOriginal({workspaceDir,source,handle}) {
   if (handle.mediaClass!=="video"||handle.format!=="mp4"||
       handle.representationIndexPath!==
@@ -536,6 +758,12 @@ function limitations(value) {
 
 function unique(values) {
   return [...new Set(values)].slice(0,8);
+}
+
+function sameArray(left,right) {
+  return Array.isArray(left)&&Array.isArray(right)&&
+    left.length===right.length&&
+    left.every((value,index)=>value===right[index]);
 }
 
 function canonicalIso(value) {
