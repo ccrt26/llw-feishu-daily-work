@@ -71,7 +71,23 @@ test("rejects missing or changed derived video evidence before Writer",async()=>
   }
 });
 
-async function videoFixture() {
+test("rejects partial or failed transcript evidence before Writer",async()=>{
+  for (const coverageStatus of ["partial","failed"]) {
+    const fixture=await videoFixture({coverageStatus});
+    try {
+      await assert.rejects(()=>resolveKnowledgeEvidence({
+        workspaceDir:fixture.workspaceDir,
+        sourceBindings:[fixture.binding],
+        evidenceSourceIds:["source-001"],
+        sourceIds:[]
+      }),/knowledge_evidence_invalid/u);
+    } finally {
+      await rm(fixture.workspaceDir,{recursive:true,force:true});
+    }
+  }
+});
+
+async function videoFixture({coverageStatus="complete"}={}) {
   const workspaceDir=await mkdtemp(join(tmpdir(),"llw-video-evidence-"));
   const videoBytes=Buffer.from("synthetic-public-video");
   const videoSha256=sha256(videoBytes);
@@ -103,7 +119,7 @@ async function videoFixture() {
   );
   await writeFile(transcriptPath,JSON.stringify({
     version:1,sourceId:"source-001",
-    originalDurationMs:12_000,coverageStatus:"complete",
+    originalDurationMs:12_000,coverageStatus,
     limitations:["时间戳不是逐字级"]
   }),{mode:0o600});
   await appendDerivedRepresentation({

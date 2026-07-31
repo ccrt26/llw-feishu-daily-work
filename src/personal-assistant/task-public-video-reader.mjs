@@ -477,8 +477,8 @@ function validateTranscript(value,handle) {
       !Number.isSafeInteger(value.providerDurationMs)||
       Math.abs(value.providerDurationMs-handle.durationMs)>5_000||
       !Array.isArray(value.segments)||value.segments.length>2_048||
-      !ranges(value.coveredRanges)||!ranges(value.uncoveredRanges)||
-      value.coverageStatus!=="complete"||
+      !new Set(["complete","partial","failed"])
+        .has(value.coverageStatus)||
       !limitations(value.limitations)) {
     throw invalid();
   }
@@ -498,6 +498,7 @@ function validateTranscript(value,handle) {
     }
     previousEnd=segment.endMs;
   }
+  if (!validTranscriptCoverage(value)) throw invalid();
   return structuredClone(value);
 }
 
@@ -743,11 +744,62 @@ async function sha256File(file) {
   return hash.digest("hex");
 }
 
-function ranges(value) {
-  return Array.isArray(value)&&value.length<=2_048&&
-    value.every(item=>plain(item)&&
-      Number.isSafeInteger(item.startMs)&&item.startMs>=0&&
-      Number.isSafeInteger(item.endMs)&&item.endMs>item.startMs);
+function validTranscriptCoverage(value) {
+  if (!orderedRanges(value.coveredRanges,value.providerDurationMs)||
+      !orderedRanges(value.uncoveredRanges,value.providerDurationMs)) {
+    return false;
+  }
+  if (value.coverageStatus==="complete"&&
+      value.uncoveredRanges.length!==0) {
+    return false;
+  }
+  if (value.coverageStatus==="partial"&&
+      (
+        value.coveredRanges.length===0||
+        value.uncoveredRanges.length===0
+      )) {
+    return false;
+  }
+  if (value.coverageStatus==="failed"&&
+      (
+        value.coveredRanges.length!==0||
+        value.segments.length!==0
+      )) {
+    return false;
+  }
+  const partition=[
+    ...value.coveredRanges.map(range=>({...range,kind:"covered"})),
+    ...value.uncoveredRanges.map(range=>({...range,kind:"uncovered"}))
+  ].sort((left,right)=>
+    left.startMs-right.startMs||left.endMs-right.endMs
+  );
+  let cursor=0;
+  for (const range of partition) {
+    if (range.startMs!==cursor) return false;
+    cursor=range.endMs;
+  }
+  if (cursor!==value.providerDurationMs) return false;
+  return value.segments.every(segment=>
+    value.coveredRanges.some(range=>
+      segment.startMs>=range.startMs&&segment.endMs<=range.endMs
+    )
+  );
+}
+
+function orderedRanges(value,durationMs) {
+  if (!Array.isArray(value)||value.length>2_048) return false;
+  let previousEnd=0;
+  for (const item of value) {
+    if (!plain(item)||Object.keys(item).length!==2||
+        !Number.isSafeInteger(item.startMs)||item.startMs<0||
+        !Number.isSafeInteger(item.endMs)||
+        item.endMs<=item.startMs||item.endMs>durationMs||
+        item.startMs<previousEnd) {
+      return false;
+    }
+    previousEnd=item.endMs;
+  }
+  return true;
 }
 
 function limitations(value) {

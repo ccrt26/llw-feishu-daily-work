@@ -363,6 +363,134 @@ test("rejects a forged inspected range before returning model evidence",async()=
   }
 });
 
+test("keeps partial and failed transcript coverage explicit for direct answers",async()=>{
+  for (const coverageStatus of ["partial","failed"]) {
+    const fixture=await workspaceFixture();
+    try {
+      const reader=new TaskPublicVideoReader({
+        asr:{async transcribe(){
+          const value=transcriptResult(fixture);
+          if (coverageStatus==="partial") {
+            return {
+              ...value,
+              segments:[{
+                startMs:0,endMs:10_000,text:"只覆盖前半段",
+                alternatives:[],isFinal:true,status:"recognized"
+              }],
+              coveredRanges:[{startMs:0,endMs:10_000}],
+              uncoveredRanges:[{startMs:10_000,endMs:20_000}],
+              coverageStatus,
+              limitations:["speech_coverage_partial"]
+            };
+          }
+          return {
+            ...value,
+            segments:[],
+            coveredRanges:[],
+            uncoveredRanges:[{startMs:0,endMs:20_000}],
+            coverageStatus,
+            limitations:["speech_coverage_failed"]
+          };
+        }},
+        timelineReader:{
+          async read(input) {
+            return publishTimeline(input);
+          },
+          async readRange() {
+            throw new Error("range_must_not_run");
+          }
+        }
+      });
+      const prepared=await reader.prepare({
+        workspaceDir:fixture.root,
+        sources:[fixture.source],
+        now:NOW
+      });
+      const evidence=JSON.parse(prepared.observations[0].content);
+      assert.equal(
+        evidence.transcript.coverageStatus,
+        coverageStatus
+      );
+      assert.deepEqual(
+        evidence.transcript.uncoveredRanges,
+        coverageStatus==="partial"
+          ?[{startMs:10_000,endMs:20_000}]
+          :[{startMs:0,endMs:20_000}]
+      );
+      assert.equal(prepared.modelImageFiles.length,1);
+    } finally {
+      await rm(fixture.root,{recursive:true,force:true});
+    }
+  }
+});
+
+test("rejects false or internally inconsistent transcript coverage",async()=>{
+  const mutations=[
+    value=>({
+      ...value,
+      coveredRanges:[{startMs:0,endMs:11_000}],
+      uncoveredRanges:[{startMs:10_000,endMs:20_000}],
+      coverageStatus:"partial"
+    }),
+    value=>({
+      ...value,
+      coveredRanges:[{startMs:0,endMs:9_000}],
+      uncoveredRanges:[{startMs:10_000,endMs:20_000}],
+      coverageStatus:"partial"
+    }),
+    value=>({
+      ...value,
+      segments:[{
+        startMs:11_000,endMs:12_000,text:"落在未覆盖区",
+        alternatives:[],isFinal:true,status:"recognized"
+      }],
+      coveredRanges:[{startMs:0,endMs:10_000}],
+      uncoveredRanges:[{startMs:10_000,endMs:20_000}],
+      coverageStatus:"partial"
+    }),
+    value=>({
+      ...value,
+      coveredRanges:[{startMs:0,endMs:10_000}],
+      uncoveredRanges:[{startMs:10_000,endMs:20_000}],
+      coverageStatus:"complete"
+    }),
+    value=>({
+      ...value,
+      coveredRanges:[],
+      uncoveredRanges:[{startMs:0,endMs:20_000}],
+      coverageStatus:"failed"
+    })
+  ];
+  for (const mutate of mutations) {
+    const fixture=await workspaceFixture();
+    try {
+      const reader=new TaskPublicVideoReader({
+        asr:{async transcribe(){
+          return mutate(transcriptResult(fixture));
+        }},
+        timelineReader:{
+          async read(input) {
+            return publishTimeline(input);
+          },
+          async readRange() {
+            throw new Error("range_must_not_run");
+          }
+        }
+      });
+      await assert.rejects(
+        ()=>reader.prepare({
+          workspaceDir:fixture.root,
+          sources:[fixture.source],
+          now:NOW
+        }),
+        /task_public_video_reader_invalid/u
+      );
+    } finally {
+      await rm(fixture.root,{recursive:true,force:true});
+    }
+  }
+});
+
 async function workspaceFixture() {
   const root=await mkdtemp(join(tmpdir(),"llw-task-video-reader-"));
   await chmod(root,0o700);

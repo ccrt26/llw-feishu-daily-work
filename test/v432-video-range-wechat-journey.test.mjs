@@ -122,17 +122,17 @@ test("WeChat navigation requests and receives one real interval before replying"
             providerDurationMs:20_000,
             segments:[{
               startMs:0,
-              endMs:20_000,
+              endMs:10_000,
               text:"声音说明第六秒附近出现关键数字。",
               alternatives:[],
               isFinal:true,
               status:"recognized"
             }],
-            coveredRanges:[{startMs:0,endMs:20_000}],
-            uncoveredRanges:[],
-            coverageStatus:"complete",
+            coveredRanges:[{startMs:0,endMs:10_000}],
+            uncoveredRanges:[{startMs:10_000,endMs:20_000}],
+            coverageStatus:"partial",
             limitations:[
-              "provider_utterance_timestamps_not_word_exact"
+              "speech_coverage_partial"
             ]
           };
         }
@@ -191,6 +191,17 @@ test("WeChat navigation requests and receives one real interval before replying"
         if (decisions.length===1) {
           assert.equal(context.sourceObservations.length,1);
           assert.equal(options.modelImageFiles.length,1);
+          const initial=JSON.parse(
+            context.sourceObservations[0].content
+          );
+          assert.equal(
+            initial.transcript.coverageStatus,
+            "partial"
+          );
+          assert.deepEqual(
+            initial.transcript.uncoveredRanges,
+            [{startMs:10_000,endMs:20_000}]
+          );
           return {
             type:"source_read_request",
             requests:[{
