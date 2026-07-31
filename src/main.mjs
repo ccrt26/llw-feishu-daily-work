@@ -110,7 +110,7 @@ export const VIDEO_TIMELINE_HELPER_SHA256=
 export const DOUYIN_WEBKIT_HELPER_PATH=
   "/Users/ccrt/Library/Application Support/LLW Assistant/runtime/douyin-webkit-reader-v1/douyin_webkit_reader_v1";
 export const DOUYIN_WEBKIT_HELPER_SHA256=
-  "ab6bde5c5a78c2bdfdcdc0dd6b05130055bf39c362d84ca488ac498f1e8605ac";
+  "91fc46449857ee7d1a5134ef0fd9700ae79855bd62375374eeea13af9ce86a37";
 
 const run=promisify(execFile);
 

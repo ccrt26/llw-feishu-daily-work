@@ -88,6 +88,31 @@ test("labels an unknown model-selection failure before source preparation",async
   );
 });
 
+test("labels a Douyin workspace acquisition failure as public-video source preparation",async()=>{
+  const h=await taskHarness();
+  try {
+    await h.manager.accept(taskMessage({
+      text:"总结 https://www.douyin.com/video/7648947659570515236"
+    }));
+    const snapshot=await h.manager.claim("feishu");
+    const coordinator=createTaskCoordinator(h,{
+      publicVideoReader:{},
+      taskWorkspace:{
+        async prepareAndMerge(){
+          throw new Error("private_media_track_detail");
+        }
+      }
+    });
+    await assert.rejects(
+      coordinator.handleTask(snapshot),
+      error=>error.message==="private_media_track_detail"&&
+        error.failurePhase==="public_video_source_preparation_failed"
+    );
+  } finally {
+    await rm(h.root,{recursive:true,force:true});
+  }
+});
+
 test("rejects a Feishu cloud-document source in DeepSeek mode before export or AI",async()=>{
   let prepares=0,assistantCalls=0,saves=0,sends=0;
   const coordinator=new PersonalAssistantCoordinator({
@@ -428,6 +453,7 @@ function createTaskCoordinator(h,overrides={}) {
     personalRules:[],
     model:"codex",
     skillVersion:"4.1.0",
+    publicVideoReader:overrides.publicVideoReader??null,
     taskManager:overrides.taskManager??h.manager,
     taskWorkspace
   });

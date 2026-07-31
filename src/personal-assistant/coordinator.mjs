@@ -69,6 +69,9 @@ export class PersonalAssistantCoordinator {
       const publicVideoRequest=this.publicVideoReader
         ?extractPublicVideoRequest(turnMessage.instructionText)
         :null;
+      if (publicVideoRequest) {
+        phase="public_video_source_preparation_failed";
+      }
       const hasNewSources=turnMessage.attachments.length>0||
         Boolean(extractFeishuDocumentRequests(turnMessage))||
         Boolean(publicVideoRequest);

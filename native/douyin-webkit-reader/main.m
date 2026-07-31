@@ -443,6 +443,7 @@ static BOOL CompleteVideoFileCoversPlayer(
 @property(nonatomic,copy) NSString *outputDirectory;
 @property(nonatomic) long long deadlineMs;
 @property(nonatomic) BOOL finished;
+@property(nonatomic) BOOL pollingStarted;
 @property(nonatomic) BOOL acquisitionStarted;
 @property(nonatomic) NSInteger pollCount;
 @property(nonatomic) NSInteger readyPollCount;
@@ -530,6 +531,8 @@ static BOOL CompleteVideoFileCoversPlayer(
  didFinishNavigation:(WKNavigation *)navigation {
   (void)webView;
   (void)navigation;
+  if (self.finished||self.pollingStarted) return;
+  self.pollingStarted=YES;
   [self pollPlayer];
 }
 
@@ -583,7 +586,8 @@ static BOOL CompleteVideoFileCoversPlayer(
   [self.webView evaluateJavaScript:script completionHandler:
     ^(id value,NSError *error) {
       typeof(self) selfRef=weakSelf;
-      if (selfRef==nil||selfRef.finished) return;
+      if (selfRef==nil||selfRef.finished||
+          selfRef.acquisitionStarted) return;
       NSDictionary *result=
         [value isKindOfClass:[NSDictionary class]]?value:nil;
       NSArray *urls=

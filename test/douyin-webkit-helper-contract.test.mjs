@@ -114,6 +114,19 @@ test("fetches a complete bounded video object before publishing visual evidence"
   );
 });
 
+test("starts player polling and media acquisition at most once",async()=>{
+  const native=await readFile(source,"utf8");
+  assert.match(native,/@property\(nonatomic\) BOOL pollingStarted;/);
+  assert.match(
+    native,
+    /didFinishNavigation:[\s\S]*?if \(self\.finished\|\|self\.pollingStarted\) return;[\s\S]*?self\.pollingStarted=YES;[\s\S]*?\[self pollPlayer\];/
+  );
+  assert.match(
+    native,
+    /if \(selfRef==nil\|\|selfRef\.finished\|\|\s*selfRef\.acquisitionStarted\) return;/
+  );
+});
+
 test("rejects unknown or incomplete arguments before starting WebKit",async()=>{
   for (const args of [
     [],

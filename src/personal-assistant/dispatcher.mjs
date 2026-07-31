@@ -653,7 +653,8 @@ const SAFE_FAILURE_PHASES=new Set([
   "model_selection_failed","source_preparation_failed",
   "content_safety_rejected","personal_rules_load_failed",
   "daily_candidates_load_failed","agent_turn_context_invalid",
-  "assistant_model_failed","public_video_prepare_failed",
+  "assistant_model_failed","public_video_source_preparation_failed",
+  "public_video_prepare_failed",
   "save_knowledge_execution_failed",
   "record_daily_work_execution_failed",
   "archive_dining_invoice_execution_failed",
@@ -715,6 +716,10 @@ function failureReply(code) {
     [
       "pdf_prepare_failed",
       "PDF 已安全保留，但页面准备失败，本次没有完成分析，也没有确认任何写入；可以直接重试，不需要重新发送文件。"
+    ],
+    [
+      "public_video_source_preparation_failed",
+      "未能完整取得公开视频的音频和画面，本次没有调用转写、AI 或 Writer，也没有确认任何写入；请重新发送同一链接重试。"
     ],
     [
       "public_video_prepare_failed",

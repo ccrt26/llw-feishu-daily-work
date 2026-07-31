@@ -317,6 +317,39 @@ test("reports a bounded public-video preparation failure without provider detail
   assert.equal(sent.length,1);
 });
 
+test("reports a bounded public-video acquisition failure instead of a tool failure",async()=>{
+  const saved=[],sent=[],failures=[];
+  const dispatcher=new PersonalAssistantDispatcher({
+    binding:{senderId:"owner",chatId:"private"},
+    bindings:{feishu:{userId:"owner",conversationId:"private"}},
+    state:{
+      hasOutcome:()=>false,
+      async saveOutcome(_key,outcome){saved.push(outcome);},
+      async markReplied(){}
+    },
+    coordinator:{async handle(){
+      const error=new Error("private_media_track_detail");
+      error.failurePhase="public_video_source_preparation_failed";
+      throw error;
+    }},
+    modelMode:{},deepseekEnabled:false,
+    messenger:{async send(value){sent.push(value);}},
+    onFailure:code=>failures.push(code)
+  });
+  await dispatcher.handleIncomingMessage(incoming());
+  assert.equal(
+    saved[0].reasonCode,
+    "public_video_source_preparation_failed"
+  );
+  assert.equal(
+    saved[0].reply,
+    "未能完整取得公开视频的音频和画面，本次没有调用转写、AI 或 Writer，也没有确认任何写入；请重新发送同一链接重试。"
+  );
+  assert.equal(saved[0].reply.includes("private_media_track_detail"),false);
+  assert.deepEqual(failures,["public_video_source_preparation_failed"]);
+  assert.equal(sent.length,1);
+});
+
 test("prefers a bounded phase over a generic error message",async()=>{
   const saved=[],failures=[];
   const dispatcher=new PersonalAssistantDispatcher({
