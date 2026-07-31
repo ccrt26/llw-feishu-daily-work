@@ -3,9 +3,8 @@ import { mkdir, open, readFile, rename } from "node:fs/promises";
 import { dirname } from "node:path";
 import {validateTaskSession} from "./core/task-session.mjs";
 import {
-  getActiveConversation as getActiveAssistantConversation,
-  validateAssistantConversation
-} from "./personal-assistant/conversation.mjs";
+  validateLegacyAssistantConversation
+} from "./personal-assistant/legacy-conversation-state.mjs";
 import {
   validateTaskSession as validatePersonalAssistantTaskSession
 } from "./personal-assistant/task-session.mjs";
@@ -188,36 +187,6 @@ export class StateStore {
     const slot=this.data.capabilityState["knowledge-ingest"].pendingBySource;
     if (slot[source]===null) return;
     slot[source]=null;
-    await this.persist();
-  }
-
-  async getPersonalAssistantConversation(source,now) {
-    validateKnowledgeSource(source);
-    const conversations=this.data.capabilityState["personal-assistant"]
-      .conversations;
-    const active=getActiveAssistantConversation(conversations,source,now);
-    if (active) return active;
-    if (conversations[source]!==null) {
-      conversations[source]=null;
-      await this.persist();
-    }
-    return null;
-  }
-
-  async setPersonalAssistantConversation(source,conversation) {
-    validateKnowledgeSource(source);
-    const value=validateAssistantConversation(conversation);
-    this.data.capabilityState["personal-assistant"].conversations[source]=value;
-    await this.persist();
-    return structuredClone(value);
-  }
-
-  async clearPersonalAssistantConversation(source) {
-    validateKnowledgeSource(source);
-    const conversations=this.data.capabilityState["personal-assistant"]
-      .conversations;
-    if (conversations[source]===null) return;
-    conversations[source]=null;
     await this.persist();
   }
 
@@ -673,7 +642,7 @@ function ensurePersonalAssistantSlot(data) {
   }
   for (const source of ["feishu","wechat"]) {
     const value=slot.conversations[source];
-    if (value!==null) validateAssistantConversation(value);
+    if (value!==null) validateStoredLegacyConversation(value);
     const session=slot.sessions[source];
     if (session!==null) {
       const validated=validatePersonalAssistantTaskSession(session);
@@ -721,7 +690,7 @@ function migrateLegacyPersonalAssistantConversations(data) {
 }
 
 function migratePersonalAssistantConversation(source,value) {
-  const legacy=validateAssistantConversation(value);
+  const legacy=validateStoredLegacyConversation(value);
   if (Object.hasOwn(legacy,"preparedSourceSetId")) {
     throw new Error(
       "legacy_personal_assistant_source_migration_required"
@@ -756,6 +725,14 @@ function migratePersonalAssistantConversation(source,value) {
       Date.parse(legacy.updatedAt)+24*60*60*1000
     ).toISOString()
   });
+}
+
+function validateStoredLegacyConversation(value) {
+  try {
+    return validateLegacyAssistantConversation(value);
+  } catch {
+    throw new Error("invalid_personal_assistant_state");
+  }
 }
 
 function fitUtf8(value,maxBytes) {

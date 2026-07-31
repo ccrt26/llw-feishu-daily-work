@@ -5,7 +5,9 @@ import {
 } from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {isAbsolute,join,relative,resolve} from "node:path";
-import {readDeepSeekApiKey} from "../ai/deepseek-client.mjs";
+import {
+  readKeychainPassword
+} from "../core/keychain-password-reader.mjs";
 import {
   validateModelImageEvidence
 } from "./model-image-evidence.mjs";
@@ -143,7 +145,7 @@ export async function invokePersonalAssistantCodex({
 export async function invokePersonalAssistantDeepSeek({
   model,keychainService,keychainAccount,skillBundle,context,
   imageFiles=[],modelImageFiles=[],
-  keyReader=readDeepSeekApiKey,fetchImpl=fetch,
+  keyReader=readKeychainPassword,fetchImpl=fetch,
   endpoint="https://api.deepseek.com/chat/completions",timeoutMs=30_000
 }) {
   validateCommon({

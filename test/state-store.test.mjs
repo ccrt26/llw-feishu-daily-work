@@ -69,52 +69,6 @@ test("persists one shared Task Session in state version 4 and restores it after 
   assert.equal((await stat(file)).mode&0o777,0o600);
 });
 
-test("persists one bounded personal-assistant conversation per entry",async()=>{
-  const {file}=await fresh();
-  const store=await StateStore.open(file);
-  const conversation={
-    waitingType:"waiting_file",
-    question:"请发送要保存的文件。",
-    instructionText:"把我接下来发的文件保存到日常生活",
-    preparedTool:"save_knowledge",
-    confirmed:{libraryKey:"personal-knowledge"},
-    turns:[],
-    model:"codex",
-    startedAt:"2026-07-28T00:00:00.000Z",
-    updatedAt:"2026-07-28T00:00:00.000Z"
-  };
-  await store.setPersonalAssistantConversation("wechat",conversation);
-  assert.equal(
-    (await store.getPersonalAssistantConversation(
-      "feishu","2026-07-28T01:00:00.000Z"
-    )),
-    null
-  );
-  assert.deepEqual(
-    await store.getPersonalAssistantConversation(
-      "wechat","2026-07-28T01:00:00.000Z"
-    ),
-    conversation
-  );
-  const reopened=await StateStore.open(file);
-  assert.deepEqual(
-    await reopened.getPersonalAssistantConversation(
-      "wechat","2026-07-28T02:00:00.000Z"
-    ),
-    conversation
-  );
-  assert.equal(JSON.stringify(
-    reopened.getCapabilityState("personal-assistant")
-  ).includes("/Users/"),false);
-  await reopened.clearPersonalAssistantConversation("wechat");
-  assert.equal(
-    await reopened.getPersonalAssistantConversation(
-      "wechat","2026-07-28T02:00:00.000Z"
-    ),
-    null
-  );
-});
-
 test("persists one processing receipt attempt outside Outcome across restart",async()=>{
   const {file}=await fresh();
   const store=await StateStore.open(file);
@@ -260,38 +214,6 @@ test("migrates a live V4.0.1 waiting conversation into one channel Task Session"
     JSON.parse(await readFile(file,"utf8"))
       .capabilityState["personal-assistant"],
     slot
-  );
-});
-
-test("persists only an opaque prepared source id in a WeChat conversation",async()=>{
-  const {file}=await fresh();
-  const store=await StateStore.open(file);
-  const preparedSourceSetId="C".repeat(43);
-  const conversation={
-    waitingType:"waiting_answer",
-    question:"要重点总结哪一部分？",
-    instructionText:"总结这个视频",
-    preparedTool:null,confirmed:{},turns:[],model:"codex",
-    preparedSourceSetId,
-    startedAt:"2026-07-29T00:00:00.000Z",
-    updatedAt:"2026-07-29T00:00:00.000Z"
-  };
-  await store.setPersonalAssistantConversation("wechat",conversation);
-  const reopened=await StateStore.open(file);
-  assert.deepEqual(
-    await reopened.getPersonalAssistantConversation(
-      "wechat","2026-07-29T01:00:00.000Z"
-    ),
-    conversation
-  );
-  const persisted=await readFile(file,"utf8");
-  assert.equal(persisted.includes(preparedSourceSetId),true);
-  assert.equal(persisted.includes("/private/"),false);
-  assert.equal(
-    await reopened.getPersonalAssistantConversation(
-      "feishu","2026-07-29T01:00:00.000Z"
-    ),
-    null
   );
 });
 
