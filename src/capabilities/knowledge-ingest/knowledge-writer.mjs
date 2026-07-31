@@ -573,24 +573,24 @@ function renderKnowledgeMarkdown({
     ?[`safe_source_reference: ${JSON.stringify(source.safeSourceReference)}`]
     :[];
   return [
-    "---",
-    'llw_schema: "knowledge-item/v1"',
-    `knowledge_id: ${JSON.stringify(knowledgeId)}`,
-    `library_key: ${JSON.stringify(libraryKey)}`,
-    `title: ${JSON.stringify(title.normalize("NFC").trim())}`,
-    "tags:",
-    tagLines,
-    `source_kind: ${JSON.stringify(source.sourceKind)}`,
-    `source_format: ${JSON.stringify(source.detectedFormat)}`,
-    `source_display_name: ${JSON.stringify(source.displayName)}`,
-    `source_sha256: ${JSON.stringify(source.sha256)}`,
-    `source_size_bytes: ${source.sizeBytes}`,
-    `source_extraction_integrity: ${JSON.stringify(source.extractionIntegrity)}`,
-    `source_ingested_at: ${JSON.stringify(ingestedAt)}`,
-    `source_preserved: ${preserveSource}`,
-    ...sourceReference,
-    `skill_version: ${JSON.stringify(skillVersion)}`,
-    "---",
+    ...renderFoldedInternalData([
+      'llw_schema: "knowledge-item/v1"',
+      `knowledge_id: ${JSON.stringify(knowledgeId)}`,
+      `library_key: ${JSON.stringify(libraryKey)}`,
+      `title: ${JSON.stringify(title.normalize("NFC").trim())}`,
+      "tags:",
+      tagLines,
+      `source_kind: ${JSON.stringify(source.sourceKind)}`,
+      `source_format: ${JSON.stringify(source.detectedFormat)}`,
+      `source_display_name: ${JSON.stringify(source.displayName)}`,
+      `source_sha256: ${JSON.stringify(source.sha256)}`,
+      `source_size_bytes: ${source.sizeBytes}`,
+      `source_extraction_integrity: ${JSON.stringify(source.extractionIntegrity)}`,
+      `source_ingested_at: ${JSON.stringify(ingestedAt)}`,
+      `source_preserved: ${preserveSource}`,
+      ...sourceReference,
+      `skill_version: ${JSON.stringify(skillVersion)}`
+    ]),
     "",
     `# ${title.normalize("NFC").trim()}`,
     "",
@@ -643,19 +643,19 @@ function renderSourceSetMarkdown({
     ])
     :["  []"];
   return [
-    "---",
-    'llw_schema: "knowledge-item/v2"',
-    `knowledge_id: ${JSON.stringify(knowledgeId)}`,
-    `library_key: ${JSON.stringify(libraryKey)}`,
-    `title: ${JSON.stringify(title.normalize("NFC").trim())}`,
-    "tags:",
-    tagLines,
-    `source_set_digest: ${JSON.stringify(sourceSetDigest)}`,
-    `source_ingested_at: ${JSON.stringify(ingestedAt)}`,
-    `skill_version: ${JSON.stringify(skillVersion)}`,
-    "sources:",
-    ...sourceLines,
-    "---",
+    ...renderFoldedInternalData([
+      'llw_schema: "knowledge-item/v2"',
+      `knowledge_id: ${JSON.stringify(knowledgeId)}`,
+      `library_key: ${JSON.stringify(libraryKey)}`,
+      `title: ${JSON.stringify(title.normalize("NFC").trim())}`,
+      "tags:",
+      tagLines,
+      `source_set_digest: ${JSON.stringify(sourceSetDigest)}`,
+      `source_ingested_at: ${JSON.stringify(ingestedAt)}`,
+      `skill_version: ${JSON.stringify(skillVersion)}`,
+      "sources:",
+      ...sourceLines
+    ]),
     "",
     `# ${title.normalize("NFC").trim()}`,
     "",
@@ -741,21 +741,21 @@ function renderEvidenceSourceSetMarkdown({
     ])
     :["  []"];
   return [
-    "---",
-    'llw_schema: "knowledge-item/v3"',
-    `knowledge_id: ${JSON.stringify(knowledgeId)}`,
-    `library_key: ${JSON.stringify(libraryKey)}`,
-    `title: ${JSON.stringify(title.normalize("NFC").trim())}`,
-    "tags:",
-    tagLines,
-    `source_set_digest: ${JSON.stringify(sourceSetDigest)}`,
-    `source_ingested_at: ${JSON.stringify(ingestedAt)}`,
-    `skill_version: ${JSON.stringify(skillVersion)}`,
-    "evidence_sources:",
-    ...evidenceLines,
-    "sources:",
-    ...sourceLines,
-    "---",
+    ...renderFoldedInternalData([
+      'llw_schema: "knowledge-item/v3"',
+      `knowledge_id: ${JSON.stringify(knowledgeId)}`,
+      `library_key: ${JSON.stringify(libraryKey)}`,
+      `title: ${JSON.stringify(title.normalize("NFC").trim())}`,
+      "tags:",
+      tagLines,
+      `source_set_digest: ${JSON.stringify(sourceSetDigest)}`,
+      `source_ingested_at: ${JSON.stringify(ingestedAt)}`,
+      `skill_version: ${JSON.stringify(skillVersion)}`,
+      "evidence_sources:",
+      ...evidenceLines,
+      "sources:",
+      ...sourceLines
+    ]),
     "",
     `# ${title.normalize("NFC").trim()}`,
     "",
@@ -801,6 +801,15 @@ function yamlStringList(items,indent) {
     :[`${prefix}[]`];
 }
 
+function renderFoldedInternalData(lines) {
+  return [
+    "> [!abstract]- 内部数据（程序使用）",
+    ...lines.flatMap(line=>
+      line.split("\n").map(part=>`> ${part}`)
+    )
+  ];
+}
+
 function renderList(items) {
   if (!items.length) return "- （无）";
   return items.map(item=>`- ${item.replace(/\n/gu,"\n  ")}`).join("\n");
@@ -822,7 +831,9 @@ async function findExisting(root,knowledgeId) {
       else if (metadata.isFile()&&entry.name==="knowledge.md") {
         if (metadata.size>512*1024) throw new Error("unsafe_item");
         const content=await readFile(path,"utf8");
-        if (content.includes(`knowledge_id: "${knowledgeId}"`)) {
+        if (hasInternalDataLine(
+          content,`knowledge_id: "${knowledgeId}"`
+        )) {
           return {path:directory};
         }
       }
@@ -859,7 +870,7 @@ async function verifyItem(path,{knowledgeId,expectedMarkdown,source,preserveSour
     }
   }
   const markdown=await readFile(join(path,"knowledge.md"),"utf8");
-  if (!markdown.includes(`knowledge_id: "${knowledgeId}"`)||
+  if (!hasInternalDataLine(markdown,`knowledge_id: "${knowledgeId}"`)||
       (expectedMarkdown!==undefined&&markdown!==expectedMarkdown)) {
     throw new Error("invalid_item_content");
   }
@@ -906,25 +917,31 @@ async function verifySourceSetItem(path,{
     }
   }
   const markdown=await readFile(join(path,"knowledge.md"),"utf8");
-  if (!markdown.includes(`knowledge_id: "${knowledgeId}"`)||
+  if (!hasInternalDataLine(markdown,`knowledge_id: "${knowledgeId}"`)||
       (expectedMarkdown!==undefined&&markdown!==expectedMarkdown)) {
     throw new Error("invalid_item_content");
   }
   if (schemaVersion===3) {
-    if (!markdown.includes('llw_schema: "knowledge-item/v3"')||
-        !markdown.includes(
+    if (!hasInternalDataLine(
+          markdown,'llw_schema: "knowledge-item/v3"'
+        )||
+        !hasInternalDataLine(
+          markdown,
           `source_set_digest: ${JSON.stringify(sourceSetDigest)}`
         )||
         !Array.isArray(evidenceSources)||
         evidenceSources.some(source=>
-          !markdown.includes(
+          !hasInternalDataLine(
+            markdown,
             `  - source_id: ${JSON.stringify(source.sourceId)}`
           )||
-          !markdown.includes(
+          !hasInternalDataLine(
+            markdown,
             `    sha256: ${JSON.stringify(source.sha256)}`
           )||
           source.derivedEvidence.some(item=>
-            !markdown.includes(
+            !hasInternalDataLine(
+              markdown,
               `        sha256: ${JSON.stringify(item.sha256)}`
             )
           )
@@ -941,6 +958,12 @@ async function verifySourceSetItem(path,{
     }
   }
   return {files:expected};
+}
+
+function hasInternalDataLine(markdown,line) {
+  const bounded=`\n${markdown}\n`;
+  return bounded.includes(`\n${line}\n`)||
+    bounded.includes(`\n> ${line}\n`);
 }
 
 async function verifyAppleDouble(path,metadata) {

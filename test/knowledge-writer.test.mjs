@@ -64,9 +64,18 @@ test("atomically creates one deterministic direct-text knowledge item",async()=>
       relativePath:"work-library/亚信工作/工作文档/交流方案/交流方案",
       files:["work-library/亚信工作/工作文档/交流方案/交流方案/knowledge.md"]
     });
-    const expected=`---\nllw_schema: "knowledge-item/v1"\nknowledge_id: "${FIRST_ID}"\nlibrary_key: "work-knowledge"\ntitle: "交流方案"\ntags:\n  - "项目"\n  - "沟通"\nsource_kind: "text"\nsource_format: "text"\nsource_display_name: "message.txt"\nsource_sha256: "${FIRST_SHA}"\nsource_size_bytes: 21\nsource_extraction_integrity: "complete"\nsource_ingested_at: "2026-07-27T01:02:03.000Z"\nsource_preserved: false\nskill_version: "1.3.0"\n---\n\n# 交流方案\n\n## 摘要\n\n用于测试的交流方案摘要。\n\n## 关键事实\n\n- 客户需要一份交流方案。\n\n## 结构与主要内容\n\n文档说明了交流目标和主要内容。\n\n## 可复用内容\n\n- 交流前确认目标。\n\n## 来源说明\n\n内容来自完整读取的原始资料。\n\n## 结构化原文或内容索引\n\n原始资料共一段。\n\n### 本地读取器提取内容\n\n原始交流内容。\n`;
+    const expected=`> [!abstract]- 内部数据（程序使用）\n> llw_schema: "knowledge-item/v1"\n> knowledge_id: "${FIRST_ID}"\n> library_key: "work-knowledge"\n> title: "交流方案"\n> tags:\n>   - "项目"\n>   - "沟通"\n> source_kind: "text"\n> source_format: "text"\n> source_display_name: "message.txt"\n> source_sha256: "${FIRST_SHA}"\n> source_size_bytes: 21\n> source_extraction_integrity: "complete"\n> source_ingested_at: "2026-07-27T01:02:03.000Z"\n> source_preserved: false\n> skill_version: "1.3.0"\n\n# 交流方案\n\n## 摘要\n\n用于测试的交流方案摘要。\n\n## 关键事实\n\n- 客户需要一份交流方案。\n\n## 结构与主要内容\n\n文档说明了交流目标和主要内容。\n\n## 可复用内容\n\n- 交流前确认目标。\n\n## 来源说明\n\n内容来自完整读取的原始资料。\n\n## 结构化原文或内容索引\n\n原始资料共一段。\n\n### 本地读取器提取内容\n\n原始交流内容。\n`;
     const item=join(h.root,result.relativePath);
-    assert.equal(await readFile(join(item,"knowledge.md"),"utf8"),expected);
+    const markdown=await readFile(join(item,"knowledge.md"),"utf8");
+    assert.equal(
+      markdown.startsWith(
+        "> [!abstract]- 内部数据（程序使用）\n"+
+        '> llw_schema: "knowledge-item/v1"'
+      ),
+      true
+    );
+    assert.doesNotMatch(markdown,/^---$/mu);
+    assert.equal(markdown,expected);
     assert.deepEqual(await readdir(item),["knowledge.md"]);
     assert.equal((await lstat(item)).mode&0o777,0o700);
     assert.equal((await lstat(join(item,"knowledge.md"))).mode&0o777,0o600);
@@ -379,6 +388,14 @@ test("atomically preserves two AI-selected original sources in one knowledge ite
     assert.deepEqual(await readFile(join(item,"source-002.pdf")),
       await readFile(second.absolutePath));
     const markdown=await readFile(join(item,"knowledge.md"),"utf8");
+    assert.equal(
+      markdown.startsWith(
+        "> [!abstract]- 内部数据（程序使用）\n"+
+        '> llw_schema: "knowledge-item/v2"'
+      ),
+      true
+    );
+    assert.doesNotMatch(markdown,/^---$/mu);
     assert.match(markdown,/llw_schema: "knowledge-item\/v2"/);
     assert.match(markdown,/source-001\.docx/);
     assert.match(markdown,/source-002\.pdf/);
@@ -466,12 +483,20 @@ test("writes v3 video evidence without copying media and remains idempotent",asy
     const item=join(h.root,created.relativePath);
     assert.deepEqual(await readdir(item),["knowledge.md"]);
     const markdown=await readFile(join(item,"knowledge.md"),"utf8");
+    assert.equal(
+      markdown.startsWith(
+        "> [!abstract]- 内部数据（程序使用）\n"+
+        '> llw_schema: "knowledge-item/v3"'
+      ),
+      true
+    );
+    assert.doesNotMatch(markdown,/^---$/mu);
     assert.match(markdown,/llw_schema: "knowledge-item\/v3"/u);
     assert.match(markdown,/evidence_sources:/u);
     assert.match(markdown,new RegExp(`sha256: "${"a".repeat(64)}"`,"u"));
     assert.match(markdown,new RegExp(`sha256: "${"b".repeat(64)}"`,"u"));
     assert.match(markdown,new RegExp(`sha256: "${"c".repeat(64)}"`,"u"));
-    assert.match(markdown,/sources:\n  \[\]/u);
+    assert.match(markdown,/> sources:\n>   \[\]/u);
     assert.doesNotMatch(markdown,/\/private\/|\/Users\/|absolutePath|relativePath/u);
     const duplicate=await h.writer.commit({
       ...input,title:"模型换了标题也不能重复"
@@ -481,6 +506,65 @@ test("writes v3 video evidence without copying media and remains idempotent",asy
     await assert.rejects(
       h.writer.commit({...input,sourceSetDigest:"f".repeat(64)}),
       /knowledge_write_rejected/u
+    );
+  } finally {
+    await rm(h.root,{recursive:true,force:true});
+  }
+});
+
+test("recognizes a legacy v3 frontmatter item after folded output ships",async()=>{
+  const h=await harness();
+  const evidenceSources=[{
+    sourceId:"source-001",displayName:"旧版公开视频.mp4",
+    mediaClass:"video",format:"mp4",byteSize:49_536_667,
+    sha256:"d".repeat(64),durationMs:228_067,
+    derivedEvidence:[
+      {kind:"timeline",sha256:"e".repeat(64),limitations:[]},
+      {kind:"transcript",sha256:"f".repeat(64),limitations:[]}
+    ],
+    limitations:[]
+  }];
+  const sourceSetDigest=createKnowledgeEvidenceDigest({
+    evidenceSources,sourceIds:[]
+  });
+  const knowledgeId=createHash("sha256").update(
+    `personal-knowledge\0${sourceSetDigest}`,"utf8"
+  ).digest("hex");
+  const category=join(h.personal,"视频");
+  const item=join(category,"旧版公开视频总结");
+  await mkdir(category,{mode:0o700});
+  await mkdir(item,{mode:0o700});
+  await writeFile(join(item,"knowledge.md"),[
+    "---",
+    'llw_schema: "knowledge-item/v3"',
+    `knowledge_id: "${knowledgeId}"`,
+    `source_set_digest: "${sourceSetDigest}"`,
+    "evidence_sources:",
+    '  - source_id: "source-001"',
+    `    sha256: "${"d".repeat(64)}"`,
+    "    derived_evidence:",
+    '      - kind: "timeline"',
+    `        sha256: "${"e".repeat(64)}"`,
+    '      - kind: "transcript"',
+    `        sha256: "${"f".repeat(64)}"`,
+    "---",
+    "",
+    "# 旧版公开视频总结",
+    ""
+  ].join("\n"),{mode:0o600});
+  try {
+    const result=await h.writer.commit({
+      ...sourceSetInput([]),
+      libraryKey:"personal-knowledge",
+      folderSegments:["视频"],
+      title:"模型换了标题也不能重复",
+      evidenceSources,sourceSetDigest,
+      skillVersion:"4.2.8"
+    });
+    assert.equal(result.status,"existing");
+    assert.equal(
+      result.relativePath,
+      "personal-library/视频/旧版公开视频总结"
     );
   } finally {
     await rm(h.root,{recursive:true,force:true});
