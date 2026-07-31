@@ -43,6 +43,8 @@ test("references bind business decisions to selected sourceIds, not prepared evi
   assert.match(knowledge,/evidenceSourceIds/);
   assert.match(knowledge,/B\s*站.*抖音.*公开视频/su);
   assert.match(knowledge,/原视频.*不.*复制/su);
+  assert.match(knowledge,/内部数据（程序使用）/u);
+  assert.match(knowledge,/默认折叠/u);
   assert.match(knowledge,/多个原始来源/);
   assert.match(knowledge,/personal-knowledge.*日常生活/s);
   assert.match(knowledge,/work-knowledge.*亚信工作/s);
@@ -142,5 +144,5 @@ test("the only Skill contract describes a continuous per-channel task",async()=>
   const entry=manifest.skills.find(
     item=>item.name==="llw-personal-assistant"
   );
-  assert.equal(entry.version,"4.2.7");
+  assert.equal(entry.version,"4.2.8");
 });
