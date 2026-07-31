@@ -109,7 +109,7 @@ test("version 7 enters one personal-assistant composition before legacy routing"
   );
   assert.match(
     source,
-    /taskManager,taskWorkspace[\s\S]*?skillVersion:"4\.3\.1"/
+    /taskManager,taskWorkspace[\s\S]*?skillVersion:"4\.3\.2"/
   );
   assert.match(
     source,
@@ -137,15 +137,27 @@ test("version 7 enters one personal-assistant composition before legacy routing"
   assert.equal(v6.includes("knowledge_source_incomplete"),false);
   assert.equal(v6.includes("workspaceRoot:config.vaultRoot"),false);
   assert.equal(v6.includes("conversationStore:"),false);
-  const {V6_PRIVATE_SKILL_ALLOWLIST}=await import("../src/main.mjs");
+  const {
+    V6_PRIVATE_SKILL_ALLOWLIST,
+    VIDEO_TIMELINE_HELPER_PATH,
+    VIDEO_TIMELINE_HELPER_SHA256
+  }=await import("../src/main.mjs");
   assert.deepEqual(V6_PRIVATE_SKILL_ALLOWLIST,[{
     name:"llw-personal-assistant",
     capability:"personal-assistant",
-    versions:["4.3.1"],
+    versions:["4.3.2"],
     semanticTasks:["personal-assistant.turn"],
     modelSupport:["codex","deepseek"],
     enabled:true
   }]);
+  assert.equal(
+    VIDEO_TIMELINE_HELPER_PATH,
+    "/Users/ccrt/Library/Application Support/LLW Assistant/runtime/video-timeline-reader-v2/video_timeline_reader_v2"
+  );
+  assert.equal(
+    VIDEO_TIMELINE_HELPER_SHA256,
+    "4f967d8a45cbc2c7c517c8222619be1dd585a2269110f78723b94a50275039d6"
+  );
 });
 
 test("version 6 explicitly migrates a live per-channel waiting conversation",async()=>{

@@ -107,9 +107,9 @@ import {
 } from "./personal-assistant/volcengine-video-asr-adapter.mjs";
 
 export const VIDEO_TIMELINE_HELPER_PATH=
-  "/Users/ccrt/Library/Application Support/LLW Assistant/runtime/video-timeline-reader-v1/video_timeline_reader_v1";
+  "/Users/ccrt/Library/Application Support/LLW Assistant/runtime/video-timeline-reader-v2/video_timeline_reader_v2";
 export const VIDEO_TIMELINE_HELPER_SHA256=
-  "b3b79f1770b49b75223d4a085ba41001256c985a3bde36d3317b9dd90a8f5a3f";
+  "4f967d8a45cbc2c7c517c8222619be1dd585a2269110f78723b94a50275039d6";
 export const DOUYIN_WEBKIT_HELPER_PATH=
   "/Users/ccrt/Library/Application Support/LLW Assistant/runtime/douyin-webkit-reader-v1/douyin_webkit_reader_v1";
 export const DOUYIN_WEBKIT_HELPER_SHA256=
@@ -120,7 +120,7 @@ const run=promisify(execFile);
 export const V6_PRIVATE_SKILL_ALLOWLIST=[{
   name:"llw-personal-assistant",
   capability:"personal-assistant",
-  versions:["4.3.1"],
+  versions:["4.3.2"],
   semanticTasks:["personal-assistant.turn"],
   modelSupport:["codex","deepseek"],
   enabled:true
@@ -317,7 +317,7 @@ async function runPersonalAssistantMain(config) {
     sourceReader:publicVideoRuntime.sourceReader,
     publicVideoReader:publicVideoRuntime.publicVideoReader,
     model:"codex",
-    skillVersion:"4.3.1"
+    skillVersion:"4.3.2"
   });
   const dispatcher=new PersonalAssistantDispatcher({
     binding,bindings,state,coordinator,modelMode,

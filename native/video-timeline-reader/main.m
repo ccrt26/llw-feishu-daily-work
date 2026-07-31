@@ -330,7 +330,7 @@ int main(int argc,const char *argv[]) {
       samplingStartMs,samplingEndMs,maximumSamples,&maxGapMs
     );
     if (samples==nil||samples.count<1||
-        samples.count>maximumSamples) {
+        (NSInteger)samples.count>maximumSamples) {
       return Fail(@"sampling_failed",66);
     }
 
