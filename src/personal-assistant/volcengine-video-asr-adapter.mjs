@@ -108,6 +108,11 @@ export function createVolcengineVideoAsrAdapter({
         await submitted.response.body?.cancel().catch(()=>{});
       }
 
+      throwIfAborted(signal);
+      try {
+        await input.onProcessingAccepted?.();
+      } catch {}
+
       while (true) {
         throwIfAborted(signal);
         if (expired(now,startedAt)) throw safeError("video_asr_timeout");
@@ -177,14 +182,16 @@ export function readVolcengineVideoAsrApiKey({service,account}) {
 
 async function prepareAudio(input) {
   const {
-    audioFile,audioSha256,durationMs,signal
+    audioFile,audioSha256,durationMs,signal,onProcessingAccepted
   }=input||{};
   if (typeof audioFile!=="string"||!isAbsolute(audioFile)||
       extname(audioFile).toLowerCase()!==".m4a"||
       !SHA.test(audioSha256||"")||
       !Number.isSafeInteger(durationMs)||
       durationMs<1||durationMs>MAX_AUDIO_DURATION_MS||
-      !(signal===undefined||signal instanceof AbortSignal)) {
+      !(signal===undefined||signal instanceof AbortSignal)||
+      !(onProcessingAccepted===undefined||
+        typeof onProcessingAccepted==="function")) {
     throw safeError("video_asr_input_invalid");
   }
   throwIfAborted(signal);
