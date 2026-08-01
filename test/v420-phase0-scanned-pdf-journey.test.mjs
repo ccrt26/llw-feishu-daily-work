@@ -160,7 +160,7 @@ test("WeChat PDF-only question then late read-only request sends ordered scanned
       taskManager,taskWorkspace,now:()=>nowMs
     });
 
-    const first=await dispatcher.handleIncomingMessage(
+    const first=await dispatcher.handleTaskIncomingMessage(
       createWechatIncomingMessage({
         messageId:"wechat-pdf",
         userId:"wx-owner",
@@ -187,7 +187,7 @@ test("WeChat PDF-only question then late read-only request sends ordered scanned
     assert.equal(retained.sources[0].handle.sha256,originalSha);
 
     nowMs=firstTime+20_000;
-    const second=await dispatcher.handleIncomingMessage(
+    const second=await dispatcher.handleTaskIncomingMessage(
       createWechatIncomingMessage({
         messageId:"wechat-instruction",
         userId:"wx-owner",
@@ -246,7 +246,7 @@ test("a WeChat AI timeout retries the same durable PDF without download, PDFium 
     }
   });
   try {
-    const failed=await harness.dispatcher.handleIncomingMessage(
+    const failed=await harness.dispatcher.handleTaskIncomingMessage(
       harness.fileMessage({
         id:"timeout-pdf",
         resource:"wxr-pdf",
@@ -265,7 +265,7 @@ test("a WeChat AI timeout retries the same durable PDF without download, PDFium 
     assert.equal(harness.writerCalls(),0);
 
     harness.advance(20_000);
-    const retried=await harness.dispatcher.handleIncomingMessage(
+    const retried=await harness.dispatcher.handleTaskIncomingMessage(
       harness.textMessage({id:"retry-pdf",text:"直接重试"})
     );
     assert.equal(retried.status,"committed");
@@ -296,7 +296,7 @@ test("an old TXT and a newly specified PDF coexist while only PDF pages enter mo
     }
   });
   try {
-    const first=await harness.dispatcher.handleIncomingMessage(
+    const first=await harness.dispatcher.handleTaskIncomingMessage(
       harness.fileMessage({
         id:"old-txt",
         resource:"wxr-txt",
@@ -307,7 +307,7 @@ test("an old TXT and a newly specified PDF coexist while only PDF pages enter mo
     );
     assert.equal(first.status,"committed");
     harness.advance(20_000);
-    const second=await harness.dispatcher.handleIncomingMessage(
+    const second=await harness.dispatcher.handleTaskIncomingMessage(
       harness.fileMessage({
         id:"new-pdf",
         resource:"wxr-pdf",
@@ -360,7 +360,7 @@ test("two ten-page WeChat PDFs ask for batching without a second AI call",async(
     }
   });
   try {
-    assert.equal((await harness.dispatcher.handleIncomingMessage(
+    assert.equal((await harness.dispatcher.handleTaskIncomingMessage(
       harness.fileMessage({
         id:"pdf-a",resource:"wxr-pdf-a",
         displayName:"扫描材料A.pdf",extension:"pdf",
@@ -368,7 +368,7 @@ test("two ten-page WeChat PDFs ask for batching without a second AI call",async(
       })
     )).status,"committed");
     harness.advance(20_000);
-    const second=await harness.dispatcher.handleIncomingMessage(
+    const second=await harness.dispatcher.handleTaskIncomingMessage(
       harness.fileMessage({
         id:"pdf-b",resource:"wxr-pdf-b",
         displayName:"扫描材料B.pdf",extension:"pdf",

@@ -139,7 +139,7 @@ try {
     taskManager,taskWorkspace,now:()=>nowMs
   });
 
-  const first=await dispatcher.handleIncomingMessage(
+  const first=await dispatcher.handleTaskIncomingMessage(
     createFeishuIncomingMessage({
       messageId:"synthetic-file",senderId:"synthetic-owner",
       chatId:"synthetic-chat",messageType:"file",
@@ -155,7 +155,7 @@ try {
   }
 
   nowMs=firstTime+20_000;
-  const second=await dispatcher.handleIncomingMessage(
+  const second=await dispatcher.handleTaskIncomingMessage(
     createFeishuIncomingMessage({
       messageId:"synthetic-instruction",
       senderId:"synthetic-owner",chatId:"synthetic-chat",

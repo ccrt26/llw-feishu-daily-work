@@ -283,6 +283,51 @@ test("adds one inspected interval observation and image to the next model call",
   }
 });
 
+test("stops at the configured source-read round limit with zero writes",async()=>{
+  const h=await taskHarness();
+  let assistantCalls=0,readerCalls=0,writerCalls=0;
+  const coordinator=createTaskCoordinator(h,{
+    maxSourceReadRounds:1,
+    taskWorkspace:{async ensure(){
+      return {
+        workspaceDir:"/private/task",
+        sources:[videoBinding()]
+      };
+    }},
+    sourceReader:{async read(){
+      readerCalls+=1;
+      return {observations:[],modelImageFiles:[]};
+    }},
+    assistant:{async decide(){
+      assistantCalls+=1;
+      return {
+        kind:"source_read",
+        requests:[{
+          sourceId:"source-001",
+          view:"inspect_time_range",
+          startMs:0,
+          endMs:1_000
+        }]
+      };
+    }},
+    writer:{async commit(){writerCalls+=1;}}
+  });
+  try {
+    await h.manager.accept(taskMessage());
+    const result=await coordinator.handleTask(
+      await h.manager.claim("feishu")
+    );
+    assert.equal(result.outcome.status,"committed");
+    assert.match(result.outcome.reply,/读取次数.*用完/u);
+    assert.match(result.outcome.reply,/没有执行保存或其他写入/u);
+    assert.equal(assistantCalls,2);
+    assert.equal(readerCalls,1);
+    assert.equal(writerCalls,0);
+  } finally {
+    await rm(h.root,{recursive:true,force:true});
+  }
+});
+
 test("turns an interval backend failure into one truthful zero-write reply",async()=>{
   const h=await taskHarness();
   let writerCalls=0;
@@ -733,6 +778,7 @@ function createTaskCoordinator(h,overrides={}) {
     personalRules:[],
     skillVersion:"4.1.0",
     sourceReader:overrides.sourceReader??null,
+    maxSourceReadRounds:overrides.maxSourceReadRounds??3,
     pdfReader:overrides.pdfReader??null,
     publicVideoReader:overrides.publicVideoReader??null,
     taskManager:overrides.taskManager??h.manager,

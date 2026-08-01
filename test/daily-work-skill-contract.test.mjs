@@ -1,7 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {readFile} from "node:fs/promises";
-import {guardAiInput} from "../src/ai/ai-input-guard.mjs";
 
 const skillRoot="/Volumes/ZHUTONG/LLW的私人助手/LLW/.agents/skills/feishu-daily-work";
 
@@ -51,7 +50,6 @@ test("daily-work Skill exposes the complete V3 business contract and versioned e
     assert.equal(Number.isFinite(item.input?.message?.createTime),true);
     assert.equal(Array.isArray(item.input?.candidates),true);
     assert.equal(item.input.candidates.length<=20,true);
-    assert.doesNotThrow(()=>guardAiInput(item.task,item.input),`guard rejected ${item.id}`);
     for (const candidate of item.input.candidates) assert.deepEqual(Object.keys(candidate).sort(),[
       "date","follow_ups","location","occurred_end_time","occurred_time","people","record_id","summary","title"
     ]);

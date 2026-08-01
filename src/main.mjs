@@ -117,10 +117,10 @@ export const DOUYIN_WEBKIT_HELPER_SHA256=
 
 const run=promisify(execFile);
 
-export const V6_PRIVATE_SKILL_ALLOWLIST=[{
+export const PERSONAL_ASSISTANT_PRIVATE_SKILL_ALLOWLIST=[{
   name:"llw-personal-assistant",
   capability:"personal-assistant",
-  versions:["4.3.2"],
+  versions:["4.4.0"],
   semanticTasks:["personal-assistant.turn"],
   modelSupport:["codex","deepseek"],
   enabled:true
@@ -145,7 +145,7 @@ async function runPersonalAssistantMain(config) {
     root:config.privateSkills.root,
     manifestPath:config.privateSkills.manifestPath,
     expectedManifestSha256:config.privateSkills.expectedManifestSha256,
-    allowlist:V6_PRIVATE_SKILL_ALLOWLIST
+    allowlist:PERSONAL_ASSISTANT_PRIVATE_SKILL_ALLOWLIST
   });
   const skillEntry=privateSkillCatalog.skills.find(
     entry=>entry.name===config.personalAssistant.skillName
@@ -311,7 +311,7 @@ async function runPersonalAssistantMain(config) {
     taskManager,taskWorkspace,pdfReader,
     sourceReader:publicVideoRuntime.sourceReader,
     publicVideoReader:publicVideoRuntime.publicVideoReader,
-    skillVersion:"4.3.2"
+    skillVersion:"4.4.0"
   });
   const dispatcher=new PersonalAssistantDispatcher({
     binding,bindings,state,coordinator,modelMode,

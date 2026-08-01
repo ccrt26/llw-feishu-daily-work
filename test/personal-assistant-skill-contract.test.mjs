@@ -164,5 +164,5 @@ test("the only Skill contract describes a continuous per-channel task",async()=>
   const entry=manifest.skills.find(
     item=>item.name==="llw-personal-assistant"
   );
-  assert.equal(entry.version,"4.3.2");
+  assert.equal(entry.version,"4.4.0");
 });

@@ -273,7 +273,7 @@ test("WeChat navigation requests and receives one real interval before replying"
       }
     });
 
-    const result=await dispatcher.handleIncomingMessage(
+    const result=await dispatcher.handleTaskIncomingMessage(
       createWechatIncomingMessage({
         messageId:"wechat-range-1",
         userId:"wx-owner",

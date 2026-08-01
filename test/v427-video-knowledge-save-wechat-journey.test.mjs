@@ -264,7 +264,7 @@ test("a WeChat video summary is saved from retained evidence without copying med
       }
     });
 
-    const first=await dispatcher.handleIncomingMessage(
+    const first=await dispatcher.handleTaskIncomingMessage(
       createWechatIncomingMessage({
         messageId:"wechat-bili-1",
         userId:"wx-owner",conversationId:"wx-owner",
@@ -294,7 +294,7 @@ test("a WeChat video summary is saved from retained evidence without copying med
     );
 
     nowMs=firstTime+20_000;
-    const second=await dispatcher.handleIncomingMessage(
+    const second=await dispatcher.handleTaskIncomingMessage(
       createWechatIncomingMessage({
         messageId:"wechat-bili-2",
         userId:"wx-owner",conversationId:"wx-owner",

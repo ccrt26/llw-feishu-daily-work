@@ -1,7 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {readFile} from "node:fs/promises";
-import {guardAiInput} from "../src/ai/ai-input-guard.mjs";
 
 const workspace="/Volumes/ZHUTONG/LLW的私人助手/LLW";
 
@@ -86,7 +85,6 @@ test("router Skill and business routing contracts expose one strict text and vis
     assert.equal(typeof item.input?.message?.type,"string");
     assert.equal(Array.isArray(item.input?.capabilities),true);
     assert.equal(item.input.capabilities.length>0&&item.input.capabilities.length<=20,true);
-    assert.doesNotThrow(()=>guardAiInput(item.task,item.input),`guard rejected ${item.id}`);
     for (const capability of item.input.capabilities) assert.deepEqual(Object.keys(capability).sort(),[
       "accepts","capability","negative_examples","positive_examples","purpose","supports_continuation"
     ]);

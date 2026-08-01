@@ -104,7 +104,7 @@ test("version 7 enters one personal-assistant composition",async()=>{
   );
   assert.match(
     source,
-    /taskManager,taskWorkspace[\s\S]*?skillVersion:"4\.3\.2"/
+    /taskManager,taskWorkspace[\s\S]*?skillVersion:"4\.4\.0"/
   );
   assert.match(
     source,
@@ -123,24 +123,24 @@ test("version 7 enters one personal-assistant composition",async()=>{
     /taskManager,taskWorkspace,[\s\S]*?new PersonalAssistantDispatcher/
   );
   assert.match(source,/await dispatcher\.recoverPendingTasks\(\)/);
-  const v6Start=source.indexOf("async function runPersonalAssistantMain");
-  const v6=source.slice(
-    v6Start,source.indexOf("\nexport async function startChatEntries",v6Start)
+  const mainStart=source.indexOf("async function runPersonalAssistantMain");
+  const mainComposition=source.slice(
+    mainStart,source.indexOf("\nexport async function startChatEntries",mainStart)
   );
-  assert.equal(v6.includes("prepareKnowledgeOfficeFile"),false);
-  assert.equal(v6.includes("createSourceEvidence"),false);
-  assert.equal(v6.includes("knowledge_source_incomplete"),false);
-  assert.equal(v6.includes("workspaceRoot:config.vaultRoot"),false);
-  assert.equal(v6.includes("conversationStore:"),false);
+  assert.equal(mainComposition.includes("prepareKnowledgeOfficeFile"),false);
+  assert.equal(mainComposition.includes("createSourceEvidence"),false);
+  assert.equal(mainComposition.includes("knowledge_source_incomplete"),false);
+  assert.equal(mainComposition.includes("workspaceRoot:config.vaultRoot"),false);
+  assert.equal(mainComposition.includes("conversationStore:"),false);
   const {
-    V6_PRIVATE_SKILL_ALLOWLIST,
+    PERSONAL_ASSISTANT_PRIVATE_SKILL_ALLOWLIST,
     VIDEO_TIMELINE_HELPER_PATH,
     VIDEO_TIMELINE_HELPER_SHA256
   }=await import("../src/main.mjs");
-  assert.deepEqual(V6_PRIVATE_SKILL_ALLOWLIST,[{
+  assert.deepEqual(PERSONAL_ASSISTANT_PRIVATE_SKILL_ALLOWLIST,[{
     name:"llw-personal-assistant",
     capability:"personal-assistant",
-    versions:["4.3.2"],
+    versions:["4.4.0"],
     semanticTasks:["personal-assistant.turn"],
     modelSupport:["codex","deepseek"],
     enabled:true

@@ -1,9 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import {mkdtemp,rm} from "node:fs/promises";
+import {tmpdir} from "node:os";
+import {join} from "node:path";
 import {createWechatApi} from "../src/adapters/wechat-api.mjs";
 import {startWechatListener} from "../src/adapters/wechat-runtime.mjs";
-import {Dispatcher} from "../src/core/dispatcher.mjs";
 import {PersonalAssistantDispatcher} from "../src/personal-assistant/dispatcher.mjs";
+import {StateStore} from "../src/state-store.mjs";
 
 const owner="wx-owner";
 const apiBaseUrl="https://ilinkai.weixin.qq.com";
@@ -91,6 +94,7 @@ test("delivers only one bound p2p finished user text and atomically advances its
 });
 
 test("keeps adjacent large JSON message IDs distinct through reply idempotency and deduplicates an exact repeat",async () => {
+  const root=await mkdtemp(join(tmpdir(),"llw-wechat-large-id-"));
   const first="9007199254740992";
   const second="9007199254740993";
   const api=apiFromBodies([
@@ -98,46 +102,50 @@ test("keeps adjacent large JSON message IDs distinct through reply idempotency a
     '{"errcode":-14}'
   ]);
   const channelState=state();
-  const outcomes=new Map();
-  const sends=[];
-  const dispatcher=new Dispatcher({
+  const sends=[],failureCodes=[];
+  const outcomeState=await StateStore.open(join(root,"state.json"));
+  const messenger={send:async value=>sends.push(structuredClone(value))};
+  const dispatcher=new PersonalAssistantDispatcher({
     binding:{senderId:"feishu-owner",chatId:"feishu-chat"},
     bindings:{
       feishu:{userId:"feishu-owner",conversationId:"feishu-chat"},
       wechat:{userId:owner,conversationId:owner}
     },
-    state:{
-      hasOutcome:key=>outcomes.has(key),
-      saveOutcome:async (key,value)=>{
-        if (!outcomes.has(key)) outcomes.set(key,{...structuredClone(value),replied:false});
-        return structuredClone(outcomes.get(key));
-      },
-      markReplied:async key=>{ outcomes.get(key).replied=true; }
-    },
-    capabilities:[],
-    intentRouter:{decide:async()=>{throw new Error("must_not_route");}},
-    messenger:{send:async value=>sends.push(structuredClone(value))},
+    state:outcomeState,taskManager:{},coordinator:{},messenger,
     modelMode:{read:async()=>"codex",write:async()=>{throw new Error("must_not_write");}},
-    deepseekEnabled:true
+    deepseekEnabled:true,
+    onFailure:code=>failureCodes.push(code)
   });
   const errors=[];
   const listener=await startWechatListener({
     api,state:channelState,
     binding:{userId:owner,conversationId:owner},
-    onMessage:message=>dispatcher.handleIncomingMessage(message),
+    onMessage:message=>dispatcher.acceptIncomingMessage(message),
     onError:error=>errors.push(error),
     retryDelayMs:0
   });
   await listener.done;
+  await dispatcher.flushAcceptedMessages();
 
-  assert.deepEqual([...outcomes.keys()],[`wechat:${first}`,`wechat:${second}`]);
-  assert.deepEqual(sends.map(value=>value.replyTarget.sourceMessageId),[first,second]);
-  assert.deepEqual(sends.map(value=>value.idempotencyKey),[
-    `reply:wechat:${first}`,
-    `reply:wechat:${second}`
-  ]);
-  assert.deepEqual(channelState.writes,["cursor-2"]);
-  assert.deepEqual(errors,[{stage:"wechat_poll",code:"wechat_auth_expired"}]);
+  try {
+    assert.deepEqual(failureCodes,[]);
+    assert.equal(
+      outcomeState.getOutcome(`wechat:${first}`).reply,
+      "当前模型：Codex\n切换方式：手工"
+    );
+    assert.equal(
+      outcomeState.getOutcome(`wechat:${second}`).reply,
+      "当前模型：Codex\n切换方式：手工"
+    );
+    assert.deepEqual(sends.map(value=>value.idempotencyKey),[
+      `reply:wechat:${first}`,
+      `reply:wechat:${second}`
+    ]);
+    assert.deepEqual(channelState.writes,["cursor-2"]);
+    assert.deepEqual(errors,[{stage:"wechat_poll",code:"wechat_auth_expired"}]);
+  } finally {
+    await rm(root,{recursive:true,force:true});
+  }
 });
 
 test("reports a safe collision when one WeChat batch reuses an id for different files",async () => {
@@ -382,6 +390,7 @@ test("passes disabled audio metadata to one deterministic assistant rejection wi
       },
       async markReplied(key){outcomes.get(key).replied=true;}
     },
+    taskManager:{},
     coordinator:{async handle(){
       coordinatorCalls+=1;
       return {status:"committed"};
