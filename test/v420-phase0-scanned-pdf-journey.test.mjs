@@ -160,7 +160,7 @@ test("WeChat PDF-only question then late read-only request sends ordered scanned
       taskManager,taskWorkspace,now:()=>nowMs
     });
 
-    const first=await dispatcher.handleIncomingMessage(
+    const first=await dispatcher.handleTaskIncomingMessage(
       createWechatIncomingMessage({
         messageId:"wechat-pdf",
         userId:"wx-owner",
@@ -187,7 +187,7 @@ test("WeChat PDF-only question then late read-only request sends ordered scanned
     assert.equal(retained.sources[0].handle.sha256,originalSha);
 
     nowMs=firstTime+20_000;
-    const second=await dispatcher.handleIncomingMessage(
+    const second=await dispatcher.handleTaskIncomingMessage(
       createWechatIncomingMessage({
         messageId:"wechat-instruction",
         userId:"wx-owner",
@@ -246,7 +246,7 @@ test("a WeChat AI timeout retries the same durable PDF without download, PDFium 
     }
   });
   try {
-    const failed=await harness.dispatcher.handleIncomingMessage(
+    const failed=await harness.dispatcher.handleTaskIncomingMessage(
       harness.fileMessage({
         id:"timeout-pdf",
         resource:"wxr-pdf",
@@ -265,7 +265,7 @@ test("a WeChat AI timeout retries the same durable PDF without download, PDFium 
     assert.equal(harness.writerCalls(),0);
 
     harness.advance(20_000);
-    const retried=await harness.dispatcher.handleIncomingMessage(
+    const retried=await harness.dispatcher.handleTaskIncomingMessage(
       harness.textMessage({id:"retry-pdf",text:"直接重试"})
     );
     assert.equal(retried.status,"committed");
@@ -296,7 +296,7 @@ test("an old TXT and a newly specified PDF coexist while only PDF pages enter mo
     }
   });
   try {
-    const first=await harness.dispatcher.handleIncomingMessage(
+    const first=await harness.dispatcher.handleTaskIncomingMessage(
       harness.fileMessage({
         id:"old-txt",
         resource:"wxr-txt",
@@ -307,7 +307,7 @@ test("an old TXT and a newly specified PDF coexist while only PDF pages enter mo
     );
     assert.equal(first.status,"committed");
     harness.advance(20_000);
-    const second=await harness.dispatcher.handleIncomingMessage(
+    const second=await harness.dispatcher.handleTaskIncomingMessage(
       harness.fileMessage({
         id:"new-pdf",
         resource:"wxr-pdf",
@@ -342,6 +342,43 @@ test("an old TXT and a newly specified PDF coexist while only PDF pages enter mo
       ["txt","pdf"]
     );
     assert.equal(harness.writerCalls(),0);
+  } finally {
+    await rm(harness.root,{recursive:true,force:true});
+  }
+});
+
+test("two ten-page WeChat PDFs ask for batching without a second AI call",async()=>{
+  let assistantCalls=0;
+  const harness=await journeyHarness({
+    pdfPages:10,
+    codex:async()=>{
+      assistantCalls+=1;
+      return {
+        type:"reply",
+        text:"第一份材料已只读分析，没有保存。"
+      };
+    }
+  });
+  try {
+    assert.equal((await harness.dispatcher.handleTaskIncomingMessage(
+      harness.fileMessage({
+        id:"pdf-a",resource:"wxr-pdf-a",
+        displayName:"扫描材料A.pdf",extension:"pdf",
+        instructionText:"总结这份材料，不保存"
+      })
+    )).status,"committed");
+    harness.advance(20_000);
+    const second=await harness.dispatcher.handleTaskIncomingMessage(
+      harness.fileMessage({
+        id:"pdf-b",resource:"wxr-pdf-b",
+        displayName:"扫描材料B.pdf",extension:"pdf",
+        instructionText:"把两份材料一起总结，不保存"
+      })
+    );
+    assert.equal(second.status,"rejected");
+    assert.equal(assistantCalls,1);
+    assert.equal(harness.writerCalls(),0);
+    assert.match(harness.sent.at(-1).text,/开始新任务/u);
   } finally {
     await rm(harness.root,{recursive:true,force:true});
   }
@@ -401,7 +438,9 @@ test("cancelling during PDF preparation aborts the task before AI or Writer",asy
   }
 });
 
-async function journeyHarness({codex,pdfReader=null}) {
+async function journeyHarness({
+  codex,pdfReader=null,pdfPages=2
+}) {
   const root=await mkdtemp(join(tmpdir(),"llw-v420-journey-harness-"));
   await chmod(fakePdfium,0o700);
   const files=new Map();
@@ -411,6 +450,8 @@ async function journeyHarness({codex,pdfReader=null}) {
   await writeFile(pdf,pdfBytes,{mode:0o600});
   await writeFile(txt,"OLD-SYNTHETIC-TEXT",{mode:0o600});
   files.set("wxr-pdf",pdf);
+  files.set("wxr-pdf-a",pdf);
+  files.set("wxr-pdf-b",pdf);
   files.set("wxr-txt",txt);
   const processorCount=join(root,"pdfium-count");
   const state=await StateStore.open(join(root,"state.json"));
@@ -439,7 +480,7 @@ async function journeyHarness({codex,pdfReader=null}) {
       environment:{
         ...process.env,
         FAKE_PDFIUM_MODE:"ok",
-        FAKE_PDFIUM_PAGES:"2",
+        FAKE_PDFIUM_PAGES:String(pdfPages),
         FAKE_PDFIUM_TEXT:"",
         FAKE_PDFIUM_COUNT:processorCount
       }
@@ -453,7 +494,10 @@ async function journeyHarness({codex,pdfReader=null}) {
     codex,
     deepseek:async()=>{throw new Error("unexpected_model");}
   });
-  const messenger={async send(){}};
+  const sent=[];
+  const messenger={
+    async send(value){sent.push(structuredClone(value));}
+  };
   const coordinator=new PersonalAssistantCoordinator({
     prepareSource:prepareTurnSources,
     assistant,
@@ -478,7 +522,7 @@ async function journeyHarness({codex,pdfReader=null}) {
     now:()=>nowMs
   });
   return {
-    root,state,taskManager,taskWorkspace,dispatcher,processorCount,
+    root,state,taskManager,taskWorkspace,dispatcher,processorCount,sent,
     downloads:()=>downloads,
     writerCalls:()=>writerCalls,
     advance:value=>{nowMs+=value;},

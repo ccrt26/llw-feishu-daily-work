@@ -5,19 +5,29 @@ import {
 import {validateTaskUpdate} from "./task-session.mjs";
 
 export function adaptProviderResult({
-  provider,raw,availableSources=[]
+  provider,raw,availableSources=[],allowSourceRead=false
 }) {
   try {
-    if (!new Set(["codex","deepseek"]).has(provider)||
+    if (typeof allowSourceRead!=="boolean"||
+        !new Set(["codex","deepseek"]).has(provider)||
         !raw||typeof raw!=="object"||Array.isArray(raw)) reject();
-    if (provider==="codex"&&raw.type==="source_read_request"&&
+    if (provider==="codex"&&allowSourceRead&&
+        raw.type==="source_read_request"&&
         Object.keys(raw).length===2&&
         Object.hasOwn(raw,"requests")) {
+      const requests=validateSourceReadRequest({
+        raw:raw.requests,
+        availableSources,
+        maxRequests:1,
+        maxRangeMs:60_000,
+        maxTotalRangeMs:60_000
+      });
+      if (requests.some(request=>
+        request.view!=="inspect_time_range"
+      )) reject();
       return {
         kind:"source_read",
-        requests:validateSourceReadRequest({
-          raw:raw.requests,availableSources
-        })
+        requests
       };
     }
     if ((raw.type==="reply"||raw.action==="reply")&&safeText(raw.text,32_000)) {

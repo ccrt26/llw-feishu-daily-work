@@ -8,7 +8,6 @@ import {
   classifyDisabledMediaInput,DEFAULT_MEDIA_INPUT_GATES,
   isUnsupportedMediaExtension,normalizeMediaInputGates
 } from "../core/media-support.mjs";
-import {isConversationCancellation} from "./conversation.mjs";
 import {SourceBurstCollector} from "./source-burst-collector.mjs";
 import {
   classifyTaskControl
@@ -17,9 +16,8 @@ import {
 export class PersonalAssistantDispatcher {
   constructor({
     binding,bindings,state,coordinator,modelMode,deepseekEnabled,messenger,
-    taskManager=null,taskWorkspace=null,cancelTaskWork=async()=>{},
-    onFailure=()=>{},coalesceWindowMs=0,
-    sourceBurstQuietMs=coalesceWindowMs,
+    taskManager,taskWorkspace=null,cancelTaskWork=async()=>{},
+    onFailure=()=>{},sourceBurstQuietMs=0,
     sourceBurstMaxMs=sourceBurstQuietMs?15_000:0,
     sourceBurstAttachmentQuietMs=sourceBurstQuietMs,
     mediaInputGates=DEFAULT_MEDIA_INPUT_GATES,
@@ -39,7 +37,8 @@ export class PersonalAssistantDispatcher {
     this.messenger=messenger;
     this.onFailure=typeof onFailure==="function"?onFailure:()=>{};
     this.mediaInputGates=normalizeMediaInputGates(mediaInputGates);
-    if (!Number.isSafeInteger(sourceBurstQuietMs)||
+    if (!taskManager||
+        !Number.isSafeInteger(sourceBurstQuietMs)||
         sourceBurstQuietMs<0||sourceBurstQuietMs>5_000||
         !Number.isSafeInteger(sourceBurstAttachmentQuietMs)||
         (sourceBurstQuietMs===0&&(
@@ -62,22 +61,9 @@ export class PersonalAssistantDispatcher {
         attachmentQuietMs:sourceBurstAttachmentQuietMs,
         maxMs:sourceBurstMaxMs,
         maxSources:maxSourcesPerTurn,now,setTimer,clearTimer,
-        onReady:({message,aliases})=>this.taskManager
-          ?this.scheduleTask(message.source)
-          :this.scheduleAccepted(message,aliases)
+        onReady:({message})=>this.scheduleTask(message.source)
       })
       :null;
-  }
-
-  handleRawEvent(raw) {
-    return this.enqueue(()=>this.processRawEvent(raw));
-  }
-
-  handleIncomingMessage(message) {
-    if (this.taskManager) {
-      return this.handleTaskIncomingMessage(message);
-    }
-    return this.enqueue(()=>this.processIncomingMessage(message));
   }
 
   acceptRawEvent(raw) {
@@ -128,30 +114,7 @@ export class PersonalAssistantDispatcher {
       this.scheduleUnsupportedMedia(message,unsupportedMediaCommand());
       return {handled:true,status:"rejected"};
     }
-    if (this.taskManager) {
-      return this.acceptTaskInput(message);
-    }
-    if (!this.sourceCollector) {
-      this.scheduleAccepted(message);
-      return {handled:true,status:"accepted"};
-    }
-    if (isConversationCancellation(message.instructionText)) {
-      const cancelled=this.sourceCollector.cancel(message);
-      if (cancelled.messages.length) {
-        this.scheduleAliasOutcomes(cancelled.messages,"cancelled");
-      }
-      this.scheduleAccepted(message);
-      return {handled:true,status:"accepted"};
-    }
-    const collected=this.sourceCollector.accept(message);
-    if (collected.status==="rejected") {
-      this.scheduleRejectedSource(message);
-      return {handled:true,status:"rejected"};
-    }
-    if (collected.reason==="duplicate") {
-      return {handled:false,reason:"duplicate"};
-    }
-    return {handled:true,status:"accepted"};
+    return this.acceptTaskInput(message);
   }
 
   async handleTaskIncomingMessage(message) {
@@ -417,8 +380,10 @@ export class PersonalAssistantDispatcher {
 
   async commitTaskFailure(snapshot,error) {
     const reasonCode=boundedFailureCode(error);
-    try { this.onFailure(reasonCode); } catch {}
-    const reply=failureReply(reasonCode);
+    try {
+      this.onFailure(failureLogCode(error,reasonCode));
+    } catch {}
+    const reply=failureReply(reasonCode,error);
     const committed=await this.taskManager.completeStage(snapshot,{
       status:"failed",
       reply,
@@ -469,23 +434,6 @@ export class PersonalAssistantDispatcher {
     this.trackTask(task,[key]);
   }
 
-  scheduleAliasOutcomes(messages,reasonCode) {
-    const keys=messages.map(personalOutcomeKey);
-    const task=this.enqueue(async()=>{
-      for (let index=0;index<messages.length;index+=1) {
-        const key=keys[index];
-        if (this.state.hasOutcome(key)) continue;
-        await this.state.saveOutcome(key,{
-          capability:"personal-assistant",
-          status:"ignored",reply:null,artifacts:[],replyFiles:[],
-          noReplyRequired:true,reasonCode,
-          createdAt:new Date().toISOString()
-        });
-      }
-    });
-    this.trackTask(task,keys);
-  }
-
   trackTask(task,keys=[]) {
     for (const key of keys) this.acceptedMessageKeys.add(key);
     this.acceptedTasks.add(task);
@@ -509,100 +457,6 @@ export class PersonalAssistantDispatcher {
     const next=this.queue.then(operation);
     this.queue=next.catch(()=>{});
     return next;
-  }
-
-  scheduleAccepted(message,aliases=[]) {
-    const messages=[message,...aliases];
-    const keys=messages.map(personalOutcomeKey);
-    const task=this.enqueue(async()=>{
-      const result=await this.processIncomingMessage(message);
-      if (aliases.length) {
-        await this.saveCoalescedAliases(aliases);
-      }
-      return result;
-    });
-    this.trackTask(task,keys);
-  }
-
-  async saveCoalescedAliases(messages) {
-    for (const message of messages) {
-      const key=personalOutcomeKey(message);
-      if (this.state.hasOutcome(key)) continue;
-      await this.state.saveOutcome(key,{
-        capability:"personal-assistant",
-        status:"ignored",reply:null,artifacts:[],replyFiles:[],
-        noReplyRequired:true,reasonCode:"coalesced_into_turn",
-        createdAt:new Date().toISOString()
-      });
-    }
-  }
-
-  async processRawEvent(raw) {
-    let event;
-    try {
-      event=normalizeEvent(raw);
-    } catch {
-      return {handled:false,reason:"invalid_event"};
-    }
-    const security=checkSecurity(event,this.binding);
-    if (!security.ok) return {handled:false,reason:security.reason};
-    let message;
-    try {
-      message=createFeishuIncomingMessage(event);
-    } catch {
-      return {handled:false,reason:"invalid_message"};
-    }
-    return this.processIncomingMessage(message);
-  }
-
-  async processIncomingMessage(message) {
-    const security=checkIncomingSecurity(message,this.bindings);
-    if (!security.ok) return {handled:false,reason:security.reason};
-    if (!message.instructionText.trim()&&!message.attachments.length) {
-      return {handled:false,reason:"empty_message"};
-    }
-    const key=personalOutcomeKey(message);
-    if (this.state.hasOutcome(key)) {
-      return {handled:false,reason:"duplicate"};
-    }
-    const mediaGate=classifyDisabledMediaInput(
-      message,this.mediaInputGates
-    );
-    if (mediaGate) {
-      await this.persistAndSendCommand(
-        key,message,mediaInputGateCommand(mediaGate)
-      );
-      return {handled:true,status:"rejected"};
-    }
-    if (hasUnsupportedMedia(message)) {
-      await this.persistAndSendCommand(
-        key,message,unsupportedMediaCommand()
-      );
-      return {handled:true,status:"rejected"};
-    }
-    if (!message.attachments.length) {
-      const command=await handleModelCommand(message.instructionText,{
-        modelMode:this.modelMode,deepseekEnabled:this.deepseekEnabled
-      });
-      if (command) {
-        await this.persistAndSendCommand(key,message,command);
-        return {handled:true,status:command.status};
-      }
-    }
-    try {
-      const outcome=await this.coordinator.handle(message);
-      return {handled:true,status:outcome.status};
-    } catch (error) {
-      if (this.state.hasOutcome(key)) throw error;
-      const reasonCode=boundedFailureCode(error);
-      try { this.onFailure(reasonCode); } catch {}
-      await this.persistAndSendCommand(key,message,{
-        status:"failed",
-        reply:failureReply(reasonCode),
-        reasonCode
-      });
-      return {handled:true,status:"failed"};
-    }
   }
 
   async persistAndSendCommand(key,message,draft) {
@@ -647,6 +501,26 @@ const PRECISE_PRE_WRITER_FAILURES=new Set([
   "assistant_timeout","assistant_process_failed",
   "assistant_result_invalid","pdf_prepare_failed"
 ]);
+const PUBLIC_VIDEO_FAILURE_CODES=new Set([
+  "bilibili_url_invalid","bilibili_access_denied",
+  "bilibili_control_invalid","bilibili_media_unavailable",
+  "bilibili_media_invalid","bilibili_limit_exceeded",
+  "bilibili_source_workspace_mode_failed",
+  "bilibili_result_metadata_invalid",
+  "bilibili_audio_descriptor_invalid",
+  "bilibili_video_descriptor_invalid",
+  "bilibili_audio_workspace_realpath_failed",
+  "bilibili_video_workspace_realpath_failed",
+  "bilibili_audio_file_realpath_failed",
+  "bilibili_video_file_realpath_failed",
+  "bilibili_audio_file_stat_failed",
+  "bilibili_video_file_stat_failed",
+  "bilibili_audio_file_metadata_invalid",
+  "bilibili_video_file_metadata_invalid",
+  "bilibili_audio_read_failed","bilibili_video_read_failed",
+  "bilibili_audio_hash_mismatch","bilibili_video_hash_mismatch",
+  "bilibili_source_handle_invalid"
+]);
 const SAFE_FAILURE_PHASES=new Set([
   "outcome_lookup_failed","reply_recovery_failed",
   "conversation_lookup_failed","personal_rule_confirmation_failed",
@@ -679,7 +553,22 @@ function boundedFailureCode(error) {
   return "tool_execution_failed";
 }
 
-function failureReply(code) {
+function failureLogCode(error,fallback) {
+  const code=error?.publicVideoFailureCode;
+  return error?.failurePhase===
+      "public_video_source_preparation_failed"&&
+    PUBLIC_VIDEO_FAILURE_CODES.has(code)
+    ?`public_video_source:${code}`
+    :fallback;
+}
+
+function failureReply(code,error) {
+  if (code==="public_video_source_preparation_failed") {
+    const specific=publicVideoFailureReply(
+      error?.publicVideoFailureCode
+    );
+    if (specific) return specific;
+  }
   return new Map([
     [
       "source_receive_failed",
@@ -719,7 +608,7 @@ function failureReply(code) {
     ],
     [
       "public_video_source_preparation_failed",
-      "未能完整取得公开视频的音频和画面，本次没有调用转写、AI 或 Writer，也没有确认任何写入；请重新发送同一链接重试。"
+      "未能完整取得公开视频的音频和画面，本次没有调用转写、AI 或 Writer，也没有确认任何写入；请重新发送同一链接。"
     ],
     [
       "public_video_prepare_failed",
@@ -731,6 +620,29 @@ function failureReply(code) {
     ]
   ]).get(code)||
     "本次工具执行失败，系统没有确认新的写入；请稍后重试。";
+}
+
+function publicVideoFailureReply(code) {
+  if (!PUBLIC_VIDEO_FAILURE_CODES.has(code)) return null;
+  if (code==="bilibili_url_invalid") {
+    return "没有识别到有效的 B 站视频链接，所以没有调用转写、AI 或 Writer，也没有写入。请重新复制并发送该视频链接。";
+  }
+  if (code==="bilibili_access_denied") {
+    return "本次无法访问 B 站视频来源（可能是网络或站点临时拒绝），所以没有调用转写、AI 或 Writer，也没有写入。需要时请重新发送同一链接。";
+  }
+  if (code==="bilibili_media_unavailable") {
+    return "B 站本次没有提供完整可用的音频和画面，所以没有调用转写、AI 或 Writer，也没有写入。需要时请重新发送同一链接。";
+  }
+  if (code==="bilibili_control_invalid") {
+    return "B 站返回的视频信息不完整或异常，系统无法安全确定音频和画面，所以没有调用转写、AI 或 Writer，也没有写入。请重新发送链接；如果持续出现，可能是该视频当前不可读取。";
+  }
+  if (code==="bilibili_media_invalid") {
+    return "取得的 B 站音频或画面内容无效，未通过媒体检查，所以没有调用转写、AI 或 Writer，也没有写入。请重新发送；如果持续出现，可能是该视频当前不可读取。";
+  }
+  if (code==="bilibili_limit_exceeded") {
+    return "该 B 站视频超过当前安全处理上限，所以没有调用转写、AI 或 Writer，也没有写入。请改用更短或更小的视频。";
+  }
+  return "视频来源已取得，但本地安全校验未通过，所以没有调用转写、AI 或 Writer，也没有写入。请重新发送；如果持续出现，请反馈给维护人员。";
 }
 
 function validTurnShape(message) {

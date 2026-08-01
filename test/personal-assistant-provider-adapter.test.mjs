@@ -65,6 +65,7 @@ test("rejects multiple tools, mixed success claims and unknown envelopes",() => 
 test("adapts a Codex source read as an internal observation, not a tool",()=>{
   const result=adaptProviderResult({
     provider:"codex",
+    allowSourceRead:true,
     availableSources:[{
       sourceId:"source-001",mediaClass:"video",durationMs:120_000
     }],
@@ -84,6 +85,58 @@ test("adapts a Codex source read as an internal observation, not a tool",()=>{
     }]
   });
   assert.equal(Object.hasOwn(result,"toolCall"),false);
+});
+
+test("rejects a Codex source read when the backend capability is disabled",()=>{
+  const raw={
+    type:"source_read_request",
+    requests:[{sourceId:"source-001",view:"probe_media"}]
+  };
+  const availableSources=[{
+    sourceId:"source-001",mediaClass:"video",durationMs:120_000
+  }];
+  assert.throws(
+    ()=>adaptProviderResult({
+      provider:"codex",raw,availableSources,allowSourceRead:false
+    }),
+    /provider_result_invalid/u
+  );
+  assert.throws(
+    ()=>adaptProviderResult({
+      provider:"codex",raw,availableSources,allowSourceRead:"yes"
+    }),
+    /provider_result_invalid/u
+  );
+  assert.throws(
+    ()=>adaptProviderResult({
+      provider:"codex",
+      raw,
+      availableSources,
+      allowSourceRead:true
+    }),
+    /provider_result_invalid/u
+  );
+  assert.throws(
+    ()=>adaptProviderResult({
+      provider:"codex",
+      raw:{
+        type:"source_read_request",
+        requests:[
+          {
+            sourceId:"source-001",view:"inspect_time_range",
+            startMs:1_000,endMs:2_000
+          },
+          {
+            sourceId:"source-001",view:"inspect_time_range",
+            startMs:2_000,endMs:3_000
+          }
+        ]
+      },
+      availableSources,
+      allowSourceRead:true
+    }),
+    /provider_result_invalid/u
+  );
 });
 
 test("never lets DeepSeek or a mixed envelope request source access",()=>{

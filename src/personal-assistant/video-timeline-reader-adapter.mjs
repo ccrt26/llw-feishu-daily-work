@@ -15,8 +15,10 @@ const PNG_SIGNATURE=Buffer.from([
 const MAX_VIDEO_BYTES=128*1024*1024;
 const MAX_DURATION_MS=7*24*60*60*1_000;
 const MAX_DURATION_ROUNDING_MS=1_000;
-const MAX_SAMPLES=192;
-const MAX_FILES=16;
+const MAX_SAMPLES=156;
+const MAX_FILES=13;
+const MAX_RANGE_MS=60_000;
+const MAX_RANGE_SAMPLES=12;
 const MAX_TOTAL_BYTES=100*1024*1024;
 const MAX_DIMENSION=3508;
 const MAX_PIXELS=12_306_064;
@@ -26,6 +28,10 @@ const MAX_HELPER_BYTES=64*1024*1024;
 const RESULT_FIELDS=new Set([
   "version","status","contract","durationMs","sampleCount",
   "maxGapMs","samples","sheets","limitations"
+]);
+const RANGE_RESULT_FIELDS=new Set([
+  "version","status","contract","durationMs","startMs","endMs",
+  "sampleCount","maxGapMs","samples","sheets","limitations"
 ]);
 const SAMPLE_FIELDS=new Set(["startMs","endMs","sampleMs"]);
 const SHEET_FIELDS=new Set([
@@ -164,6 +170,95 @@ export function createVideoTimelineReaderAdapter({
       } finally {
         if (job) await rm(job,{recursive:true,force:true}).catch(()=>{});
       }
+    },
+    async readRange(input) {
+      const request=validateRangeInput(input);
+      const published=[];
+      let job;
+      try {
+        await Promise.all([
+          validatePrivateDirectory(request.workspaceDir),
+          validatePrivateDirectory(tempRoot),
+          validatePrivateDirectory(jobCwd),
+          validateHelper(helperPath,helperSha256),
+          validateVideo(request)
+        ]);
+        request.signal?.throwIfAborted();
+        job=await mkdtemp(join(tempRoot,"llw-video-range-"));
+        await chmod(job,0o700);
+        await validatePrivateDirectory(job);
+
+        const stdout=await runHelper({
+          helperPath,
+          args:[
+            "--video",request.videoFile,
+            "--output-dir",job,
+            "--expected-duration-ms",String(request.durationMs),
+            "--start-ms",String(request.startMs),
+            "--end-ms",String(request.endMs)
+          ],
+          jobCwd,
+          job,
+          timeoutMs,
+          maxStdoutBytes,
+          helperEnvironment,
+          spawnImpl,
+          signal:request.signal
+        });
+        request.signal?.throwIfAborted();
+        const result=parseRangeResult({
+          stdout,
+          expectedDurationMs:request.durationMs,
+          expectedStartMs:request.startMs,
+          expectedEndMs:request.endMs
+        });
+        const sheet=result.sheets[0];
+        const verified=await verifySheet({
+          sheet,index:0,job,maxDimension,maxPixels
+        });
+        if (verified.byteSize>maxTotalBytes) {
+          throw safeError("video_timeline_limit_exceeded");
+        }
+        const relativePath=[
+          `${request.sourceId}.inspect`,
+          `${request.startMs}`,
+          `${request.endMs}.png`
+        ].join("-");
+        const destination=join(request.workspaceDir,relativePath);
+        await copyFile(
+          verified.file,
+          destination,
+          fsConstants.COPYFILE_EXCL
+        );
+        await chmod(destination,0o600);
+        published.push(destination);
+        request.signal?.throwIfAborted();
+        return Object.freeze({
+          durationMs:result.durationMs,
+          startMs:result.startMs,
+          endMs:result.endMs,
+          sampleCount:result.sampleCount,
+          maxGapMs:result.maxGapMs,
+          samples:Object.freeze(
+            result.samples.map(item=>Object.freeze({...item}))
+          ),
+          images:Object.freeze([Object.freeze({
+            sourceId:request.sourceId,
+            relativePath,
+            sha256:sheet.sha256,
+            startMs:request.startMs,
+            endMs:request.endMs
+          })]),
+          limitations:Object.freeze([...result.limitations])
+        });
+      } catch (error) {
+        for (const file of published.reverse()) {
+          await rm(file,{force:true}).catch(()=>{});
+        }
+        throw normalizeError(error);
+      } finally {
+        if (job) await rm(job,{recursive:true,force:true}).catch(()=>{});
+      }
     }
   });
 }
@@ -184,6 +279,25 @@ function validateReadInput(input) {
     throw safeError("video_timeline_input_invalid");
   }
   return Object.freeze({...input});
+}
+
+function validateRangeInput(input) {
+  const request=validateReadInput(input);
+  const allowed=new Set([
+    "sourceId","videoFile","videoSha256","durationMs",
+    "startMs","endMs","workspaceDir","signal"
+  ]);
+  if (Object.keys(input).some(key=>!allowed.has(key))||
+      !Number.isSafeInteger(input.startMs)||input.startMs<0||
+      !Number.isSafeInteger(input.endMs)||
+      input.endMs<=input.startMs||
+      input.endMs>request.durationMs||
+      input.endMs-input.startMs>MAX_RANGE_MS) {
+    throw safeError("video_timeline_input_invalid");
+  }
+  return Object.freeze({...request,
+    startMs:input.startMs,endMs:input.endMs
+  });
 }
 
 async function validateVideo(request) {
@@ -361,6 +475,44 @@ function parseResult({stdout,expectedDurationMs,maxFiles}) {
   return normalizeDurationRounding(value,expectedDurationMs);
 }
 
+function parseRangeResult({
+  stdout,expectedDurationMs,expectedStartMs,expectedEndMs
+}) {
+  let value;
+  try {
+    value=JSON.parse(stdout);
+  } catch {
+    throw safeError("video_timeline_helper_invalid");
+  }
+  if (
+    !exact(value,RANGE_RESULT_FIELDS)||
+    value.version!==1||
+    value.status!=="ok"||
+    value.contract!=="video_time_range_reader_v1"||
+    !bounded(value.durationMs,1,MAX_DURATION_MS)||
+    Math.abs(value.durationMs-expectedDurationMs)>
+      MAX_DURATION_ROUNDING_MS||
+    value.startMs!==expectedStartMs||
+    value.endMs!==expectedEndMs||
+    !bounded(value.sampleCount,1,MAX_RANGE_SAMPLES)||
+    !bounded(value.maxGapMs,1,MAX_RANGE_MS)||
+    !Array.isArray(value.samples)||
+    value.samples.length!==value.sampleCount||
+    !Array.isArray(value.sheets)||
+    value.sheets.length!==1||
+    !Array.isArray(value.limitations)||
+    value.limitations.length!==2||
+    value.limitations[0]!=="uniform_range_sampling"||
+    value.limitations[1]!=="not_frame_by_frame"
+  ) {
+    throw safeError("video_timeline_helper_invalid");
+  }
+  validateRangeSamples(value);
+  validateSheets(value);
+  if (value.durationMs===expectedDurationMs) return value;
+  return {...value,durationMs:expectedDurationMs};
+}
+
 function normalizeDurationRounding(value,expectedDurationMs) {
   if (value.durationMs===expectedDurationMs) return value;
   const result=structuredClone(value);
@@ -404,6 +556,31 @@ function validateSamples(value) {
     previousEnd=sample.endMs;
   }
   if (previousEnd!==value.durationMs||maxGap!==value.maxGapMs) {
+    throw safeError("video_timeline_helper_invalid");
+  }
+}
+
+function validateRangeSamples(value) {
+  let previousEnd=value.startMs;
+  let maxGap=0;
+  for (const sample of value.samples) {
+    if (
+      !exact(sample,SAMPLE_FIELDS)||
+      !Number.isSafeInteger(sample.startMs)||
+      !Number.isSafeInteger(sample.endMs)||
+      !Number.isSafeInteger(sample.sampleMs)||
+      sample.startMs!==previousEnd||
+      sample.endMs<=sample.startMs||
+      sample.endMs>value.endMs||
+      sample.sampleMs<sample.startMs||
+      sample.sampleMs>=sample.endMs
+    ) {
+      throw safeError("video_timeline_helper_invalid");
+    }
+    maxGap=Math.max(maxGap,sample.endMs-sample.startMs);
+    previousEnd=sample.endMs;
+  }
+  if (previousEnd!==value.endMs||maxGap!==value.maxGapMs) {
     throw safeError("video_timeline_helper_invalid");
   }
 }

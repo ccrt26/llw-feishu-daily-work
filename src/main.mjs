@@ -97,6 +97,9 @@ import {
   TaskPublicVideoReader
 } from "./personal-assistant/task-public-video-reader.mjs";
 import {
+  SourceReader
+} from "./personal-assistant/source-reader.mjs";
+import {
   createVideoTimelineReaderAdapter
 } from "./personal-assistant/video-timeline-reader-adapter.mjs";
 import {
@@ -104,9 +107,9 @@ import {
 } from "./personal-assistant/volcengine-video-asr-adapter.mjs";
 
 export const VIDEO_TIMELINE_HELPER_PATH=
-  "/Users/ccrt/Library/Application Support/LLW Assistant/runtime/video-timeline-reader-v1/video_timeline_reader_v1";
+  "/Users/ccrt/Library/Application Support/LLW Assistant/runtime/video-timeline-reader-v2/video_timeline_reader_v2";
 export const VIDEO_TIMELINE_HELPER_SHA256=
-  "b3b79f1770b49b75223d4a085ba41001256c985a3bde36d3317b9dd90a8f5a3f";
+  "4f967d8a45cbc2c7c517c8222619be1dd585a2269110f78723b94a50275039d6";
 export const DOUYIN_WEBKIT_HELPER_PATH=
   "/Users/ccrt/Library/Application Support/LLW Assistant/runtime/douyin-webkit-reader-v1/douyin_webkit_reader_v1";
 export const DOUYIN_WEBKIT_HELPER_SHA256=
@@ -114,10 +117,10 @@ export const DOUYIN_WEBKIT_HELPER_SHA256=
 
 const run=promisify(execFile);
 
-export const V6_PRIVATE_SKILL_ALLOWLIST=[{
+export const PERSONAL_ASSISTANT_PRIVATE_SKILL_ALLOWLIST=[{
   name:"llw-personal-assistant",
   capability:"personal-assistant",
-  versions:["4.2.8"],
+  versions:["4.4.0"],
   semanticTasks:["personal-assistant.turn"],
   modelSupport:["codex","deepseek"],
   enabled:true
@@ -128,13 +131,8 @@ async function runMain() {
   const configFile=process.argv[2] ||
     "/Users/ccrt/Library/Application Support/LLW Assistant/state/feishu-daily-work/config.json";
   const config=await loadConfig(configFile);
-  if (config.version===6) {
-    throw new Error("config_migration_required");
-  }
   if (config.version!==7) {
-    const {runLegacyMain}=await import("./legacy-main.mjs");
-    await runLegacyMain(configFile);
-    return;
+    throw new Error("config_migration_required");
   }
   await runPersonalAssistantMain(config);
 }
@@ -147,7 +145,7 @@ async function runPersonalAssistantMain(config) {
     root:config.privateSkills.root,
     manifestPath:config.privateSkills.manifestPath,
     expectedManifestSha256:config.privateSkills.expectedManifestSha256,
-    allowlist:V6_PRIVATE_SKILL_ALLOWLIST
+    allowlist:PERSONAL_ASSISTANT_PRIVATE_SKILL_ALLOWLIST
   });
   const skillEntry=privateSkillCatalog.skills.find(
     entry=>entry.name===config.personalAssistant.skillName
@@ -241,10 +239,10 @@ async function runPersonalAssistantMain(config) {
   const prepareTurnSources=publicVideoRuntime.prepareTurnSources;
   const assistant=new PersonalAssistantClient({
     codex:(context,{
-      workspaceDir,imageFiles,modelImageFiles
+      workspaceDir,imageFiles,modelImageFiles,allowSourceRead
     })=>invokePersonalAssistantCodex({
       codexPath:config.codexPath,workspaceDir,
-      skillBundle,context,imageFiles,modelImageFiles,
+      skillBundle,context,imageFiles,modelImageFiles,allowSourceRead,
       timeoutMs:config.personalAssistant.aiTimeoutMs
     }),
     deepseek:(context,{
@@ -295,7 +293,7 @@ async function runPersonalAssistantMain(config) {
     timeoutMs:invoiceConfig.pdfPrepareTimeoutMs
   });
   const coordinator=new PersonalAssistantCoordinator({
-    prepareSource:prepareTurnSources,assistant,
+    assistant,
     writer:new KnowledgeWriter({
       vaultRoot:config.vaultRoot,libraries:knowledgeConfig.libraries
     }),
@@ -311,9 +309,9 @@ async function runPersonalAssistantMain(config) {
     personalRules:[],
     personalRulesStore,
     taskManager,taskWorkspace,pdfReader,
+    sourceReader:publicVideoRuntime.sourceReader,
     publicVideoReader:publicVideoRuntime.publicVideoReader,
-    model:"codex",
-    skillVersion:"4.2.8"
+    skillVersion:"4.4.0"
   });
   const dispatcher=new PersonalAssistantDispatcher({
     binding,bindings,state,coordinator,modelMode,
@@ -430,7 +428,8 @@ export async function createPublicVideoProductionComposition({
   if (!bilibiliEnabled&&!douyinEnabled) {
     return Object.freeze({
       prepareTurnSources:basePreparer,
-      publicVideoReader:null
+      publicVideoReader:null,
+      sourceReader:null
     });
   }
   const timelineTempRoot=join(stateRoot,"video-timeline-jobs");
@@ -479,14 +478,26 @@ export async function createPublicVideoProductionComposition({
     bilibiliAdapter,
     douyinAdapter
   });
+  const publicVideoReader=new TaskPublicVideoReader({
+    asr,timelineReader
+  });
+  const sourceReader=new SourceReader({
+    backends:{
+      inspect_time_range:input=>
+        publicVideoReader.inspectTimeRange(input)
+    },
+    maxRequests:1,
+    maxRangeMs:60_000,
+    maxTotalRangeMs:60_000,
+    maxModelImageFiles:1
+  });
   return Object.freeze({
     prepareTurnSources:createTurnSourcePreparerWithPublicVideo({
       basePreparer,
       publicVideoSourcePreparer
     }),
-    publicVideoReader:new TaskPublicVideoReader({
-      asr,timelineReader
-    })
+    publicVideoReader,
+    sourceReader
   });
 }
 

@@ -125,6 +125,114 @@ test("rejects a wrong source hash before spawning the helper",async()=>{
   }
 });
 
+test("publishes one verified contact sheet for one bounded interval",async()=>{
+  const fixture=await readerFixture();
+  try {
+    const reader=await fixture.reader();
+    const result=await reader.readRange({
+      sourceId:"source-001",
+      videoFile:fixture.videoFile,
+      videoSha256:fixture.videoSha256,
+      durationMs:12_000,
+      startMs:5_000,
+      endMs:7_000,
+      workspaceDir:fixture.workspaceDir
+    });
+    assert.equal(result.durationMs,12_000);
+    assert.equal(result.startMs,5_000);
+    assert.equal(result.endMs,7_000);
+    assert.equal(result.sampleCount,1);
+    assert.equal(result.maxGapMs,2_000);
+    assert.deepEqual(result.samples,[
+      {startMs:5_000,endMs:7_000,sampleMs:6_000}
+    ]);
+    assert.deepEqual(result.images,[{
+      sourceId:"source-001",
+      relativePath:"source-001.inspect-5000-7000.png",
+      sha256:result.images[0].sha256,
+      startMs:5_000,
+      endMs:7_000
+    }]);
+    assert.equal((await stat(
+      join(fixture.workspaceDir,result.images[0].relativePath)
+    )).mode&0o777,0o600);
+    assert.deepEqual(
+      result.limitations,
+      ["uniform_range_sampling","not_frame_by_frame"]
+    );
+    assert.deepEqual(await readdir(fixture.tempRoot),[]);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("rejects an invalid interval before publishing helper output",async()=>{
+  const fixture=await readerFixture();
+  try {
+    const reader=await fixture.reader();
+    for (const [durationMs,startMs,endMs] of [
+      [12_000,-1,1_000],
+      [12_000,5_000,5_000],
+      [12_000,7_000,5_000],
+      [12_000,0,12_001],
+      [120_001,0,60_001]
+    ]) {
+      await assert.rejects(
+        reader.readRange({
+          sourceId:"source-001",
+          videoFile:fixture.videoFile,
+          videoSha256:fixture.videoSha256,
+          durationMs,
+          startMs,endMs,
+          workspaceDir:fixture.workspaceDir
+        }),
+        error=>error?.message==="video_timeline_input_invalid"
+      );
+    }
+    assert.deepEqual(await readdir(fixture.workspaceDir),[
+      "source-video.mp4"
+    ]);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+for (const [mode,code,limits] of [
+  ["range_mismatch","video_timeline_helper_invalid",{}],
+  ["range_extra_sheet","video_timeline_helper_invalid",{}],
+  ["range_path_escape","video_timeline_helper_invalid",{}],
+  ["range_wrong_hash","video_timeline_media_invalid",{}],
+  ["range_wide_image","video_timeline_limit_exceeded",{maxDimension:2}],
+  ["range_too_many_bytes","video_timeline_limit_exceeded",{
+    maxTotalBytes:64
+  }]
+]) {
+  test(`fails closed and cleans interval artifacts for ${mode}`,async()=>{
+    const fixture=await readerFixture({mode});
+    try {
+      const reader=await fixture.reader(limits);
+      await assert.rejects(
+        reader.readRange({
+          sourceId:"source-001",
+          videoFile:fixture.videoFile,
+          videoSha256:fixture.videoSha256,
+          durationMs:12_000,
+          startMs:5_000,
+          endMs:7_000,
+          workspaceDir:fixture.workspaceDir
+        }),
+        error=>error?.message===code
+      );
+      assert.deepEqual(await readdir(fixture.tempRoot),[]);
+      assert.deepEqual(await readdir(fixture.workspaceDir),[
+        "source-video.mp4"
+      ]);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+}
+
 async function readerFixture({mode="ok"}={}) {
   const root=await mkdtemp(join(tmpdir(),"llw-video-timeline-adapter-"));
   const workspaceDir=join(root,"workspace");

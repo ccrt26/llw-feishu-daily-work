@@ -16,6 +16,46 @@ test("extracts one Bilibili public-video request from typed text",()=>{
   );
 });
 
+test("canonicalizes one tracked Bilibili mobile video link",()=>{
+  assert.deepEqual(
+    extractPublicVideoRequest([
+      "总结内容，不保存：",
+      "https://m.bilibili.com/video/BV1AbCdEfGhJ?",
+      "buvid=redacted&p=1&share_source=WEIXIN"
+    ].join("")),
+    {
+      platform:"bilibili",
+      url:"https://www.bilibili.com/video/BV1AbCdEfGhJ/"
+    }
+  );
+  assert.deepEqual(
+    extractPublicVideoRequest(
+      "总结 https://m.bilibili.com/video/BV1AbCdEfGhJ/"
+    ),
+    {
+      platform:"bilibili",
+      url:"https://www.bilibili.com/video/BV1AbCdEfGhJ/"
+    }
+  );
+});
+
+test("rejects unsafe or unsupported Bilibili mobile links",()=>{
+  const invalid=[
+    "https://m.bilibili.com/video/BV1AbCdEfGhJ?p=2",
+    "https://m.bilibili.com/video/BV1AbCdEfGhJ?p=1&p=1",
+    "https://user:password@m.bilibili.com/video/BV1AbCdEfGhJ",
+    "https://m.bilibili.com:444/video/BV1AbCdEfGhJ",
+    "https://m.bilibili.com/video/BV1AbCdEfGhJ#part",
+    "https://m.bilibili.com/space/BV1AbCdEfGhJ"
+  ];
+  for (const url of invalid) {
+    assert.throws(
+      ()=>extractPublicVideoRequest(`总结 ${url}`),
+      /public_video_link_invalid/
+    );
+  }
+});
+
 test("extracts one canonical Douyin public-video request from typed text",()=>{
   assert.deepEqual(
     extractPublicVideoRequest(

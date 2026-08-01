@@ -18,23 +18,36 @@ const MAX_INDEX_BYTES=768*1024;
 const MAX_OBSERVATION_BYTES=256*1024;
 
 export class TaskPublicVideoReader {
-  constructor({asr,timelineReader}) {
+  constructor({
+    asr,timelineReader,
+    clock=()=>new Date().toISOString()
+  }) {
     if (typeof asr?.transcribe!=="function"||
-        typeof timelineReader?.read!=="function") {
+        typeof timelineReader?.read!=="function"||
+        typeof timelineReader?.readRange!=="function"||
+        typeof clock!=="function") {
       throw invalid();
     }
     this.asr=asr;
     this.timelineReader=timelineReader;
+    this.clock=clock;
   }
 
-  async prepare({workspaceDir,sources,signal,now}) {
+  async prepare({
+    workspaceDir,sources,signal,now,onProcessingAccepted
+  }) {
     if (typeof workspaceDir!=="string"||!isAbsolute(workspaceDir)||
         !Array.isArray(sources)||sources.length>8||
         !(signal===undefined||signal instanceof AbortSignal)||
+        !(onProcessingAccepted===undefined||
+          typeof onProcessingAccepted==="function")||
         !canonicalIso(now)) {
       throw invalid();
     }
     await privateDirectory(workspaceDir);
+    const notifyProcessingAccepted=onceBestEffort(
+      onProcessingAccepted
+    );
     const observations=[];
     const modelImageFiles=[];
     for (const source of sources) {
@@ -42,7 +55,8 @@ export class TaskPublicVideoReader {
       if (handle.mediaClass!=="video") continue;
       signal?.throwIfAborted();
       const evidence=await this.prepareSource({
-        workspaceDir,source,handle,signal,now
+        workspaceDir,source,handle,signal,now,
+        notifyProcessingAccepted
       });
       observations.push(evidence.observation);
       modelImageFiles.push(...evidence.modelImageFiles);
@@ -54,7 +68,8 @@ export class TaskPublicVideoReader {
   }
 
   async prepareSource({
-    workspaceDir,source,handle,signal,now
+    workspaceDir,source,handle,signal,now,
+    notifyProcessingAccepted
   }) {
     const videoFile=await validateOriginal({
       workspaceDir,source,handle
@@ -102,7 +117,8 @@ export class TaskPublicVideoReader {
         raw=await this.asr.transcribe({
           audioFile,audioSha256,
           durationMs:handle.durationMs,
-          signal
+          signal,
+          onProcessingAccepted:notifyProcessingAccepted
         });
       } catch (error) {
         if (error?.name==="AbortError") throw error;
@@ -158,6 +174,7 @@ export class TaskPublicVideoReader {
       }
     }
     if (timeline===null) {
+      await notifyProcessingAccepted();
       let raw;
       try {
         raw=await this.timelineReader.read({
@@ -228,6 +245,146 @@ export class TaskPublicVideoReader {
       )
     });
   }
+
+  async inspectTimeRange({
+    request,source,workspaceDir,signal
+  }) {
+    if (typeof workspaceDir!=="string"||!isAbsolute(workspaceDir)||
+        !(signal===undefined||signal instanceof AbortSignal)||
+        !plain(request)||Object.keys(request).length!==4||
+        request.view!=="inspect_time_range"||
+        !Number.isSafeInteger(request.startMs)||request.startMs<0||
+        !Number.isSafeInteger(request.endMs)||
+        request.endMs<=request.startMs||
+        request.endMs-request.startMs>60_000) {
+      throw invalid();
+    }
+    signal?.throwIfAborted();
+    await privateDirectory(workspaceDir);
+    const handle=createSourceHandle(source?.handle??source);
+    if (request.sourceId!==handle.sourceId||
+        request.endMs>handle.durationMs) {
+      throw invalid();
+    }
+    const videoFile=await validateOriginal({
+      workspaceDir,source,handle
+    });
+    const now=this.clock();
+    if (!canonicalIso(now)) throw invalid();
+    const manifestPath=join(
+      workspaceDir,`${handle.sourceId}.manifest.json`
+    );
+    const manifest=await ensureSidecar({
+      workspaceDir,manifestPath,handle,now
+    });
+    const relativePath=[
+      `${handle.sourceId}.inspect`,
+      `${request.startMs}`,
+      `${request.endMs}.json`
+    ].join("-");
+    const indexPath=join(workspaceDir,relativePath);
+    const entries=manifest.derived.filter(item=>
+      item?.kind==="inspection"&&
+      item?.relativePath===relativePath
+    );
+    if (entries.length>1) throw invalid();
+    let inspection=await loadOptionalJson(indexPath);
+    if (entries.length===1) {
+      if (inspection===null) throw invalid();
+      inspection=await validateInspection({
+        value:inspection,request,handle,workspaceDir
+      });
+      const entry=entries[0];
+      if (entry.sha256!==await sha256File(indexPath)||
+          entry.producedBy!==PRODUCED_BY||
+          !sameArray(entry.limitations,inspection.limitations)) {
+        throw invalid();
+      }
+      return buildInspectionObservation({
+        inspection,relativePath,indexPath
+      });
+    }
+    if (inspection!==null) {
+      inspection=await validateInspection({
+        value:inspection,request,handle,workspaceDir
+      });
+      await appendDerivedRepresentation({
+        workspaceDir,manifestPath,
+        entry:{
+          kind:"inspection",
+          relativePath,
+          producedBy:PRODUCED_BY,
+          limitations:inspection.limitations
+        },
+        now
+      });
+      return buildInspectionObservation({
+        inspection,relativePath,indexPath
+      });
+    }
+    let raw;
+    try {
+      raw=await this.timelineReader.readRange({
+        sourceId:handle.sourceId,
+        videoFile,
+        videoSha256:handle.sha256,
+        durationMs:handle.durationMs,
+        startMs:request.startMs,
+        endMs:request.endMs,
+        workspaceDir,
+        signal
+      });
+    } catch (error) {
+      if (error?.name==="AbortError") throw error;
+      throw invalid();
+    }
+    signal?.throwIfAborted();
+    inspection=await validateInspection({
+      value:{
+        version:1,
+        sourceId:handle.sourceId,
+        originalSha256:handle.sha256,
+        kind:"video_interval_inspection",
+        durationMs:raw?.durationMs,
+        startMs:raw?.startMs,
+        endMs:raw?.endMs,
+        sampleCount:raw?.sampleCount,
+        maxGapMs:raw?.maxGapMs,
+        samples:raw?.samples,
+        images:raw?.images,
+        coverageStatus:"complete",
+        limitations:raw?.limitations
+      },
+      request,handle,workspaceDir
+    });
+    await atomicWriteJson(indexPath,inspection);
+    await appendDerivedRepresentation({
+      workspaceDir,manifestPath,
+      entry:{
+        kind:"inspection",
+        relativePath,
+        producedBy:PRODUCED_BY,
+        limitations:inspection.limitations
+      },
+      now
+    });
+    return buildInspectionObservation({
+      inspection,relativePath,indexPath
+    });
+  }
+}
+
+function onceBestEffort(operation) {
+  let invoked=false;
+  let result=Promise.resolve();
+  return ()=>{
+    if (invoked) return result;
+    invoked=true;
+    result=typeof operation==="function"
+      ?Promise.resolve().then(operation).catch(()=>{})
+      :Promise.resolve();
+    return result;
+  };
 }
 
 async function ensureSidecar({
@@ -320,8 +477,8 @@ function validateTranscript(value,handle) {
       !Number.isSafeInteger(value.providerDurationMs)||
       Math.abs(value.providerDurationMs-handle.durationMs)>5_000||
       !Array.isArray(value.segments)||value.segments.length>2_048||
-      !ranges(value.coveredRanges)||!ranges(value.uncoveredRanges)||
-      value.coverageStatus!=="complete"||
+      !new Set(["complete","partial","failed"])
+        .has(value.coverageStatus)||
       !limitations(value.limitations)) {
     throw invalid();
   }
@@ -341,6 +498,7 @@ function validateTranscript(value,handle) {
     }
     previousEnd=segment.endMs;
   }
+  if (!validTranscriptCoverage(value)) throw invalid();
   return structuredClone(value);
 }
 
@@ -401,6 +559,95 @@ async function validateTimeline({value,handle,workspaceDir}) {
     workspaceDir,files:value.images
   });
   return structuredClone(value);
+}
+
+async function validateInspection({
+  value,request,handle,workspaceDir
+}) {
+  const fields=new Set([
+    "version","sourceId","originalSha256","kind","durationMs",
+    "startMs","endMs","sampleCount","maxGapMs","samples","images",
+    "coverageStatus","limitations"
+  ]);
+  if (!plain(value)||
+      Object.keys(value).length!==fields.size||
+      Object.keys(value).some(key=>!fields.has(key))||
+      value.version!==1||
+      value.sourceId!==handle.sourceId||
+      value.originalSha256!==handle.sha256||
+      value.kind!=="video_interval_inspection"||
+      value.durationMs!==handle.durationMs||
+      value.startMs!==request.startMs||
+      value.endMs!==request.endMs||
+      !Number.isSafeInteger(value.sampleCount)||
+      value.sampleCount<1||value.sampleCount>12||
+      !Number.isSafeInteger(value.maxGapMs)||
+      value.maxGapMs<1||value.maxGapMs>60_000||
+      !Array.isArray(value.samples)||
+      value.samples.length!==value.sampleCount||
+      !Array.isArray(value.images)||value.images.length!==1||
+      value.coverageStatus!=="complete"||
+      !limitations(value.limitations)) {
+    throw invalid();
+  }
+  let previousEnd=request.startMs,maxGap=0;
+  for (const sample of value.samples) {
+    if (!plain(sample)||
+        Object.keys(sample).length!==3||
+        sample.startMs!==previousEnd||
+        !Number.isSafeInteger(sample.endMs)||
+        sample.endMs<=sample.startMs||
+        sample.endMs>request.endMs||
+        !Number.isSafeInteger(sample.sampleMs)||
+        sample.sampleMs<sample.startMs||
+        sample.sampleMs>=sample.endMs) {
+      throw invalid();
+    }
+    maxGap=Math.max(maxGap,sample.endMs-sample.startMs);
+    previousEnd=sample.endMs;
+  }
+  if (previousEnd!==request.endMs||maxGap!==value.maxGapMs) {
+    throw invalid();
+  }
+  const image=value.images[0];
+  if (!plain(image)||
+      image.sourceId!==handle.sourceId||
+      image.startMs!==request.startMs||
+      image.endMs!==request.endMs) {
+    throw invalid();
+  }
+  await validateModelImageEvidence({
+    workspaceDir,files:value.images,maxFiles:1
+  });
+  return structuredClone(value);
+}
+
+async function buildInspectionObservation({
+  inspection,relativePath,indexPath
+}) {
+  const content=JSON.stringify({
+    kind:"public_video_interval",
+    sourceId:inspection.sourceId,
+    startMs:inspection.startMs,
+    endMs:inspection.endMs,
+    coverageStatus:inspection.coverageStatus,
+    samples:inspection.samples,
+    images:inspection.images,
+    limitations:inspection.limitations
+  });
+  if (Buffer.byteLength(content,"utf8")>MAX_OBSERVATION_BYTES) {
+    throw invalid();
+  }
+  return Object.freeze({
+    content,
+    derivedRelativePath:relativePath,
+    sha256:await sha256File(indexPath),
+    producedBy:PRODUCED_BY,
+    limitations:Object.freeze([...inspection.limitations]),
+    modelImageFiles:Object.freeze(
+      inspection.images.map(value=>Object.freeze({...value}))
+    )
+  });
 }
 
 async function validateOriginal({workspaceDir,source,handle}) {
@@ -497,11 +744,62 @@ async function sha256File(file) {
   return hash.digest("hex");
 }
 
-function ranges(value) {
-  return Array.isArray(value)&&value.length<=2_048&&
-    value.every(item=>plain(item)&&
-      Number.isSafeInteger(item.startMs)&&item.startMs>=0&&
-      Number.isSafeInteger(item.endMs)&&item.endMs>item.startMs);
+function validTranscriptCoverage(value) {
+  if (!orderedRanges(value.coveredRanges,value.providerDurationMs)||
+      !orderedRanges(value.uncoveredRanges,value.providerDurationMs)) {
+    return false;
+  }
+  if (value.coverageStatus==="complete"&&
+      value.uncoveredRanges.length!==0) {
+    return false;
+  }
+  if (value.coverageStatus==="partial"&&
+      (
+        value.coveredRanges.length===0||
+        value.uncoveredRanges.length===0
+      )) {
+    return false;
+  }
+  if (value.coverageStatus==="failed"&&
+      (
+        value.coveredRanges.length!==0||
+        value.segments.length!==0
+      )) {
+    return false;
+  }
+  const partition=[
+    ...value.coveredRanges.map(range=>({...range,kind:"covered"})),
+    ...value.uncoveredRanges.map(range=>({...range,kind:"uncovered"}))
+  ].sort((left,right)=>
+    left.startMs-right.startMs||left.endMs-right.endMs
+  );
+  let cursor=0;
+  for (const range of partition) {
+    if (range.startMs!==cursor) return false;
+    cursor=range.endMs;
+  }
+  if (cursor!==value.providerDurationMs) return false;
+  return value.segments.every(segment=>
+    value.coveredRanges.some(range=>
+      segment.startMs>=range.startMs&&segment.endMs<=range.endMs
+    )
+  );
+}
+
+function orderedRanges(value,durationMs) {
+  if (!Array.isArray(value)||value.length>2_048) return false;
+  let previousEnd=0;
+  for (const item of value) {
+    if (!plain(item)||Object.keys(item).length!==2||
+        !Number.isSafeInteger(item.startMs)||item.startMs<0||
+        !Number.isSafeInteger(item.endMs)||
+        item.endMs<=item.startMs||item.endMs>durationMs||
+        item.startMs<previousEnd) {
+      return false;
+    }
+    previousEnd=item.endMs;
+  }
+  return true;
 }
 
 function limitations(value) {
@@ -512,6 +810,12 @@ function limitations(value) {
 
 function unique(values) {
   return [...new Set(values)].slice(0,8);
+}
+
+function sameArray(left,right) {
+  return Array.isArray(left)&&Array.isArray(right)&&
+    left.length===right.length&&
+    left.every((value,index)=>value===right[index]);
 }
 
 function canonicalIso(value) {

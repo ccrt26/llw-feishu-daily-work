@@ -13,6 +13,7 @@ export class PersonalAssistantClient {
     const model=context?.model;
     const provider=this.providers[model];
     if (!provider) throw new Error("assistant_model_unsupported");
+    const allowSourceRead=options.allowSourceRead===true;
     try {
       const decision=adaptProviderResult({
         provider:model,
@@ -23,10 +24,12 @@ export class PersonalAssistantClient {
             imageFiles:[...(options.imageFiles||[])],
             modelImageFiles:structuredClone(
               options.modelImageFiles||[]
-            )
+            ),
+            allowSourceRead
           }
         ),
-        availableSources:context.sources||[]
+        availableSources:context.sources||[],
+        allowSourceRead
       });
       if (decision.kind==="tool") {
         decision.toolCall=validateToolCall(decision.toolCall);

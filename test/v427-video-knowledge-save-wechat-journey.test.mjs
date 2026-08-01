@@ -113,7 +113,8 @@ test("a WeChat video summary is saved from retained evidence without copying med
     const prepareTurnSources=createTurnSourcePreparerWithPublicVideo({
       basePreparer,publicVideoSourcePreparer:publicPreparer
     });
-    const state=await StateStore.open(join(root,"state.json"));
+    const stateFile=join(root,"state.json");
+    const state=await StateStore.open(stateFile);
     const bindings={
       feishu:{userId:"owner",conversationId:"private-chat"},
       wechat:{userId:"wx-owner",conversationId:"wx-owner"}
@@ -127,8 +128,12 @@ test("a WeChat video summary is saved from retained evidence without copying med
     });
     const publicVideoReader=new TaskPublicVideoReader({
       asr:{
-        async transcribe({audioSha256}) {
+        async transcribe({
+          audioSha256,onProcessingAccepted
+        }) {
           asrCalls+=1;
+          await onProcessingAccepted();
+          await onProcessingAccepted();
           return {
             providerId:"volcengine",apiVersion:"v3",
             resourceId:"volc.bigasr.auc",
@@ -174,6 +179,9 @@ test("a WeChat video summary is saved from retained evidence without copying med
               "uniform_timeline_sampling","not_frame_by_frame"
             ]
           };
+        },
+        async readRange() {
+          throw new Error("range_must_not_run");
         }
       }
     });
@@ -256,7 +264,7 @@ test("a WeChat video summary is saved from retained evidence without copying med
       }
     });
 
-    const first=await dispatcher.handleIncomingMessage(
+    const first=await dispatcher.handleTaskIncomingMessage(
       createWechatIncomingMessage({
         messageId:"wechat-bili-1",
         userId:"wx-owner",conversationId:"wx-owner",
@@ -270,10 +278,23 @@ test("a WeChat video summary is saved from retained evidence without copying med
     assert.equal(asrCalls,1);
     assert.equal(timelineCalls,1);
     assert.equal(writerCalls,0);
+    assert.equal(sent.length,2);
     assert.equal(sent[0].replyTarget.source,"wechat");
+    assert.equal(sent[0].text,"已收到，正在处理。");
+    assert.equal(
+      sent[0].idempotencyKey,
+      `processing:${"V".repeat(43)}`
+    );
+    assert.match(sent[1].text,/完成总结/u);
+    assert.equal(
+      Object.keys(
+        JSON.parse(await readFile(stateFile,"utf8")).outcomes
+      ).filter(key=>key.includes("processing")).length,
+      0
+    );
 
     nowMs=firstTime+20_000;
-    const second=await dispatcher.handleIncomingMessage(
+    const second=await dispatcher.handleTaskIncomingMessage(
       createWechatIncomingMessage({
         messageId:"wechat-bili-2",
         userId:"wx-owner",conversationId:"wx-owner",
@@ -289,7 +310,11 @@ test("a WeChat video summary is saved from retained evidence without copying med
     assert.equal(timelineCalls,1);
     assert.equal(writerCalls,1);
     assert.equal(decisions.length,2);
-    assert.equal(sent.length,2);
+    assert.equal(sent.length,3);
+    assert.equal(
+      sent.filter(item=>item.text==="已收到，正在处理。").length,
+      1
+    );
     assert.deepEqual(await readdir(personalLibrary),["公开视频总结"]);
     const knowledgeDir=join(personalLibrary,"公开视频总结");
     assert.deepEqual(await readdir(knowledgeDir),["knowledge.md"]);

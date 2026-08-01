@@ -1,11 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {safeLog} from "../src/core/redaction.mjs";
-import {createRouterMessage} from "../src/core/router-message.mjs";
-import {createFeishuIncomingMessage} from "../src/core/incoming-message.mjs";
-import {guardAiInput} from "../src/ai/ai-input-guard.mjs";
-import {classifyAiFailure} from "../src/core/ai-failure.mjs";
-import {formatKnowledgeCommit} from "../src/capabilities/knowledge-ingest/receipt.mjs";
+import {
+  assertContentSafe
+} from "../src/personal-assistant/content-safety.mjs";
+import {
+  buildAgentTurnContext
+} from "../src/personal-assistant/context-builder.mjs";
+import {
+  executeSaveKnowledge
+} from "../src/personal-assistant/tools/save-knowledge.mjs";
 
 test("safe logs contain only allowlisted scalars and a one-way correlation",() => {
   const secrets=["om_secret","ou_secret","oc_secret","img_secret","123456789012","亚信科技（成都）有限公司","成都餐厅","290.00","token-secret","票面全文"];
@@ -35,35 +39,69 @@ test("safe startup logs retain only bounded Skill bundle metadata",()=>{
   assert.equal(line.includes("/private/skill"),false);
 });
 
-test("AI guard errors never echo rejected user content",()=>{
+test("content safety errors never echo rejected user content",()=>{
   const secret="Authorization: Bearer not-a-real-secret";
   let error;
-  try { guardAiInput("router.text",{message:{type:"text",text:secret,beijingTime:"2026-07-23 09:30:00"},conversation:null,capabilities:[]}); }
+  try {
+    assertContentSafe({
+      instructionText:secret,sources:[],conversation:null,
+      limits:{maxContextBytes:512*1024}
+    });
+  }
   catch (caught) { error=caught; }
-  assert.equal(error?.message,"ai_input_rejected");
-  assert.equal(error?.reasonCode,"credential");
+  assert.equal(error?.message,"content_safety_rejected");
   assert.equal(String(error).includes(secret),false);
-  assert.deepEqual(classifyAiFailure(error,"codex"),{status:"rejected",reasonCode:"credential",reply:"检测到可能包含实际密钥、登录凭证或支付控制信息。\n系统没有把本次内容发送给 Codex 或 DeepSeek，也没有写入业务记录。\n请删除或遮盖相关值后重新提交。"});
-  assert.deepEqual(classifyAiFailure({message:"ai_input_rejected",reasonCode:"unexpected"},"codex"),{status:"rejected",reply:"检测到可能包含实际密钥、登录凭证或支付控制信息。\n系统没有把本次内容发送给 Codex 或 DeepSeek，也没有写入业务记录。\n请删除或遮盖相关值后重新提交。"});
 });
 
-test("router attachment summaries never include resource keys or Feishu identifiers",() => {
-  const event={eventId:"event_secret",messageId:"message_secret",senderId:"sender_secret",chatId:"chat_secret",chatType:"p2p",messageType:"file",content:'<file name="发票.pdf" key="file_secret"/>',createTimeMs:1784426400000};
-  const summary=JSON.stringify(createRouterMessage(createFeishuIncomingMessage(event)));
+test("model context never includes resource keys or entry identifiers",() => {
+  const summary=JSON.stringify(buildAgentTurnContext({
+    message:{
+      source:"feishu",sourceMessageId:"message_secret",
+      userId:"sender_secret",conversationId:"chat_secret",
+      receivedAt:"2026-07-23T01:30:00.000Z",
+      instructionText:"查看发票",attachments:[{
+        type:"file",sourceAttachmentId:"file_secret",
+        displayName:"发票.pdf",extension:"pdf"
+      }]
+    },
+    sources:[{
+      sourceId:"source-001",displayName:"发票.pdf",
+      mediaClass:"document",format:"pdf",
+      relativePath:"source-001.pdf",byteSize:100,
+      sha256:"a".repeat(64),availability:"ready"
+    }],
+    personalRules:[],model:"codex",toolDeclarations:[]
+  }));
   for (const value of ["event_secret","message_secret","sender_secret","chat_secret","file_secret"]) assert.equal(summary.includes(value),false);
 });
 
-test("knowledge receipts fail closed instead of returning absolute managed roots",()=>{
-  assert.throws(
-    ()=>formatKnowledgeCommit(
-      {title:"交流方案"},
-      {
+test("knowledge receipts fail closed instead of returning absolute managed roots",async()=>{
+  const result=await executeSaveKnowledge({
+    toolCall:{
+      name:"save_knowledge",
+      arguments:{
+        libraryKey:"work-knowledge",folderSegments:[],
+        title:"交流方案",summary:"交流方案摘要。",tags:[],
+        sourceIds:[],
+        knowledgeSections:{
+          keyFacts:["事实"],structureAndMainContent:"正文。",
+          reusableContent:[],sourceNotes:"来自用户当前指令。",
+          contentIndex:"一个部分。"
+        }
+      }
+    },
+    sourceBindings:[],workspaceDir:"/private/task",
+    instructionText:"保存交流方案",
+    writer:{async commit(){
+      return {
         status:"created",
         relativePath:"/Volumes/private-vault/work/交流方案",
         files:["/Volumes/private-vault/work/交流方案/knowledge.md"]
-      },
-      {libraryKey:"work-knowledge",displayName:"工作资料"}
-    ),
-    /invalid_knowledge_receipt/
-  );
+      };
+    }},
+    skillVersion:"4.4.0",
+    ingestedAt:"2026-07-31T00:00:00.000Z"
+  });
+  assert.equal(result.status,"failed");
+  assert.equal(JSON.stringify(result).includes("/Volumes/private-vault"),false);
 });

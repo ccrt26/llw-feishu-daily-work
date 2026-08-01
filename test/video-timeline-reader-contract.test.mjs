@@ -23,11 +23,18 @@ test("samples a private video from start through end into bounded sheets",async(
   const helper=join(root,"video-timeline-reader");
   const fixtureRoot=join(root,"fixture");
   const outputDir=join(root,"output");
+  const rangeOutputDir=join(root,"range-output");
   const input=join(root,"input.mp4");
   try {
     await chmod(root,0o700);
-    await mkdir(outputDir,{mode:0o700});
-    await chmod(outputDir,0o700);
+    await Promise.all([
+      mkdir(outputDir,{mode:0o700}),
+      mkdir(rangeOutputDir,{mode:0o700})
+    ]);
+    await Promise.all([
+      chmod(outputDir,0o700),
+      chmod(rangeOutputDir,0o700)
+    ]);
     await execFileAsync("/usr/bin/xcrun",[
       "clang",
       "-fobjc-arc",
@@ -101,6 +108,46 @@ test("samples a private video from start through end into bounded sheets",async(
       result.sheets[0].sha256
     );
     assert.deepEqual(await readdir(outputDir),["timeline-001.png"]);
+
+    const rangeRun=await execFileAsync(helper,[
+      "--video",input,
+      "--output-dir",rangeOutputDir,
+      "--expected-duration-ms","12000",
+      "--start-ms","5000",
+      "--end-ms","7000"
+    ],{
+      cwd:root,
+      env:{
+        PATH:"/usr/bin:/bin",
+        LANG:"en_US.UTF-8",
+        LC_ALL:"en_US.UTF-8",
+        TMPDIR:root
+      },
+      timeout:30_000,
+      maxBuffer:1024*1024
+    });
+    assert.equal(rangeRun.stderr,"");
+    const range=JSON.parse(rangeRun.stdout);
+    assert.equal(range.status,"ok");
+    assert.equal(range.contract,"video_time_range_reader_v1");
+    assert.equal(range.durationMs,12_000);
+    assert.equal(range.startMs,5_000);
+    assert.equal(range.endMs,7_000);
+    assert.equal(range.sampleCount,1);
+    assert.equal(range.maxGapMs,2_000);
+    assert.deepEqual(range.samples,[
+      {startMs:5_000,endMs:7_000,sampleMs:6_000}
+    ]);
+    assert.equal(range.sheets.length,1);
+    assert.equal(range.sheets[0].startMs,5_000);
+    assert.equal(range.sheets[0].endMs,7_000);
+    assert.deepEqual(
+      range.limitations,
+      ["uniform_range_sampling","not_frame_by_frame"]
+    );
+    assert.deepEqual(await readdir(rangeOutputDir),[
+      "timeline-001.png"
+    ]);
   } finally {
     await rm(root,{recursive:true,force:true});
   }

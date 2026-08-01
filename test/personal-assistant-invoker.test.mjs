@@ -231,6 +231,94 @@ test("strictifies all four tool schemas for the Codex output subset",()=>{
   assert.equal(allObjectPropertiesRequired(schema),true);
 });
 
+test("source-read is absent unless a real backend enables it",()=>{
+  const tools=getModelToolDeclarations();
+  const disabled=buildPersonalAssistantOutputSchema(tools);
+  assert.equal(
+    disabled.properties.type.enum.includes("source_read_request"),
+    false
+  );
+  assert.deepEqual(
+    disabled.properties.sourceReadRequest,
+    {type:"null"}
+  );
+  assert.throws(
+    ()=>buildPersonalAssistantOutputSchema(
+      tools,{allowSourceRead:"yes"}
+    ),
+    /assistant_output_schema_invalid/u
+  );
+
+  const enabled=buildPersonalAssistantOutputSchema(
+    tools,{allowSourceRead:true}
+  );
+  assert.equal(
+    enabled.properties.type.enum.includes("source_read_request"),
+    true
+  );
+  assert.equal(
+    enabled.properties.sourceReadRequest.anyOf[0]
+      .properties.requests.maxItems,
+    1
+  );
+  assert.deepEqual(
+    enabled.properties.sourceReadRequest.anyOf[0]
+      .properties.requests.items.properties.view.enum,
+    ["inspect_time_range"]
+  );
+
+  const envelope={
+    type:"source_read_request",
+    reply:null,ask:null,
+    sourceReadRequest:{requests:[{
+      sourceId:"source-001",view:"inspect_time_range",
+      startMs:1_000,endMs:2_000
+    }]},
+    toolCall:null,taskUpdate:null
+  };
+  assert.throws(
+    ()=>decodePersonalAssistantOutputEnvelopeForTools(envelope,tools),
+    /assistant_output_invalid/u
+  );
+  assert.throws(
+    ()=>decodePersonalAssistantOutputEnvelopeForTools(
+      envelope,tools,{allowSourceRead:"yes"}
+    ),
+    /assistant_output_invalid/u
+  );
+  assert.equal(
+    decodePersonalAssistantOutputEnvelopeForTools(
+      envelope,tools,{allowSourceRead:true}
+    ).type,
+    "source_read_request"
+  );
+});
+
+test("Codex prompt advertises source-read only when enabled",async()=>{
+  await assert.rejects(
+    ()=>capturedCodexCapability("yes"),
+    error=>error?.message==="assistant_codex_invalid"
+  );
+  const disabled=await capturedCodexCapability(false);
+  assert.equal(
+    disabled.schema.properties.type.enum.includes("source_read_request"),
+    false
+  );
+  assert.doesNotMatch(
+    disabled.prompt,/sourceReadRequest|inspect_time_range/u
+  );
+
+  const enabled=await capturedCodexCapability(true);
+  assert.equal(
+    enabled.schema.properties.type.enum.includes("source_read_request"),
+    true
+  );
+  assert.match(
+    enabled.prompt,
+    /sourceReadRequest.*inspect_time_range.*一个.*60 秒/su
+  );
+});
+
 test("decodes every strict Codex envelope into the existing runtime contract",()=>{
   const tools=[{
     name:"save_knowledge",
@@ -271,18 +359,15 @@ test("decodes every strict Codex envelope into the existing runtime contract",()
       preparedTool:"save_knowledge",preparedRule:null
     }
   );
-  assert.deepEqual(
-    decodePersonalAssistantOutputEnvelopeForTools({
+  assert.throws(
+    ()=>decodePersonalAssistantOutputEnvelopeForTools({
       ...empty,type:"source_read_request",
       sourceReadRequest:{requests:[{
         sourceId:"source-001",view:"transcribe_audio",
         startMs:null,endMs:null
       }]}
-    },tools),
-    {
-      type:"source_read_request",
-      requests:[{sourceId:"source-001",view:"transcribe_audio"}]
-    }
+    },tools,{allowSourceRead:true}),
+    /assistant_output_invalid/u
   );
   assert.deepEqual(
     decodePersonalAssistantOutputEnvelopeForTools({
@@ -356,6 +441,47 @@ async function invokeSyntheticCodex(environment,timeoutMs=2_000) {
       environment:{...process.env,...environment},
       timeoutMs
     });
+  } finally {
+    await rm(root,{recursive:true,force:true});
+  }
+}
+
+async function capturedCodexCapability(allowSourceRead) {
+  const root=await mkdtemp(join(tmpdir(),"llw-pa-capability-"));
+  const workspaceDir=join(root,"workspace");
+  const schemaFile=join(root,"schema.json");
+  const stdinFile=join(root,"stdin.txt");
+  const content="# Synthetic Skill\n";
+  await mkdir(workspaceDir,{mode:0o700});
+  await chmod(fixture,0o755);
+  try {
+    await invokePersonalAssistantCodex({
+      codexPath:fixture,workspaceDir,
+      skillBundle:{
+        content,
+        fileCount:1,
+        totalBytes:Buffer.byteLength(content,"utf8"),
+        sha256:sha256(content)
+      },
+      context:{
+        model:"codex",instructionText:"只读分析",
+        sources:[],tools:[]
+      },
+      allowSourceRead,
+      environment:{
+        ...process.env,
+        FAKE_SCHEMA_FILE_COPY:schemaFile,
+        FAKE_STDIN_FILE:stdinFile,
+        FAKE_RESPONSE:JSON.stringify({
+          type:"reply",reply:{text:"完成"},
+          ask:null,sourceReadRequest:null,toolCall:null,taskUpdate:null
+        })
+      }
+    });
+    return {
+      schema:JSON.parse(await readFile(schemaFile,"utf8")).content,
+      prompt:await readFile(stdinFile,"utf8")
+    };
   } finally {
     await rm(root,{recursive:true,force:true});
   }

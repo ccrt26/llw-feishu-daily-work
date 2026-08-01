@@ -4,6 +4,9 @@ import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StateStore } from "../src/state-store.mjs";
+import {
+  createTaskSession as createPersonalAssistantTaskSession
+} from "../src/personal-assistant/task-session.mjs";
 
 async function fresh() {
   const dir = await mkdtemp(join(tmpdir(), "llw-state-"));
@@ -66,49 +69,81 @@ test("persists one shared Task Session in state version 4 and restores it after 
   assert.equal((await stat(file)).mode&0o777,0o600);
 });
 
-test("persists one bounded personal-assistant conversation per entry",async()=>{
+test("persists one processing receipt attempt outside Outcome across restart",async()=>{
   const {file}=await fresh();
   const store=await StateStore.open(file);
-  const conversation={
-    waitingType:"waiting_file",
-    question:"请发送要保存的文件。",
-    instructionText:"把我接下来发的文件保存到日常生活",
-    preparedTool:"save_knowledge",
-    confirmed:{libraryKey:"personal-knowledge"},
-    turns:[],
-    model:"codex",
-    startedAt:"2026-07-28T00:00:00.000Z",
-    updatedAt:"2026-07-28T00:00:00.000Z"
-  };
-  await store.setPersonalAssistantConversation("wechat",conversation);
-  assert.equal(
-    (await store.getPersonalAssistantConversation(
-      "feishu","2026-07-28T01:00:00.000Z"
-    )),
-    null
-  );
-  assert.deepEqual(
-    await store.getPersonalAssistantConversation(
-      "wechat","2026-07-28T01:00:00.000Z"
-    ),
-    conversation
-  );
+  const taskId="P".repeat(43);
+  const receivedAt="2026-07-31T08:00:00.000Z";
+  const session=createPersonalAssistantTaskSession({
+    taskId,model:"codex",now:receivedAt,
+    message:{
+      source:"wechat",
+      sourceMessageId:"processing-message",
+      userId:"wechat-owner",
+      conversationId:"wechat-owner",
+      receivedAt,
+      instructionText:"总结这个公开视频，不保存",
+      attachments:[],
+      replyTarget:{
+        source:"wechat",
+        sourceMessageId:"processing-message",
+        conversationId:"wechat-owner",
+        contextToken:"processing-context"
+      }
+    }
+  });
+  await store.setPersonalAssistantTaskSession("wechat",session);
+
+  assert.equal(await store.reservePersonalAssistantProcessingReceipt({
+    source:"wechat",taskId,
+    attemptedAt:"2026-07-31T08:00:01.000Z"
+  }),true);
+  assert.equal(await store.reservePersonalAssistantProcessingReceipt({
+    source:"wechat",taskId,
+    attemptedAt:"2026-07-31T08:00:02.000Z"
+  }),false);
+  assert.deepEqual(Object.keys(
+    JSON.parse(await readFile(file,"utf8")).outcomes
+  ),[]);
+
   const reopened=await StateStore.open(file);
+  assert.equal(await reopened.reservePersonalAssistantProcessingReceipt({
+    source:"wechat",taskId,
+    attemptedAt:"2026-07-31T08:00:03.000Z"
+  }),false);
+});
+
+test("adds an empty processing receipt slot to existing version-4 state",async()=>{
+  const {file}=await fresh();
+  await writeFile(file,JSON.stringify({
+    version:4,
+    capabilityState:{
+      "daily-work":{conversation:null},
+      invoice:{},
+      router:{conversation:null},
+      "knowledge-ingest":{
+        pendingBySource:{feishu:null,wechat:null}
+      },
+      "task-session":{session:null},
+      "personal-assistant":{
+        conversations:{feishu:null,wechat:null},
+        sessions:{feishu:null,wechat:null}
+      }
+    },
+    outcomes:{}
+  }));
+
+  const store=await StateStore.open(file);
   assert.deepEqual(
-    await reopened.getPersonalAssistantConversation(
-      "wechat","2026-07-28T02:00:00.000Z"
-    ),
-    conversation
+    store.getCapabilityState("personal-assistant")
+      .processingReceiptAttempts,
+    {feishu:null,wechat:null}
   );
-  assert.equal(JSON.stringify(
-    reopened.getCapabilityState("personal-assistant")
-  ).includes("/Users/"),false);
-  await reopened.clearPersonalAssistantConversation("wechat");
-  assert.equal(
-    await reopened.getPersonalAssistantConversation(
-      "wechat","2026-07-28T02:00:00.000Z"
-    ),
-    null
+  assert.deepEqual(
+    JSON.parse(await readFile(file,"utf8"))
+      .capabilityState["personal-assistant"]
+      .processingReceiptAttempts,
+    {feishu:null,wechat:null}
   );
 });
 
@@ -179,38 +214,6 @@ test("migrates a live V4.0.1 waiting conversation into one channel Task Session"
     JSON.parse(await readFile(file,"utf8"))
       .capabilityState["personal-assistant"],
     slot
-  );
-});
-
-test("persists only an opaque prepared source id in a WeChat conversation",async()=>{
-  const {file}=await fresh();
-  const store=await StateStore.open(file);
-  const preparedSourceSetId="C".repeat(43);
-  const conversation={
-    waitingType:"waiting_answer",
-    question:"要重点总结哪一部分？",
-    instructionText:"总结这个视频",
-    preparedTool:null,confirmed:{},turns:[],model:"codex",
-    preparedSourceSetId,
-    startedAt:"2026-07-29T00:00:00.000Z",
-    updatedAt:"2026-07-29T00:00:00.000Z"
-  };
-  await store.setPersonalAssistantConversation("wechat",conversation);
-  const reopened=await StateStore.open(file);
-  assert.deepEqual(
-    await reopened.getPersonalAssistantConversation(
-      "wechat","2026-07-29T01:00:00.000Z"
-    ),
-    conversation
-  );
-  const persisted=await readFile(file,"utf8");
-  assert.equal(persisted.includes(preparedSourceSetId),true);
-  assert.equal(persisted.includes("/private/"),false);
-  assert.equal(
-    await reopened.getPersonalAssistantConversation(
-      "feishu","2026-07-29T01:00:00.000Z"
-    ),
-    null
   );
 });
 

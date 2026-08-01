@@ -160,12 +160,13 @@ test("six false phase-0 gates stop WeChat media and web input before the assista
       async markReplied(){}
     },
     coordinator:{
-      async handle(){
+      async handleTask(){
         assistantCalls+=1;
         writerCalls+=1;
         return {status:"committed"};
       }
     },
+    taskManager:{},
     modelMode:{},deepseekEnabled:false,
     messenger:{
       async send(value){replyFileCount+=value.replyFiles.length;}
@@ -173,7 +174,8 @@ test("six false phase-0 gates stop WeChat media and web input before the assista
     mediaInputGates:gates
   });
   for (const [reasonCode,message] of cases) {
-    const result=await dispatcher.handleIncomingMessage(message);
+    const result=await dispatcher.acceptIncomingMessage(message);
+    await dispatcher.flushAcceptedMessages();
     assert.equal(result.status,"rejected");
     assert.equal(saved.at(-1).reasonCode,reasonCode);
     assert.deepEqual(saved.at(-1).replyFiles,[]);
@@ -184,7 +186,15 @@ test("six false phase-0 gates stop WeChat media and web input before the assista
 });
 
 test("false media gates do not block ordinary text, image, Office, or PDF turns",async()=>{
-  let assistantCalls=0;
+  const accepted=[];
+  const taskManager={
+    current(){return null;},
+    async accept(message){
+      accepted.push(message.sourceMessageId);
+      return {duplicate:false};
+    },
+    async claim(){return null;}
+  };
   const dispatcher=new PersonalAssistantDispatcher({
     binding:{senderId:"owner",chatId:"private"},
     bindings:{
@@ -192,12 +202,8 @@ test("false media gates do not block ordinary text, image, Office, or PDF turns"
       wechat:{userId:"wx-owner",conversationId:"wx-owner"}
     },
     state:{hasOutcome:()=>false},
-    coordinator:{
-      async handle(){
-        assistantCalls+=1;
-        return {status:"committed"};
-      }
-    },
+    taskManager,
+    coordinator:{async handleTask(){throw new Error("must_not_call");}},
     modelMode:{},deepseekEnabled:false,
     messenger:{async send(){}},
     mediaInputGates:{
@@ -228,11 +234,12 @@ test("false media gates do not block ordinary text, image, Office, or PDF turns"
     })
   ]) {
     assert.equal(
-      (await dispatcher.handleIncomingMessage(message)).status,
-      "committed"
+      (await dispatcher.acceptIncomingMessage(message)).status,
+      "accepted"
     );
   }
-  assert.equal(assistantCalls,4);
+  await dispatcher.flushAcceptedMessages();
+  assert.deepEqual(accepted,["plain","image","office","pdf"]);
 });
 
 function incoming({

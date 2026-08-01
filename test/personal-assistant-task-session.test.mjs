@@ -115,12 +115,28 @@ test("recognizes only exact attachment-free task controls",()=>{
     instructionText:"这个任务结束",
     hasAttachments:false
   }),{kind:"end"});
+  assert.deepEqual(classifyTaskControl({
+    instructionText:"任务结束",
+    hasAttachments:false
+  }),{kind:"end"});
+  assert.deepEqual(classifyTaskControl({
+    instructionText:"当前任务已结束",
+    hasAttachments:false
+  }),{kind:"end"});
   assert.equal(classifyTaskControl({
     instructionText:"报告中写“结束任务”",
     hasAttachments:false
   }),null);
   assert.equal(classifyTaskControl({
     instructionText:"取消",
+    hasAttachments:true
+  }),null);
+  assert.equal(classifyTaskControl({
+    instructionText:"任务结束",
+    hasAttachments:true
+  }),null);
+  assert.equal(classifyTaskControl({
+    instructionText:"当前任务已结束",
     hasAttachments:true
   }),null);
 });

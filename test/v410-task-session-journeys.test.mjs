@@ -177,7 +177,7 @@ test("file-only question then a late instruction reuses the same task and real P
       taskManager,taskWorkspace,now:()=>nowMs
     });
 
-    const first=await dispatcher.handleIncomingMessage(
+    const first=await dispatcher.handleTaskIncomingMessage(
       createFeishuIncomingMessage({
         messageId:"pdf-only",senderId:"owner",
         chatId:"private-chat",messageType:"file",
@@ -203,7 +203,7 @@ test("file-only question then a late instruction reuses the same task and real P
     );
 
     nowMs=firstTime+20_000;
-    const second=await dispatcher.handleIncomingMessage(
+    const second=await dispatcher.handleTaskIncomingMessage(
       createFeishuIncomingMessage({
         messageId:"late-instruction",senderId:"owner",
         chatId:"private-chat",messageType:"text",
@@ -496,7 +496,7 @@ test("Feishu and WeChat keep isolated active tasks, source workspaces and reply 
       taskManager,taskWorkspace,now:()=>nowMs
     });
 
-    await dispatcher.handleIncomingMessage(
+    await dispatcher.handleTaskIncomingMessage(
       createFeishuIncomingMessage({
         messageId:"feishu-file",senderId:"owner",
         chatId:"private-chat",messageType:"file",
@@ -505,7 +505,7 @@ test("Feishu and WeChat keep isolated active tasks, source workspaces and reply 
       })
     );
     nowMs=firstTime+1_000;
-    await dispatcher.handleIncomingMessage(
+    await dispatcher.handleTaskIncomingMessage(
       createWechatIncomingMessage({
         messageId:"wechat-file",userId:"wx-owner",
         conversationId:"wx-private",createTimeMs:nowMs,
@@ -547,7 +547,7 @@ test("Feishu and WeChat keep isolated active tasks, source workspaces and reply 
 
     const wechatBeforeEnd=structuredClone(wechatSession);
     nowMs=firstTime+2_000;
-    await dispatcher.handleIncomingMessage(
+    await dispatcher.handleTaskIncomingMessage(
       createFeishuIncomingMessage({
         messageId:"feishu-end",senderId:"owner",
         chatId:"private-chat",messageType:"text",
@@ -588,7 +588,7 @@ test("process restart preserves the asked task and reuses its retained PDF witho
         waitingType:"waiting_answer",preparedTool:null
       })
     });
-    await firstRuntime.dispatcher.handleIncomingMessage(
+    await firstRuntime.dispatcher.handleTaskIncomingMessage(
       createFeishuIncomingMessage({
         messageId:"restart-file",senderId:"owner",
         chatId:"private-chat",messageType:"file",
@@ -613,7 +613,7 @@ test("process restart preserves the asked task and reuses its retained PDF witho
         return {type:"reply",text:"已继续使用重启前保留的材料。"};
       }
     });
-    await secondRuntime.dispatcher.handleIncomingMessage(
+    await secondRuntime.dispatcher.handleTaskIncomingMessage(
       createFeishuIncomingMessage({
         messageId:"restart-answer",senderId:"owner",
         chatId:"private-chat",messageType:"text",
@@ -663,7 +663,7 @@ test("AI failure can be retried in the same task with the retained source and no
         return {type:"reply",text:"重试成功，原文件仍在当前任务中。"};
       }
     });
-    const first=await runtime.dispatcher.handleIncomingMessage(
+    const first=await runtime.dispatcher.handleTaskIncomingMessage(
       createFeishuIncomingMessage({
         messageId:"retry-file",senderId:"owner",
         chatId:"private-chat",messageType:"file",
@@ -679,7 +679,7 @@ test("AI failure can be retried in the same task with the retained source and no
     );
 
     nowMs=firstTime+5_000;
-    const second=await runtime.dispatcher.handleIncomingMessage(
+    const second=await runtime.dispatcher.handleTaskIncomingMessage(
       createFeishuIncomingMessage({
         messageId:"retry-text",senderId:"owner",
         chatId:"private-chat",messageType:"text",
@@ -735,7 +735,7 @@ test("Writer failure produces one truthful failure outcome without a second AI c
         };
       }
     });
-    const result=await runtime.dispatcher.handleIncomingMessage(
+    const result=await runtime.dispatcher.handleTaskIncomingMessage(
       createFeishuIncomingMessage({
         messageId:"writer-file",senderId:"owner",
         chatId:"private-chat",messageType:"file",
@@ -773,7 +773,7 @@ test("reply failure leaves the committed Outcome durable and restart resends it 
         async send(){throw new Error("synthetic_reply_failure");}
       }
     });
-    await firstRuntime.dispatcher.handleIncomingMessage(
+    await firstRuntime.dispatcher.handleTaskIncomingMessage(
       createFeishuIncomingMessage({
         messageId:"reply-failure",senderId:"owner",
         chatId:"private-chat",messageType:"text",
@@ -853,7 +853,7 @@ test("cancel during AI makes the old result stale and performs zero Writer calls
     const taskId=runtime.taskManager.current("feishu").taskId;
     await access(runtime.taskWorkspace.workspace(taskId));
     nowMs=firstTime+1_000;
-    await runtime.dispatcher.handleIncomingMessage(
+    await runtime.dispatcher.handleTaskIncomingMessage(
       createFeishuIncomingMessage({
         messageId:"cancel-control",senderId:"owner",
         chatId:"private-chat",messageType:"text",
@@ -951,7 +951,7 @@ test("cancel after Writer reservation reports the point of no return and preserv
     );
 
     nowMs=firstTime+1_000;
-    await runtime.dispatcher.handleIncomingMessage(
+    await runtime.dispatcher.handleTaskIncomingMessage(
       createFeishuIncomingMessage({
         messageId:"cancel-after-writer",senderId:"owner",
         chatId:"private-chat",messageType:"text",
@@ -1003,7 +1003,7 @@ test("24-hour expiration removes the old workspace and gives the next input a ne
       counters:{downloads:0},
       codex:async()=>({type:"reply",text:"阶段结果已返回。"})
     });
-    await runtime.dispatcher.handleIncomingMessage(
+    await runtime.dispatcher.handleTaskIncomingMessage(
       createFeishuIncomingMessage({
         messageId:"before-expiry",senderId:"owner",
         chatId:"private-chat",messageType:"text",
@@ -1014,7 +1014,7 @@ test("24-hour expiration removes the old workspace and gives the next input a ne
     await access(runtime.taskWorkspace.workspace(oldTaskId));
 
     nowMs=firstTime+24*60*60*1000+1;
-    await runtime.dispatcher.handleIncomingMessage(
+    await runtime.dispatcher.handleTaskIncomingMessage(
       createFeishuIncomingMessage({
         messageId:"after-expiry",senderId:"owner",
         chatId:"private-chat",messageType:"text",
@@ -1049,7 +1049,7 @@ test("pause resumes the same task, while ordinary input and explicit new-task co
         return {type:"reply",text:"当前要求已处理。"};
       }
     });
-    await runtime.dispatcher.handleIncomingMessage(
+    await runtime.dispatcher.handleTaskIncomingMessage(
       createFeishuIncomingMessage({
         messageId:"boundary-first",senderId:"owner",
         chatId:"private-chat",messageType:"text",
@@ -1059,7 +1059,7 @@ test("pause resumes the same task, while ordinary input and explicit new-task co
     const firstTaskId=runtime.taskManager.current("feishu").taskId;
 
     nowMs+=1_000;
-    await runtime.dispatcher.handleIncomingMessage(
+    await runtime.dispatcher.handleTaskIncomingMessage(
       createFeishuIncomingMessage({
         messageId:"pause-one",senderId:"owner",
         chatId:"private-chat",messageType:"text",
@@ -1071,7 +1071,7 @@ test("pause resumes the same task, while ordinary input and explicit new-task co
       runtime.taskManager.current("feishu").status,"paused"
     );
     nowMs+=1_000;
-    await runtime.dispatcher.handleIncomingMessage(
+    await runtime.dispatcher.handleTaskIncomingMessage(
       createFeishuIncomingMessage({
         messageId:"resume-one",senderId:"owner",
         chatId:"private-chat",messageType:"text",
@@ -1087,7 +1087,7 @@ test("pause resumes the same task, while ordinary input and explicit new-task co
     );
 
     nowMs+=1_000;
-    await runtime.dispatcher.handleIncomingMessage(
+    await runtime.dispatcher.handleTaskIncomingMessage(
       createFeishuIncomingMessage({
         messageId:"pause-two",senderId:"owner",
         chatId:"private-chat",messageType:"text",
@@ -1096,7 +1096,7 @@ test("pause resumes the same task, while ordinary input and explicit new-task co
     );
     await runtime.dispatcher.flushAcceptedMessages();
     nowMs+=1_000;
-    await runtime.dispatcher.handleIncomingMessage(
+    await runtime.dispatcher.handleTaskIncomingMessage(
       createFeishuIncomingMessage({
         messageId:"ordinary-after-pause",senderId:"owner",
         chatId:"private-chat",messageType:"text",
@@ -1111,7 +1111,7 @@ test("pause resumes the same task, while ordinary input and explicit new-task co
     );
 
     nowMs+=1_000;
-    await runtime.dispatcher.handleIncomingMessage(
+    await runtime.dispatcher.handleTaskIncomingMessage(
       createFeishuIncomingMessage({
         messageId:"explicit-new",senderId:"owner",
         chatId:"private-chat",messageType:"text",

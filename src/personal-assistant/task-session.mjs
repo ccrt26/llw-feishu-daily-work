@@ -140,7 +140,7 @@ export function classifyTaskControl({instructionText,hasAttachments}) {
   if (/^(?:暂停|先暂停|暂停当前任务)[。！!\s]*$/u.test(text)) {
     return {kind:"pause"};
   }
-  if (/^(?:结束|结束任务|结束当前任务|这个任务结束)[。！!\s]*$/u
+  if (/^(?:结束|结束任务|任务结束|结束当前任务|当前任务已结束|这个任务结束)[。！!\s]*$/u
     .test(text)) {
     return {kind:"end"};
   }

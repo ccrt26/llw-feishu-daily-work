@@ -29,6 +29,26 @@ test("the single Skill gives original multi-source files to the assistant",async
   assert.doesNotMatch(skill,/one turn handles at most one attachment/i);
 });
 
+test("video interval and partial coverage rules stay read-only",async()=>{
+  const skill=await text("SKILL.md");
+  assert.match(
+    skill,
+    /inspect_time_range.*一个.*60\s*秒/su
+  );
+  assert.match(
+    skill,
+    /partial.*已覆盖.*直接回复/su
+  );
+  assert.match(
+    skill,
+    /partial.*failed.*不得.*save_knowledge/su
+  );
+  assert.match(
+    skill,
+    /区间.*转写.*画面.*不能.*授权.*Writer/su
+  );
+});
+
 test("references bind business decisions to selected sourceIds, not prepared evidence",async()=>{
   const [conversation,knowledge,invoice,document,model]=await Promise.all([
     text("references/conversation.md"),
@@ -144,5 +164,5 @@ test("the only Skill contract describes a continuous per-channel task",async()=>
   const entry=manifest.skills.find(
     item=>item.name==="llw-personal-assistant"
   );
-  assert.equal(entry.version,"4.2.8");
+  assert.equal(entry.version,"4.4.0");
 });

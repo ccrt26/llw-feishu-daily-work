@@ -4,9 +4,28 @@ const ENVELOPE_KEYS=[
   "type","reply","ask","sourceReadRequest","toolCall","taskUpdate"
 ];
 
-export function buildPersonalAssistantOutputSchema(tools) {
+export function buildPersonalAssistantOutputSchema(
+  tools,{allowSourceRead=false}={}
+) {
   validateTools(tools);
+  if (typeof allowSourceRead!=="boolean") {
+    throw new Error("assistant_output_schema_invalid");
+  }
   const toolNames=tools.map(tool=>tool.name);
+  const sourceReadRequestSchema=nullable(strictObject({
+    requests:{
+      type:"array",minItems:1,maxItems:1,
+      items:strictObject({
+        sourceId:{type:"string",pattern:SOURCE_ID_PATTERN},
+        view:{
+          type:"string",
+          enum:["inspect_time_range"]
+        },
+        startMs:nullable({type:"integer",minimum:0}),
+        endMs:nullable({type:"integer",minimum:1})
+      })
+    }
+  }));
   return {
     type:"object",
     additionalProperties:false,
@@ -15,7 +34,8 @@ export function buildPersonalAssistantOutputSchema(tools) {
       type:{
         type:"string",
         enum:[
-          "reply","ask","source_read_request",
+          "reply","ask",
+          ...(allowSourceRead?["source_read_request"]:[]),
           ...(toolNames.length?["tool_call"]:[])
         ]
       },
@@ -37,23 +57,9 @@ export function buildPersonalAssistantOutputSchema(tools) {
           type:"string",minLength:1,maxLength:1_000
         })
       })),
-      sourceReadRequest:nullable(strictObject({
-        requests:{
-          type:"array",minItems:1,maxItems:8,
-          items:strictObject({
-            sourceId:{type:"string",pattern:SOURCE_ID_PATTERN},
-            view:{
-              type:"string",
-              enum:[
-                "probe_media","read_existing_subtitles","transcribe_audio",
-                "build_navigation_overview","inspect_time_range"
-              ]
-            },
-            startMs:nullable({type:"integer",minimum:0}),
-            endMs:nullable({type:"integer",minimum:1})
-          })
-        }
-      })),
+      sourceReadRequest:allowSourceRead
+        ?sourceReadRequestSchema
+        :{type:"null"},
       toolCall:toolNames.length
         ?{
           anyOf:[
@@ -74,9 +80,12 @@ export function buildPersonalAssistantOutputSchema(tools) {
   };
 }
 
-export function decodePersonalAssistantOutputEnvelopeForTools(value,tools) {
+export function decodePersonalAssistantOutputEnvelopeForTools(
+  value,tools,{allowSourceRead=false}={}
+) {
   validateTools(tools);
-  const decoded=decodeWithoutToolArguments(value);
+  if (typeof allowSourceRead!=="boolean") reject();
+  const decoded=decodeWithoutToolArguments(value,{allowSourceRead});
   if (decoded.type!=="tool_call") return decoded;
   const tool=tools.find(item=>item.name===decoded.toolName);
   if (!tool) reject();
@@ -86,7 +95,7 @@ export function decodePersonalAssistantOutputEnvelopeForTools(value,tools) {
   };
 }
 
-function decodeWithoutToolArguments(value) {
+function decodeWithoutToolArguments(value,{allowSourceRead}) {
   if (!exactObject(value,ENVELOPE_KEYS)||
       !new Set([
         "reply","ask","source_read_request","tool_call"
@@ -119,7 +128,8 @@ function decodeWithoutToolArguments(value) {
     };
   }
   if (value.type==="source_read_request") {
-    if (value.taskUpdate!==null||
+    if (!allowSourceRead||
+        value.taskUpdate!==null||
         !exactObject(value.sourceReadRequest,["requests"])||
         !Array.isArray(value.sourceReadRequest.requests)) reject();
     return {
@@ -128,16 +138,15 @@ function decodeWithoutToolArguments(value) {
         if (!exactObject(request,[
           "sourceId","view","startMs","endMs"
         ])) reject();
-        if (request.view==="inspect_time_range") {
-          if (!Number.isSafeInteger(request.startMs)||
-              !Number.isSafeInteger(request.endMs)) reject();
-          return {
-            sourceId:request.sourceId,view:request.view,
-            startMs:request.startMs,endMs:request.endMs
-          };
-        }
-        if (request.startMs!==null||request.endMs!==null) reject();
-        return {sourceId:request.sourceId,view:request.view};
+        if (request.view!=="inspect_time_range"||
+            !Number.isSafeInteger(request.startMs)||
+            !Number.isSafeInteger(request.endMs)||
+            request.endMs<=request.startMs||
+            request.endMs-request.startMs>60_000) reject();
+        return {
+          sourceId:request.sourceId,view:request.view,
+          startMs:request.startMs,endMs:request.endMs
+        };
       })
     };
   }

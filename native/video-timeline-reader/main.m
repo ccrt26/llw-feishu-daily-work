@@ -11,7 +11,9 @@
 #include <unistd.h>
 
 static const long long kMaxDurationMs=7LL*24LL*60LL*60LL*1000LL;
-static const NSInteger kMaxSamples=192;
+static const NSInteger kMaxSamples=156;
+static const long long kMaxRangeMs=60LL*1000LL;
+static const NSInteger kMaxRangeSamples=12;
 static const NSInteger kSamplesPerSheet=12;
 static const size_t kSheetWidth=3200;
 static const size_t kSheetHeight=1800;
@@ -53,6 +55,16 @@ static BOOL ParsePositiveInteger(NSString *value,long long *result) {
   char *end=NULL;
   long long parsed=strtoll(value.UTF8String,&end,10);
   if (errno!=0||end==NULL||*end!='\0'||parsed<1) return NO;
+  *result=parsed;
+  return YES;
+}
+
+static BOOL ParseNonNegativeInteger(NSString *value,long long *result) {
+  if (value.length<1||value.length>20) return NO;
+  errno=0;
+  char *end=NULL;
+  long long parsed=strtoll(value.UTF8String,&end,10);
+  if (errno!=0||end==NULL||*end!='\0'||parsed<0) return NO;
   *result=parsed;
   return YES;
 }
@@ -214,19 +226,23 @@ static BOOL WriteSheet(
   return chmod(path.fileSystemRepresentation,0600)==0;
 }
 
-static NSArray<NSDictionary *> *BuildSamples(
-  long long durationMs,
+static NSArray<NSDictionary *> *BuildSamplesForRange(
+  long long startMs,
+  long long endMs,
+  NSInteger maximumSamples,
   long long *maxGapMs
 ) {
-  NSInteger sampleCount=(NSInteger)ceil((double)durationMs/5000.0);
-  sampleCount=MAX(1,MIN(kMaxSamples,sampleCount));
+  long long rangeMs=endMs-startMs;
+  if (rangeMs<1||maximumSamples<1) return nil;
+  NSInteger sampleCount=(NSInteger)ceil((double)rangeMs/5000.0);
+  sampleCount=MAX(1,MIN(maximumSamples,sampleCount));
   NSMutableArray *samples=[
     NSMutableArray arrayWithCapacity:(NSUInteger)sampleCount
   ];
   long long largest=0;
   for (NSInteger index=0;index<sampleCount;index++) {
-    long long start=(durationMs*index)/sampleCount;
-    long long end=(durationMs*(index+1))/sampleCount;
+    long long start=startMs+(rangeMs*index)/sampleCount;
+    long long end=startMs+(rangeMs*(index+1))/sampleCount;
     if (end<=start) return nil;
     long long sample=start+(end-start)/2;
     [samples addObject:@{
@@ -242,22 +258,41 @@ static NSArray<NSDictionary *> *BuildSamples(
 
 int main(int argc,const char *argv[]) {
   @autoreleasepool {
-    if (argc!=7||
+    BOOL interval=argc==11;
+    if ((argc!=7&&!interval)||
         strcmp(argv[1],"--video")!=0||
         strcmp(argv[3],"--output-dir")!=0||
-        strcmp(argv[5],"--expected-duration-ms")!=0) {
+        strcmp(argv[5],"--expected-duration-ms")!=0||
+        (interval&&(
+          strcmp(argv[7],"--start-ms")!=0||
+          strcmp(argv[9],"--end-ms")!=0
+        ))) {
       return Fail(@"invalid_arguments",64);
     }
     NSString *video=[NSString stringWithUTF8String:argv[2]];
     NSString *output=[NSString stringWithUTF8String:argv[4]];
     NSString *expectedValue=[NSString stringWithUTF8String:argv[6]];
     long long expectedDurationMs=0;
+    long long requestedStartMs=0;
+    long long requestedEndMs=0;
     if (video==nil||output==nil||expectedValue==nil||
         !video.isAbsolutePath||!output.isAbsolutePath||
         ![video.pathExtension.lowercaseString isEqualToString:@"mp4"]||
         !ParsePositiveInteger(expectedValue,&expectedDurationMs)||
         expectedDurationMs>kMaxDurationMs) {
       return Fail(@"invalid_arguments",64);
+    }
+    if (interval) {
+      NSString *startValue=[NSString stringWithUTF8String:argv[8]];
+      NSString *endValue=[NSString stringWithUTF8String:argv[10]];
+      if (startValue==nil||endValue==nil||
+          !ParseNonNegativeInteger(startValue,&requestedStartMs)||
+          !ParsePositiveInteger(endValue,&requestedEndMs)||
+          requestedEndMs<=requestedStartMs||
+          requestedEndMs>expectedDurationMs||
+          requestedEndMs-requestedStartMs>kMaxRangeMs) {
+        return Fail(@"invalid_arguments",64);
+      }
     }
     if (!PrivateOwnedPath(video,NO)||
         !PrivateOwnedPath(output,YES)) {
@@ -283,13 +318,19 @@ int main(int argc,const char *argv[]) {
         llabs(durationMs-expectedDurationMs)>5000) {
       return Fail(@"duration_mismatch",66);
     }
+    if (interval&&requestedEndMs>durationMs) {
+      return Fail(@"duration_mismatch",66);
+    }
 
     long long maxGapMs=0;
-    NSArray<NSDictionary *> *samples=BuildSamples(
-      durationMs,&maxGapMs
+    long long samplingStartMs=interval?requestedStartMs:0;
+    long long samplingEndMs=interval?requestedEndMs:durationMs;
+    NSInteger maximumSamples=interval?kMaxRangeSamples:kMaxSamples;
+    NSArray<NSDictionary *> *samples=BuildSamplesForRange(
+      samplingStartMs,samplingEndMs,maximumSamples,&maxGapMs
     );
     if (samples==nil||samples.count<1||
-        samples.count>kMaxSamples) {
+        (NSInteger)samples.count>maximumSamples) {
       return Fail(@"sampling_failed",66);
     }
 
@@ -370,20 +411,26 @@ int main(int argc,const char *argv[]) {
       }];
     }
 
-    WriteJSON(@{
+    NSMutableDictionary *result=[@{
       @"version":@1,
       @"status":@"ok",
-      @"contract":@"video_timeline_reader_v1",
+      @"contract":interval
+        ?@"video_time_range_reader_v1"
+        :@"video_timeline_reader_v1",
       @"durationMs":@(durationMs),
       @"sampleCount":@(samples.count),
       @"maxGapMs":@(maxGapMs),
       @"samples":samples,
       @"sheets":sheets,
-      @"limitations":@[
-        @"uniform_timeline_sampling",
-        @"not_frame_by_frame"
-      ]
-    });
+      @"limitations":interval
+        ?@[@"uniform_range_sampling",@"not_frame_by_frame"]
+        :@[@"uniform_timeline_sampling",@"not_frame_by_frame"]
+    } mutableCopy];
+    if (interval) {
+      result[@"startMs"]=@(requestedStartMs);
+      result[@"endMs"]=@(requestedEndMs);
+    }
+    WriteJSON(result);
     return 0;
   }
 }

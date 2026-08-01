@@ -458,6 +458,41 @@ test("publishes a public video and its verified complete audio into one task wor
   }
 });
 
+test("preserves an allowlisted Bilibili revalidation stage across task intake",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"llw-task-video-stage-"));
+  const textMessage=message({
+    text:"总结 https://b23.tv/Mn2sUpl，不保存",
+    attachments:[]
+  });
+  const session=createTaskSession({
+    message:textMessage,model:"codex",taskId:TASK_ID,now:NOW
+  });
+  const workspace=new TaskSourceWorkspace({
+    root:join(root,"tasks"),
+    prepareTurnSources:async()=>{
+      const failure=new Error("public_video_source_invalid");
+      failure.publicVideoFailureCode="bilibili_audio_hash_mismatch";
+      throw failure;
+    }
+  });
+  let caught;
+  try {
+    await assert.rejects(
+      workspace.prepareAndMerge({session,message:textMessage}),
+      error=>{
+        caught=error;
+        return error?.message==="task_source_workspace_invalid";
+      }
+    );
+    assert.equal(
+      caught.publicVideoFailureCode,
+      "bilibili_audio_hash_mismatch"
+    );
+  } finally {
+    await rm(root,{recursive:true,force:true});
+  }
+});
+
 test("recovers a durable public-video source after a crash before task attachment",async()=>{
   const root=await mkdtemp(join(tmpdir(),"llw-task-public-recover-"));
   const video=Buffer.from("0000ftypmp42 recover video");

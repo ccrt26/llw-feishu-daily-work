@@ -5,7 +5,13 @@ import {join} from "node:path";
 
 const values=parseArgs(process.argv.slice(2));
 const mode=process.env.LLW_FAKE_TIMELINE_MODE||"ok";
+const range=Number.isSafeInteger(values.startMs)&&
+  Number.isSafeInteger(values.endMs);
 const durationMs=mode==="rounding_ms"?11_999:12_000;
+if (range) {
+  await runRange();
+  process.exit(0);
+}
 const baseSamples=[
   {startMs:0,endMs:4_000,sampleMs:2_000},
   {startMs:4_000,endMs:8_000,sampleMs:6_000},
@@ -57,6 +63,60 @@ process.stdout.write(`${JSON.stringify({
   limitations:["uniform_timeline_sampling","not_frame_by_frame"]
 })}\n`);
 
+async function runRange() {
+  const expectedStart=values.startMs;
+  const expectedEnd=values.endMs;
+  const outputStart=mode==="range_mismatch"
+    ?expectedStart+1
+    :expectedStart;
+  const outputEnd=expectedEnd;
+  const samples=[{
+    startMs:outputStart,
+    endMs:outputEnd,
+    sampleMs:outputStart+Math.floor((outputEnd-outputStart)/2)
+  }];
+  const count=mode==="range_extra_sheet"?2:1;
+  const sheets=[];
+  for (let index=0;index<count;index++) {
+    const width=mode==="range_wide_image"?4:2;
+    const bytes=png(
+      width,
+      2,
+      mode==="range_too_many_bytes"?96:33,
+      index
+    );
+    const safeName=`timeline-${String(index+1).padStart(3,"0")}.png`;
+    await writeFile(join(values.outputDir,safeName),bytes,{mode:0o600});
+    sheets.push({
+      relativePath:mode==="range_path_escape"&&index===0
+        ?"../timeline-001.png"
+        :safeName,
+      sha256:mode==="range_wrong_hash"&&index===0
+        ?"f".repeat(64)
+        :createHash("sha256").update(bytes).digest("hex"),
+      width,
+      height:2,
+      startMs:outputStart,
+      endMs:outputEnd,
+      firstSampleIndex:0,
+      lastSampleIndex:0
+    });
+  }
+  process.stdout.write(`${JSON.stringify({
+    version:1,
+    status:"ok",
+    contract:"video_time_range_reader_v1",
+    durationMs:12_000,
+    startMs:outputStart,
+    endMs:outputEnd,
+    sampleCount:1,
+    maxGapMs:outputEnd-outputStart,
+    samples,
+    sheets,
+    limitations:["uniform_range_sampling","not_frame_by_frame"]
+  })}\n`);
+}
+
 function parseArgs(args) {
   const result={};
   for (let index=0;index<args.length;index+=2) {
@@ -71,7 +131,13 @@ function parseArgs(args) {
   return {
     video:result.video,
     outputDir:result.outputdir,
-    expectedDurationMs:Number(result.expecteddurationms)
+    expectedDurationMs:Number(result.expecteddurationms),
+    ...(result.startms===undefined
+      ?{}
+      :{
+        startMs:Number(result.startms),
+        endMs:Number(result.endms)
+      })
   };
 }
 

@@ -150,6 +150,110 @@ test("submits bounded Base64 M4A and returns strict final video-audio evidence",
   }
 });
 
+test("signals processing only after quota reservation and provider acceptance",async()=>{
+  const input=await audioFixture();
+  const events=[];
+  const store={
+    async reserve(value) {
+      events.push("reserve");
+      return {
+        requestId:TEST_REQUEST_ID,
+        state:"reserved",
+        durationMs:value.durationMs,
+        created:true
+      };
+    },
+    async complete(value) {
+      events.push("complete");
+      return {
+        requestId:value.requestId,
+        state:"completed",
+        durationMs:1_000,
+        providerDurationMs:value.providerDurationMs
+      };
+    }
+  };
+  const {value}=adapter({
+    store,
+    keyReader:async()=>{
+      events.push("key");
+      return TEST_KEY;
+    },
+    fetchImpl:async url=>{
+      if (url===SUBMIT) {
+        events.push("submit");
+        return providerResponse({body:null});
+      }
+      events.push("query");
+      return providerResponse();
+    }
+  });
+  try {
+    const result=await value.transcribe({
+      ...input,
+      onProcessingAccepted:async()=>{events.push("accepted");}
+    });
+    assert.equal(result.coverageStatus,"complete");
+    assert.deepEqual(events,[
+      "key","reserve","submit","accepted","query","complete"
+    ]);
+  } finally {
+    await cleanup(input);
+  }
+});
+
+test("a processing receipt failure does not change the ASR result",async()=>{
+  const input=await audioFixture();
+  let callbacks=0;
+  const {value}=adapter();
+  try {
+    const result=await value.transcribe({
+      ...input,
+      onProcessingAccepted:async()=>{
+        callbacks+=1;
+        throw new Error("reply_failed");
+      }
+    });
+    assert.equal(callbacks,1);
+    assert.equal(result.coverageStatus,"complete");
+  } finally {
+    await cleanup(input);
+  }
+});
+
+test("quota rejection never signals processing or reaches the provider",async()=>{
+  const input=await audioFixture();
+  let callbacks=0,network=0;
+  const store={
+    async reserve() {
+      throw new Error("video_asr_trial_exhausted");
+    },
+    async complete() {
+      throw new Error("unexpected_complete");
+    }
+  };
+  const {value}=adapter({
+    store,
+    fetchImpl:async()=>{
+      network+=1;
+      return providerResponse();
+    }
+  });
+  try {
+    await assert.rejects(
+      ()=>value.transcribe({
+        ...input,
+        onProcessingAccepted:async()=>{callbacks+=1;}
+      }),
+      /video_asr_trial_exhausted/
+    );
+    assert.equal(callbacks,0);
+    assert.equal(network,0);
+  } finally {
+    await cleanup(input);
+  }
+});
+
 test("does not turn the historical 30-minute candidate bound into a product gate",async()=>{
   const input=await audioFixture();
   input.durationMs=1_800_001;
@@ -205,7 +309,8 @@ test("rejects unsafe or out-of-contract audio before Keychain, quota or network"
       {...input,audioSha256:"f".repeat(64)},
       {...input,durationMs:0},
       {...input,durationMs:18_000_000},
-      {...input,audioFile:"relative.m4a"}
+      {...input,audioFile:"relative.m4a"},
+      {...input,onProcessingAccepted:"not-a-function"}
     ]) {
       await assert.rejects(
         ()=>value.transcribe(candidate),

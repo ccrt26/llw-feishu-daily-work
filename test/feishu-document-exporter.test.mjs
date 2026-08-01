@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {createHash} from "node:crypto";
-import {mkdtemp,readdir,rm,writeFile} from "node:fs/promises";
+import {chmod,mkdtemp,readdir,rm,writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {
@@ -80,4 +80,39 @@ test("rejects unsafe links, unsupported types and failed exports without residue
     assert.equal(calls,1);
     assert.deepEqual(await readdir(root),[]);
   } finally { await rm(root,{recursive:true,force:true}); }
+});
+
+test("real CLI child inherits HOME before resolving the configured profile",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"llw-feishu-export-env-"));
+  try {
+    const cli=join(root,"fake-lark-cli.mjs");
+    await writeFile(cli,`#!/usr/bin/env node
+import {writeFileSync} from "node:fs";
+import {join} from "node:path";
+const args=process.argv.slice(2);
+if (!process.env.HOME) process.exit(3);
+if (args.includes("+inspect")) {
+  process.stdout.write(JSON.stringify({
+    ok:true,identity:"user",
+    data:{type:"docx",token:"token_docx",title:"环境继承测试"}
+  }));
+} else {
+  writeFileSync(join(process.cwd(),"snapshot.docx"),Buffer.from("snapshot"));
+  process.stdout.write(JSON.stringify({
+    ok:true,identity:"user",data:{ready:true}
+  }));
+}
+`,{mode:0o700});
+    await chmod(cli,0o700);
+    const exporter=createFeishuDocumentExporter({
+      cliPath:cli,profile:"private",tempRoot:root
+    });
+    const result=await exporter.exportSnapshot({
+      url:"https://example.feishu.cn/docx/token_docx"
+    });
+    assert.equal(result.extension,"docx");
+    await rm(result.tempDir,{recursive:true,force:true});
+  } finally {
+    await rm(root,{recursive:true,force:true});
+  }
 });

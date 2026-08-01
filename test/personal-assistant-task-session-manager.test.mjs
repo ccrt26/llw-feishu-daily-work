@@ -190,6 +190,46 @@ test("restores unresolved work after restart and clears only the selected channe
   );
 });
 
+test("reserves one processing receipt attempt across a process restart",async()=>{
+  const h=await harness();
+  await h.manager.accept(message());
+  const snapshot=await h.manager.claim("feishu");
+
+  assert.equal(
+    await h.manager.attemptProcessingReceipt(snapshot),
+    true
+  );
+  assert.equal(
+    await h.manager.attemptProcessingReceipt(snapshot),
+    false
+  );
+  assert.equal(h.state.getOutcome("processing:"+FEISHU_TASK_ID),null);
+
+  const reopened=await StateStore.open(h.file);
+  const manager=new PersonalAssistantTaskSessionManager({
+    state:reopened,
+    bindings:{
+      feishu:{
+        userId:"feishu-owner",
+        conversationId:"feishu-chat"
+      },
+      wechat:{
+        userId:"wechat-owner",
+        conversationId:"wechat-owner"
+      }
+    },
+    selectModel:async()=>"codex",
+    createId:()=>"X".repeat(43),
+    now:()=>Date.parse(NOW)
+  });
+  assert.deepEqual(await manager.recoverPending(),["feishu"]);
+  const reopenedSnapshot=await manager.claim("feishu");
+  assert.equal(
+    await manager.attemptProcessingReceipt(reopenedSnapshot),
+    false
+  );
+});
+
 test("replaces a paused task on ordinary input and reports the old task for cleanup",async()=>{
   const h=await harness();
   await h.manager.accept(message());

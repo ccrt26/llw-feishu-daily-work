@@ -17,13 +17,15 @@ const NOW="2026-07-30T06:00:00.000Z";
 
 test("publishes and reloads timestamped transcript plus full-timeline images",async()=>{
   const fixture=await workspaceFixture();
-  let asrCalls=0,timelineCalls=0;
+  let asrCalls=0,timelineCalls=0,processingSignals=0;
   try {
     const reader=new TaskPublicVideoReader({
       asr:{
         async transcribe(input) {
           asrCalls+=1;
           assert.equal(input.audioFile,fixture.audioFile);
+          await input.onProcessingAccepted();
+          await input.onProcessingAccepted();
           return transcriptResult(fixture);
         }
       },
@@ -31,6 +33,9 @@ test("publishes and reloads timestamped transcript plus full-timeline images",as
         async read(input) {
           timelineCalls+=1;
           return publishTimeline(input);
+        },
+        async readRange() {
+          throw new Error("range_must_not_run");
         }
       }
     });
@@ -38,10 +43,12 @@ test("publishes and reloads timestamped transcript plus full-timeline images",as
     const first=await reader.prepare({
       workspaceDir:fixture.root,
       sources:[fixture.source],
-      now:NOW
+      now:NOW,
+      onProcessingAccepted:async()=>{processingSignals+=1;}
     });
     assert.equal(asrCalls,1);
     assert.equal(timelineCalls,1);
+    assert.equal(processingSignals,1);
     assert.equal(first.observations.length,1);
     assert.equal(first.modelImageFiles.length,1);
     const content=JSON.parse(first.observations[0].content);
@@ -53,10 +60,12 @@ test("publishes and reloads timestamped transcript plus full-timeline images",as
     const second=await reader.prepare({
       workspaceDir:fixture.root,
       sources:[fixture.source],
-      now:"2026-07-30T06:01:00.000Z"
+      now:"2026-07-30T06:01:00.000Z",
+      onProcessingAccepted:async()=>{processingSignals+=1;}
     });
     assert.equal(asrCalls,1);
     assert.equal(timelineCalls,1);
+    assert.equal(processingSignals,1);
     assert.deepEqual(second,first);
     assert.equal(
       JSON.parse(await readFile(
@@ -72,21 +81,27 @@ test("publishes and reloads timestamped transcript plus full-timeline images",as
 test("a timeline retry reuses the already durable transcript without another ASR call",async()=>{
   const fixture=await workspaceFixture();
   let asrCalls=0,timelineCalls=0;
+  const events=[];
   try {
     const reader=new TaskPublicVideoReader({
       asr:{
-        async transcribe() {
+        async transcribe(input) {
           asrCalls+=1;
+          await input.onProcessingAccepted();
           return transcriptResult(fixture);
         }
       },
       timelineReader:{
         async read(input) {
           timelineCalls+=1;
+          events.push(`timeline-${timelineCalls}`);
           if (timelineCalls===1) {
             throw new Error("video_timeline_media_invalid");
           }
           return publishTimeline(input);
+        },
+        async readRange() {
+          throw new Error("range_must_not_run");
         }
       }
     });
@@ -94,7 +109,8 @@ test("a timeline retry reuses the already durable transcript without another ASR
       reader.prepare({
         workspaceDir:fixture.root,
         sources:[fixture.source],
-        now:NOW
+        now:NOW,
+        onProcessingAccepted:async()=>{events.push("processing");}
       }),
       /public_video_timeline_failed/
     );
@@ -109,11 +125,15 @@ test("a timeline retry reuses the already durable transcript without another ASR
     const recovered=await reader.prepare({
       workspaceDir:fixture.root,
       sources:[fixture.source],
-      now:"2026-07-30T06:02:00.000Z"
+      now:"2026-07-30T06:02:00.000Z",
+      onProcessingAccepted:async()=>{events.push("processing");}
     });
     assert.equal(recovered.observations.length,1);
     assert.equal(asrCalls,1);
     assert.equal(timelineCalls,2);
+    assert.deepEqual(events,[
+      "processing","timeline-1","processing","timeline-2"
+    ]);
   } finally {
     await rm(fixture.root,{recursive:true,force:true});
   }
@@ -164,6 +184,9 @@ test("recovers a transcript written before its sidecar append without resubmitti
         async read(input) {
           timelineCalls+=1;
           return publishTimeline(input);
+        },
+        async readRange() {
+          throw new Error("range_must_not_run");
         }
       }
     });
@@ -183,6 +206,288 @@ test("recovers a transcript written before its sidecar append without resubmitti
     );
   } finally {
     await rm(fixture.root,{recursive:true,force:true});
+  }
+});
+
+test("publishes and reloads one durable inspected video interval",async()=>{
+  const fixture=await workspaceFixture();
+  let rangeCalls=0;
+  try {
+    const timelineReader={
+      async read(input) {
+        return publishTimeline(input);
+      },
+      async readRange(input) {
+        rangeCalls+=1;
+        return publishRange(input);
+      }
+    };
+    const firstReader=new TaskPublicVideoReader({
+      asr:{async transcribe(){return transcriptResult(fixture);}},
+      timelineReader,
+      clock:()=>"2026-07-30T06:01:00.000Z"
+    });
+    await firstReader.prepare({
+      workspaceDir:fixture.root,
+      sources:[fixture.source],
+      now:NOW
+    });
+    const request={
+      sourceId:"source-001",
+      view:"inspect_time_range",
+      startMs:5_000,
+      endMs:7_000
+    };
+    const first=await firstReader.inspectTimeRange({
+      request,
+      source:fixture.source,
+      workspaceDir:fixture.root
+    });
+    assert.equal(rangeCalls,1);
+    assert.equal(
+      first.derivedRelativePath,
+      "source-001.inspect-5000-7000.json"
+    );
+    assert.deepEqual(first.modelImageFiles,[{
+      sourceId:"source-001",
+      relativePath:"source-001.inspect-5000-7000.png",
+      sha256:first.modelImageFiles[0].sha256,
+      startMs:5_000,
+      endMs:7_000
+    }]);
+    const index=JSON.parse(await readFile(
+      join(fixture.root,first.derivedRelativePath),"utf8"
+    ));
+    assert.equal(index.kind,"video_interval_inspection");
+    assert.equal(index.originalSha256,fixture.source.handle.sha256);
+    assert.equal(index.coverageStatus,"complete");
+    assert.equal(index.startMs,5_000);
+    assert.equal(index.endMs,7_000);
+    assert.deepEqual(index.samples,[
+      {startMs:5_000,endMs:7_000,sampleMs:6_000}
+    ]);
+    const manifest=JSON.parse(await readFile(
+      join(fixture.root,"source-001.manifest.json"),"utf8"
+    ));
+    assert.equal(
+      manifest.derived.filter(item=>item.kind==="inspection").length,
+      1
+    );
+    assert.equal(
+      manifest.derived.find(item=>item.kind==="inspection").sha256,
+      first.sha256
+    );
+
+    const restartedReader=new TaskPublicVideoReader({
+      asr:{async transcribe(){throw new Error("asr_must_not_run");}},
+      timelineReader,
+      clock:()=>"2026-07-30T06:02:00.000Z"
+    });
+    const second=await restartedReader.inspectTimeRange({
+      request,
+      source:fixture.source,
+      workspaceDir:fixture.root
+    });
+    assert.deepEqual(second,first);
+    assert.equal(rangeCalls,1);
+
+    const orphanManifest=JSON.parse(await readFile(
+      join(fixture.root,"source-001.manifest.json"),"utf8"
+    ));
+    orphanManifest.derived=orphanManifest.derived.filter(
+      item=>item.kind!=="inspection"
+    );
+    await writeFile(
+      join(fixture.root,"source-001.manifest.json"),
+      `${JSON.stringify(orphanManifest,null,2)}\n`,
+      {mode:0o600}
+    );
+    const orphanRecoveryReader=new TaskPublicVideoReader({
+      asr:{async transcribe(){throw new Error("asr_must_not_run");}},
+      timelineReader,
+      clock:()=>"2026-07-30T06:03:00.000Z"
+    });
+    const recovered=await orphanRecoveryReader.inspectTimeRange({
+      request,
+      source:fixture.source,
+      workspaceDir:fixture.root
+    });
+    assert.deepEqual(recovered,first);
+    assert.equal(rangeCalls,1);
+    assert.equal(
+      JSON.parse(await readFile(
+        join(fixture.root,"source-001.manifest.json"),"utf8"
+      )).derived.filter(item=>item.kind==="inspection").length,
+      1
+    );
+  } finally {
+    await rm(fixture.root,{recursive:true,force:true});
+  }
+});
+
+test("rejects a forged inspected range before returning model evidence",async()=>{
+  const fixture=await workspaceFixture();
+  try {
+    const reader=new TaskPublicVideoReader({
+      asr:{async transcribe(){return transcriptResult(fixture);}},
+      timelineReader:{
+        async read(input) {
+          return publishTimeline(input);
+        },
+        async readRange(input) {
+          const result=await publishRange(input);
+          return {...result,startMs:4_000};
+        }
+      }
+    });
+    await reader.prepare({
+      workspaceDir:fixture.root,
+      sources:[fixture.source],
+      now:NOW
+    });
+    await assert.rejects(
+      ()=>reader.inspectTimeRange({
+        request:{
+          sourceId:"source-001",
+          view:"inspect_time_range",
+          startMs:5_000,
+          endMs:7_000
+        },
+        source:fixture.source,
+        workspaceDir:fixture.root
+      }),
+      /task_public_video_reader_invalid/u
+    );
+  } finally {
+    await rm(fixture.root,{recursive:true,force:true});
+  }
+});
+
+test("keeps partial and failed transcript coverage explicit for direct answers",async()=>{
+  for (const coverageStatus of ["partial","failed"]) {
+    const fixture=await workspaceFixture();
+    try {
+      const reader=new TaskPublicVideoReader({
+        asr:{async transcribe(){
+          const value=transcriptResult(fixture);
+          if (coverageStatus==="partial") {
+            return {
+              ...value,
+              segments:[{
+                startMs:0,endMs:10_000,text:"只覆盖前半段",
+                alternatives:[],isFinal:true,status:"recognized"
+              }],
+              coveredRanges:[{startMs:0,endMs:10_000}],
+              uncoveredRanges:[{startMs:10_000,endMs:20_000}],
+              coverageStatus,
+              limitations:["speech_coverage_partial"]
+            };
+          }
+          return {
+            ...value,
+            segments:[],
+            coveredRanges:[],
+            uncoveredRanges:[{startMs:0,endMs:20_000}],
+            coverageStatus,
+            limitations:["speech_coverage_failed"]
+          };
+        }},
+        timelineReader:{
+          async read(input) {
+            return publishTimeline(input);
+          },
+          async readRange() {
+            throw new Error("range_must_not_run");
+          }
+        }
+      });
+      const prepared=await reader.prepare({
+        workspaceDir:fixture.root,
+        sources:[fixture.source],
+        now:NOW
+      });
+      const evidence=JSON.parse(prepared.observations[0].content);
+      assert.equal(
+        evidence.transcript.coverageStatus,
+        coverageStatus
+      );
+      assert.deepEqual(
+        evidence.transcript.uncoveredRanges,
+        coverageStatus==="partial"
+          ?[{startMs:10_000,endMs:20_000}]
+          :[{startMs:0,endMs:20_000}]
+      );
+      assert.equal(prepared.modelImageFiles.length,1);
+    } finally {
+      await rm(fixture.root,{recursive:true,force:true});
+    }
+  }
+});
+
+test("rejects false or internally inconsistent transcript coverage",async()=>{
+  const mutations=[
+    value=>({
+      ...value,
+      coveredRanges:[{startMs:0,endMs:11_000}],
+      uncoveredRanges:[{startMs:10_000,endMs:20_000}],
+      coverageStatus:"partial"
+    }),
+    value=>({
+      ...value,
+      coveredRanges:[{startMs:0,endMs:9_000}],
+      uncoveredRanges:[{startMs:10_000,endMs:20_000}],
+      coverageStatus:"partial"
+    }),
+    value=>({
+      ...value,
+      segments:[{
+        startMs:11_000,endMs:12_000,text:"落在未覆盖区",
+        alternatives:[],isFinal:true,status:"recognized"
+      }],
+      coveredRanges:[{startMs:0,endMs:10_000}],
+      uncoveredRanges:[{startMs:10_000,endMs:20_000}],
+      coverageStatus:"partial"
+    }),
+    value=>({
+      ...value,
+      coveredRanges:[{startMs:0,endMs:10_000}],
+      uncoveredRanges:[{startMs:10_000,endMs:20_000}],
+      coverageStatus:"complete"
+    }),
+    value=>({
+      ...value,
+      coveredRanges:[],
+      uncoveredRanges:[{startMs:0,endMs:20_000}],
+      coverageStatus:"failed"
+    })
+  ];
+  for (const mutate of mutations) {
+    const fixture=await workspaceFixture();
+    try {
+      const reader=new TaskPublicVideoReader({
+        asr:{async transcribe(){
+          return mutate(transcriptResult(fixture));
+        }},
+        timelineReader:{
+          async read(input) {
+            return publishTimeline(input);
+          },
+          async readRange() {
+            throw new Error("range_must_not_run");
+          }
+        }
+      });
+      await assert.rejects(
+        ()=>reader.prepare({
+          workspaceDir:fixture.root,
+          sources:[fixture.source],
+          now:NOW
+        }),
+        /task_public_video_reader_invalid/u
+      );
+    } finally {
+      await rm(fixture.root,{recursive:true,force:true});
+    }
   }
 });
 
@@ -261,6 +566,41 @@ async function publishTimeline(input) {
     }],
     limitations:[
       "uniform_timeline_sampling","not_frame_by_frame"
+    ]
+  };
+}
+
+async function publishRange(input) {
+  const bytes=pngHeader(320,180);
+  const relativePath=[
+    `${input.sourceId}.inspect`,
+    `${input.startMs}`,
+    `${input.endMs}.png`
+  ].join("-");
+  await writeFile(
+    join(input.workspaceDir,relativePath),bytes,{mode:0o600}
+  );
+  return {
+    durationMs:20_000,
+    startMs:input.startMs,
+    endMs:input.endMs,
+    sampleCount:1,
+    maxGapMs:input.endMs-input.startMs,
+    samples:[{
+      startMs:input.startMs,
+      endMs:input.endMs,
+      sampleMs:input.startMs+
+        Math.floor((input.endMs-input.startMs)/2)
+    }],
+    images:[{
+      sourceId:input.sourceId,
+      relativePath,
+      sha256:sha(bytes),
+      startMs:input.startMs,
+      endMs:input.endMs
+    }],
+    limitations:[
+      "uniform_range_sampling","not_frame_by_frame"
     ]
   };
 }
