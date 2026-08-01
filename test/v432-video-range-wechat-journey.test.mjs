@@ -39,7 +39,7 @@ import {
 } from "../src/personal-assistant/task-source-workspace.mjs";
 import {StateStore} from "../src/state-store.mjs";
 
-test("WeChat navigation requests and receives one real interval before replying",async()=>{
+test("WeChat mobile Bilibili navigation receives one real interval before replying",async()=>{
   const root=await mkdtemp(join(tmpdir(),"llw-v432-range-journey-"));
   const nowMs=Date.parse("2026-07-31T02:00:00.000Z");
   let siteCalls=0,asrCalls=0,timelineCalls=0;
@@ -49,8 +49,12 @@ test("WeChat navigation requests and receives one real interval before replying"
     const audioBytes=Buffer.from("0000ftypM4A range journey audio");
     const videoBytes=Buffer.from("0000ftypmp42 range journey video");
     const bilibiliAdapter={
-      async prepare({workspaceDir}) {
+      async prepare({workspaceDir,url}) {
         siteCalls+=1;
+        assert.equal(
+          url,
+          "https://www.bilibili.com/video/BV1AbCdEfGhJ/"
+        );
         const audioFile=join(workspaceDir,"bilibili-audio.m4a");
         const videoFile=join(workspaceDir,"bilibili-video.mp4");
         await Promise.all([
@@ -281,7 +285,12 @@ test("WeChat navigation requests and receives one real interval before replying"
         createTimeMs:nowMs,
         type:"text",
         contextToken:"ctx-range-1",
-        text:"请核对 https://b23.tv/Mn2sUpl 第六秒附近的关键数字，不保存"
+        text:[
+          "请核对 ",
+          "https://m.bilibili.com/video/BV1AbCdEfGhJ?",
+          "buvid=redacted&p=1&share_source=WEIXIN ",
+          "第六秒附近的关键数字，不保存"
+        ].join("")
       })
     );
 

@@ -21,6 +21,26 @@ const SOURCE_INTAKE_FAILURES=new Set([
   "source_receive_failed","source_security_rejected",
   "source_limit_exceeded","assistant_model_unsupported"
 ]);
+const PUBLIC_VIDEO_FAILURE_CODES=new Set([
+  "bilibili_url_invalid","bilibili_access_denied",
+  "bilibili_control_invalid","bilibili_media_unavailable",
+  "bilibili_media_invalid","bilibili_limit_exceeded",
+  "bilibili_source_workspace_mode_failed",
+  "bilibili_result_metadata_invalid",
+  "bilibili_audio_descriptor_invalid",
+  "bilibili_video_descriptor_invalid",
+  "bilibili_audio_workspace_realpath_failed",
+  "bilibili_video_workspace_realpath_failed",
+  "bilibili_audio_file_realpath_failed",
+  "bilibili_video_file_realpath_failed",
+  "bilibili_audio_file_stat_failed",
+  "bilibili_video_file_stat_failed",
+  "bilibili_audio_file_metadata_invalid",
+  "bilibili_video_file_metadata_invalid",
+  "bilibili_audio_read_failed","bilibili_video_read_failed",
+  "bilibili_audio_hash_mismatch","bilibili_video_hash_mismatch",
+  "bilibili_source_handle_invalid"
+]);
 
 export class TaskSourceWorkspace {
   constructor({root,prepareTurnSources,now=Date.now,operations={}}) {
@@ -70,9 +90,10 @@ export class TaskSourceWorkspace {
     });
   }
 
-  async prepareAndMerge({session,message}) {
+  async prepareAndMerge({session,message,signal}) {
     const current=validateTaskSession(session);
-    if (!message||message.source!==current.source) {
+    if (!message||message.source!==current.source||
+        !(signal===undefined||signal instanceof AbortSignal)) {
       throw new Error("task_source_workspace_invalid");
     }
     const recovered=await this.recoverPrepared({
@@ -81,7 +102,7 @@ export class TaskSourceWorkspace {
     if (recovered) return recovered;
     let prepared;
     try {
-      prepared=await this.prepareTurnSources(message);
+      prepared=await this.prepareTurnSources(message,{signal});
       await this.ensureRoot();
       const workspaceDir=this.workspace(current.taskId);
       let manifest;
@@ -169,7 +190,13 @@ export class TaskSourceWorkspace {
     } catch (error) {
       if (error?.message==="task_source_workspace_invalid"||
           SOURCE_INTAKE_FAILURES.has(error?.message)) throw error;
-      throw new Error("task_source_workspace_invalid");
+      const failure=new Error("task_source_workspace_invalid");
+      if (PUBLIC_VIDEO_FAILURE_CODES.has(
+        error?.publicVideoFailureCode
+      )) {
+        failure.publicVideoFailureCode=error.publicVideoFailureCode;
+      }
+      throw failure;
     } finally {
       if (prepared?.cleanup) {
         await prepared.cleanup().catch(()=>{});

@@ -379,6 +379,92 @@ test("cancels a running task before the slow business pipeline is released",asyn
   }
 });
 
+test("reports a safe public-video cause without exposing internal details",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"llw-dispatcher-video-failure-"));
+  const state=await StateStore.open(join(root,"state.json"));
+  const manager=new PersonalAssistantTaskSessionManager({
+    state,
+    bindings:{
+      feishu:{userId:"owner",conversationId:"private"},
+      wechat:{userId:"wx-owner",conversationId:"wx-owner"}
+    },
+    selectModel:async()=>"codex",
+    createId:()=>"V".repeat(43),
+    now:()=>Date.parse("2026-07-28T00:01:00.000Z")
+  });
+  const failures=[];
+  const dispatcher=new PersonalAssistantDispatcher({
+    binding:{senderId:"owner",chatId:"private"},
+    bindings:{
+      feishu:{userId:"owner",conversationId:"private"},
+      wechat:{userId:"wx-owner",conversationId:"wx-owner"}
+    },
+    state,taskManager:manager,
+    coordinator:{
+      async handleTask(snapshot) {
+        const failure=new Error("public_video_source_invalid");
+        failure.failurePhase="public_video_source_preparation_failed";
+        failure.publicVideoFailureCode=snapshot.revision===1
+          ?"bilibili_media_unavailable"
+          :snapshot.revision===2
+            ?"bilibili_audio_hash_mismatch"
+            :"not_allowlisted_sensitive_detail";
+        throw failure;
+      }
+    },
+    onFailure:code=>failures.push(code),
+    modelMode:{},deepseekEnabled:false,messenger:{async send(){}}
+  });
+  try {
+    await dispatcher.acceptIncomingMessage(incoming({
+      sourceMessageId:"source-failure",
+      instructionText:"处理公开视频"
+    }));
+    await dispatcher.flushAcceptedMessages();
+    const first=state.getOutcome("feishu:source-failure");
+    assert.equal(
+      first.reasonCode,
+      "public_video_source_preparation_failed"
+    );
+    assert.equal(
+      first.reply,
+      "B 站本次没有提供完整可用的音频和画面，所以没有调用转写、AI 或 Writer，也没有写入。需要时请重新发送同一链接。"
+    );
+
+    await dispatcher.acceptIncomingMessage(incoming({
+      sourceMessageId:"revalidation-source-failure",
+      receivedAt:"2026-07-28T00:01:00.000Z",
+      instructionText:"再次处理公开视频"
+    }));
+    await dispatcher.flushAcceptedMessages();
+    const second=state.getOutcome("feishu:revalidation-source-failure");
+    assert.equal(second.reasonCode,"public_video_source_preparation_failed");
+    assert.equal(
+      second.reply,
+      "视频来源已取得，但本地安全校验未通过，所以没有调用转写、AI 或 Writer，也没有写入。请重新发送；如果持续出现，请反馈给维护人员。"
+    );
+    await dispatcher.acceptIncomingMessage(incoming({
+      sourceMessageId:"unknown-source-failure",
+      receivedAt:"2026-07-28T00:01:00.000Z",
+      instructionText:"第三次处理公开视频"
+    }));
+    await dispatcher.flushAcceptedMessages();
+    const third=state.getOutcome("feishu:unknown-source-failure");
+    assert.equal(third.reasonCode,"public_video_source_preparation_failed");
+    assert.equal(
+      third.reply,
+      "未能完整取得公开视频的音频和画面，本次没有调用转写、AI 或 Writer，也没有确认任何写入；请重新发送同一链接。"
+    );
+    assert.deepEqual(failures,[
+      "public_video_source:bilibili_media_unavailable",
+      "public_video_source:bilibili_audio_hash_mismatch",
+      "public_video_source_preparation_failed"
+    ]);
+  } finally {
+    await rm(root,{recursive:true,force:true});
+  }
+});
+
 function deferred() {
   let resolve;
   const promise=new Promise(done=>{resolve=done;});

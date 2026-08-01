@@ -11,6 +11,30 @@ const SHA=/^[a-f0-9]{64}$/u;
 const MAX_AUDIO_BYTES=32*1024*1024;
 const MAX_VIDEO_BYTES=128*1024*1024;
 const MAX_DURATION_MS=7*24*60*60*1_000;
+const BILIBILI_FAILURES=new Set([
+  "bilibili_url_invalid","bilibili_access_denied",
+  "bilibili_control_invalid","bilibili_media_unavailable",
+  "bilibili_media_invalid","bilibili_limit_exceeded"
+]);
+const BILIBILI_REVALIDATION_FAILURES=new Set([
+  "bilibili_source_workspace_mode_failed",
+  "bilibili_result_metadata_invalid",
+  "bilibili_audio_descriptor_invalid",
+  "bilibili_video_descriptor_invalid",
+  "bilibili_audio_workspace_realpath_failed",
+  "bilibili_video_workspace_realpath_failed",
+  "bilibili_audio_file_realpath_failed",
+  "bilibili_video_file_realpath_failed",
+  "bilibili_audio_file_stat_failed",
+  "bilibili_video_file_stat_failed",
+  "bilibili_audio_file_metadata_invalid",
+  "bilibili_video_file_metadata_invalid",
+  "bilibili_audio_read_failed",
+  "bilibili_video_read_failed",
+  "bilibili_audio_hash_mismatch",
+  "bilibili_video_hash_mismatch",
+  "bilibili_source_handle_invalid"
+]);
 
 export function createPublicVideoSourcePreparer({
   tempRoot,bilibiliAdapter,douyinAdapter,
@@ -36,27 +60,40 @@ export function createPublicVideoSourcePreparer({
     let workspaceDir;
     try {
       workspaceDir=await mkdtemp(join(tempRoot,"llw-public-video-"));
-      await chmod(workspaceDir,0o700);
+      try {
+        await chmod(workspaceDir,0o700);
+      } catch {
+        throw invalidAt(
+          request.platform,"bilibili_source_workspace_mode_failed"
+        );
+      }
       const result=await adapters[request.platform].prepare({
         url:request.url,workspaceDir,signal
       });
       await validateAdapterResult({
         result,request,workspaceDir,signal
       });
-      const handle=createSourceHandle({
-        sourceId,
-        displayName:`${request.platform}-${result.mediaId}.mp4`,
-        mediaClass:"video",
-        format:"mp4",
-        relativePath:`${sourceId}.mp4`,
-        byteSize:result.video.byteSize,
-        sha256:result.video.sha256,
-        availability:"ready",
-        durationMs:result.durationMs,
-        instructionRole:"source_content",
-        representationIndexPath:`${sourceId}.manifest.json`,
-        limitations:[...result.limitations]
-      });
+      let handle;
+      try {
+        handle=createSourceHandle({
+          sourceId,
+          displayName:`${request.platform}-${result.mediaId}.mp4`,
+          mediaClass:"video",
+          format:"mp4",
+          relativePath:`${sourceId}.mp4`,
+          byteSize:result.video.byteSize,
+          sha256:result.video.sha256,
+          availability:"ready",
+          durationMs:result.durationMs,
+          instructionRole:"source_content",
+          representationIndexPath:`${sourceId}.manifest.json`,
+          limitations:[...result.limitations]
+        });
+      } catch {
+        throw invalidAt(
+          request.platform,"bilibili_source_handle_invalid"
+        );
+      }
       const completed=workspaceDir;
       workspaceDir=undefined;
       return Object.freeze({
@@ -83,7 +120,7 @@ export function createPublicVideoSourcePreparer({
       }
       if (error?.message==="public_video_source_invalid"||
           error?.name==="AbortError") throw error;
-      throw invalid();
+      throw invalidFrom(error,request.platform);
     }
   };
 }
@@ -95,9 +132,9 @@ export function createTurnSourcePreparerWithPublicVideo({
       typeof publicVideoSourcePreparer!=="function") {
     throw invalid();
   }
-  return async function prepareTurnSources(message) {
+  return async function prepareTurnSources(message,{signal}={}) {
     const request=extractPublicVideoRequest(message?.instructionText);
-    const base=await basePreparer(message);
+    const base=await basePreparer(message,{signal});
     if (!request) return base;
     if (!Array.isArray(base?.sources)||base.sources.length>=8||
         typeof base.cleanup!=="function") {
@@ -108,7 +145,8 @@ export function createTurnSourcePreparerWithPublicVideo({
     try {
       publicVideo=await publicVideoSourcePreparer({
         request,
-        sourceId:`source-${String(base.sources.length+1).padStart(3,"0")}`
+        sourceId:`source-${String(base.sources.length+1).padStart(3,"0")}`,
+        signal
       });
       const cleanup=once(async()=>{
         await Promise.allSettled([
@@ -157,41 +195,82 @@ async function validateAdapterResult({
         typeof item!=="string"||!item||
         Buffer.byteLength(item,"utf8")>1_000
       )) {
-    throw invalid();
+    throw invalidAt(
+      request.platform,"bilibili_result_metadata_invalid"
+    );
   }
   await Promise.all([
     validateMedia({
       value:result.audio,workspaceDir,
-      format:"m4a",mime:"audio/mp4",maxBytes:MAX_AUDIO_BYTES
+      format:"m4a",mime:"audio/mp4",maxBytes:MAX_AUDIO_BYTES,
+      platform:request.platform,kind:"audio"
     }),
     validateMedia({
       value:result.video,workspaceDir,
-      format:"mp4",mime:"video/mp4",maxBytes:MAX_VIDEO_BYTES
+      format:"mp4",mime:"video/mp4",maxBytes:MAX_VIDEO_BYTES,
+      platform:request.platform,kind:"video"
     })
   ]);
   signal?.throwIfAborted();
 }
 
 async function validateMedia({
-  value,workspaceDir,format,mime,maxBytes
+  value,workspaceDir,format,mime,maxBytes,platform,kind
 }) {
   if (!plain(value)||typeof value.file!=="string"||
       !isAbsolute(value.file)||
       !bounded(value.byteSize,12,maxBytes)||
       !SHA.test(value.sha256||"")||
       value.format!==format||value.detectedMime!==mime) {
-    throw invalid();
+    throw invalidAt(
+      platform,`bilibili_${kind}_descriptor_invalid`
+    );
   }
-  const workspace=await realpath(workspaceDir);
-  const actual=await realpath(value.file);
+  let workspace;
+  try {
+    workspace=await realpath(workspaceDir);
+  } catch {
+    throw invalidAt(
+      platform,`bilibili_${kind}_workspace_realpath_failed`
+    );
+  }
+  let actual;
+  try {
+    actual=await realpath(value.file);
+  } catch {
+    throw invalidAt(
+      platform,`bilibili_${kind}_file_realpath_failed`
+    );
+  }
   const fromWorkspace=relative(workspace,actual);
-  const info=await lstat(actual);
+  let info;
+  try {
+    info=await lstat(actual);
+  } catch {
+    throw invalidAt(
+      platform,`bilibili_${kind}_file_stat_failed`
+    );
+  }
   if (!info.isFile()||info.isSymbolicLink()||
       info.uid!==process.getuid()||(info.mode&0o077)!==0||
       info.size!==value.byteSize||
-      fromWorkspace.startsWith("..")||isAbsolute(fromWorkspace)||
-      sha(await readFile(actual))!==value.sha256) {
-    throw invalid();
+      fromWorkspace.startsWith("..")||isAbsolute(fromWorkspace)) {
+    throw invalidAt(
+      platform,`bilibili_${kind}_file_metadata_invalid`
+    );
+  }
+  let bytes;
+  try {
+    bytes=await readFile(actual);
+  } catch {
+    throw invalidAt(
+      platform,`bilibili_${kind}_read_failed`
+    );
+  }
+  if (sha(bytes)!==value.sha256) {
+    throw invalidAt(
+      platform,`bilibili_${kind}_hash_mismatch`
+    );
   }
 }
 
@@ -223,4 +302,22 @@ function plain(value) {
 
 function invalid() {
   return new Error("public_video_source_invalid");
+}
+
+function invalidAt(platform,code) {
+  const failure=invalid();
+  if (platform==="bilibili"&&
+      BILIBILI_REVALIDATION_FAILURES.has(code)) {
+    failure.publicVideoFailureCode=code;
+  }
+  return failure;
+}
+
+function invalidFrom(error,platform) {
+  const failure=invalid();
+  if (platform==="bilibili"&&
+      BILIBILI_FAILURES.has(error?.message)) {
+    failure.publicVideoFailureCode=error.message;
+  }
+  return failure;
 }

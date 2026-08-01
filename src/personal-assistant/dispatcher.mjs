@@ -380,8 +380,10 @@ export class PersonalAssistantDispatcher {
 
   async commitTaskFailure(snapshot,error) {
     const reasonCode=boundedFailureCode(error);
-    try { this.onFailure(reasonCode); } catch {}
-    const reply=failureReply(reasonCode);
+    try {
+      this.onFailure(failureLogCode(error,reasonCode));
+    } catch {}
+    const reply=failureReply(reasonCode,error);
     const committed=await this.taskManager.completeStage(snapshot,{
       status:"failed",
       reply,
@@ -499,6 +501,26 @@ const PRECISE_PRE_WRITER_FAILURES=new Set([
   "assistant_timeout","assistant_process_failed",
   "assistant_result_invalid","pdf_prepare_failed"
 ]);
+const PUBLIC_VIDEO_FAILURE_CODES=new Set([
+  "bilibili_url_invalid","bilibili_access_denied",
+  "bilibili_control_invalid","bilibili_media_unavailable",
+  "bilibili_media_invalid","bilibili_limit_exceeded",
+  "bilibili_source_workspace_mode_failed",
+  "bilibili_result_metadata_invalid",
+  "bilibili_audio_descriptor_invalid",
+  "bilibili_video_descriptor_invalid",
+  "bilibili_audio_workspace_realpath_failed",
+  "bilibili_video_workspace_realpath_failed",
+  "bilibili_audio_file_realpath_failed",
+  "bilibili_video_file_realpath_failed",
+  "bilibili_audio_file_stat_failed",
+  "bilibili_video_file_stat_failed",
+  "bilibili_audio_file_metadata_invalid",
+  "bilibili_video_file_metadata_invalid",
+  "bilibili_audio_read_failed","bilibili_video_read_failed",
+  "bilibili_audio_hash_mismatch","bilibili_video_hash_mismatch",
+  "bilibili_source_handle_invalid"
+]);
 const SAFE_FAILURE_PHASES=new Set([
   "outcome_lookup_failed","reply_recovery_failed",
   "conversation_lookup_failed","personal_rule_confirmation_failed",
@@ -531,7 +553,22 @@ function boundedFailureCode(error) {
   return "tool_execution_failed";
 }
 
-function failureReply(code) {
+function failureLogCode(error,fallback) {
+  const code=error?.publicVideoFailureCode;
+  return error?.failurePhase===
+      "public_video_source_preparation_failed"&&
+    PUBLIC_VIDEO_FAILURE_CODES.has(code)
+    ?`public_video_source:${code}`
+    :fallback;
+}
+
+function failureReply(code,error) {
+  if (code==="public_video_source_preparation_failed") {
+    const specific=publicVideoFailureReply(
+      error?.publicVideoFailureCode
+    );
+    if (specific) return specific;
+  }
   return new Map([
     [
       "source_receive_failed",
@@ -571,7 +608,7 @@ function failureReply(code) {
     ],
     [
       "public_video_source_preparation_failed",
-      "未能完整取得公开视频的音频和画面，本次没有调用转写、AI 或 Writer，也没有确认任何写入；请重新发送同一链接重试。"
+      "未能完整取得公开视频的音频和画面，本次没有调用转写、AI 或 Writer，也没有确认任何写入；请重新发送同一链接。"
     ],
     [
       "public_video_prepare_failed",
@@ -583,6 +620,29 @@ function failureReply(code) {
     ]
   ]).get(code)||
     "本次工具执行失败，系统没有确认新的写入；请稍后重试。";
+}
+
+function publicVideoFailureReply(code) {
+  if (!PUBLIC_VIDEO_FAILURE_CODES.has(code)) return null;
+  if (code==="bilibili_url_invalid") {
+    return "没有识别到有效的 B 站视频链接，所以没有调用转写、AI 或 Writer，也没有写入。请重新复制并发送该视频链接。";
+  }
+  if (code==="bilibili_access_denied") {
+    return "本次无法访问 B 站视频来源（可能是网络或站点临时拒绝），所以没有调用转写、AI 或 Writer，也没有写入。需要时请重新发送同一链接。";
+  }
+  if (code==="bilibili_media_unavailable") {
+    return "B 站本次没有提供完整可用的音频和画面，所以没有调用转写、AI 或 Writer，也没有写入。需要时请重新发送同一链接。";
+  }
+  if (code==="bilibili_control_invalid") {
+    return "B 站返回的视频信息不完整或异常，系统无法安全确定音频和画面，所以没有调用转写、AI 或 Writer，也没有写入。请重新发送链接；如果持续出现，可能是该视频当前不可读取。";
+  }
+  if (code==="bilibili_media_invalid") {
+    return "取得的 B 站音频或画面内容无效，未通过媒体检查，所以没有调用转写、AI 或 Writer，也没有写入。请重新发送；如果持续出现，可能是该视频当前不可读取。";
+  }
+  if (code==="bilibili_limit_exceeded") {
+    return "该 B 站视频超过当前安全处理上限，所以没有调用转写、AI 或 Writer，也没有写入。请改用更短或更小的视频。";
+  }
+  return "视频来源已取得，但本地安全校验未通过，所以没有调用转写、AI 或 Writer，也没有写入。请重新发送；如果持续出现，请反馈给维护人员。";
 }
 
 function validTurnShape(message) {

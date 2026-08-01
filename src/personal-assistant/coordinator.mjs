@@ -85,7 +85,8 @@ export class PersonalAssistantCoordinator {
       }
       if (hasNewSources) {
         prepared=await this.taskWorkspace.prepareAndMerge({
-          session,message:turnMessage
+          session,message:turnMessage,
+          signal:taskController.signal
         });
         session=await this.taskManager.attachSources(snapshot,{
           addedSourceIds:prepared.addedSourceIds
