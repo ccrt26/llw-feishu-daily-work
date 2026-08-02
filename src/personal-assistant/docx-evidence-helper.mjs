@@ -17,6 +17,12 @@ const OFFICE_RELATIONSHIP_NAMESPACES=new Set([
 ]);
 const CONTENT_TYPES_NAMESPACE=
   "http://schemas.openxmlformats.org/package/2006/content-types";
+const XML_NAMESPACE="http://www.w3.org/XML/1998/namespace";
+const XMLNS_NAMESPACE="http://www.w3.org/2000/xmlns/";
+const RESERVED_NAMESPACE_URIS=new Set([XML_NAMESPACE,XMLNS_NAMESPACE]);
+const VML_NAMESPACE="urn:schemas-microsoft-com:vml";
+const OFFICE_VML_NAMESPACE="urn:schemas-microsoft-com:office:office";
+const WORD_VML_NAMESPACE="urn:schemas-microsoft-com:office:word";
 const IMAGE_RELATIONSHIP_TYPES=new Set([
   "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image",
   "http://purl.oclc.org/ooxml/officeDocument/relationships/image"
@@ -24,6 +30,16 @@ const IMAGE_RELATIONSHIP_TYPES=new Set([
 const SUPPORTED_INTERNAL_RELATIONSHIP_SUFFIXES=new Set([
   "header","footer","footnotes","endnotes","styles","numbering",
   "settings","fontTable","theme","webSettings"
+]);
+const SAFE_ROOT_METADATA_RELATIONSHIPS=new Map([
+  [
+    "http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties",
+    "docProps/core.xml"
+  ],
+  [
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties",
+    "docProps/app.xml"
+  ]
 ]);
 const KNOWN_METADATA_PARTS=[
   /^_rels\/\.rels$/u,
@@ -41,6 +57,7 @@ const KNOWN_WORD_CONTENT_ELEMENTS=new Set([
   "tbl","tblPr","tblGrid","gridCol","tr","trPr","tc","tcPr",
   "tblW","tcW","tblBorders","top","left","bottom","right","insideH",
   "insideV","tblLook","tblStyle","tblLayout","vMerge","gridSpan",
+  "tblInd","tcMar","hMerge","shd","outlineLvl","pict",
   "hdr","ftr","footnotes","footnote","endnotes","endnote","drawing",
   "hyperlink","bookmarkStart","bookmarkEnd","proofErr","noProof",
   "lastRenderedPageBreak","b","bCs","i","iCs","u","color","highlight",
@@ -57,6 +74,14 @@ const DRAWING_NAMESPACES=new Set([
   "http://purl.oclc.org/ooxml/drawingml/picture",
   "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing",
   "http://purl.oclc.org/ooxml/drawingml/wordprocessingDrawing"
+]);
+const SUPPORTED_VML_ELEMENTS=new Set([
+  "f","formulas","imagedata","path","shape","shapetype","stroke"
+]);
+const SUPPORTED_OFFICE_VML_ELEMENTS=new Set(["lock"]);
+const SUPPORTED_WORD_VML_ELEMENTS=new Set(["wrap"]);
+const LEGACY_DRAWING_NAMESPACES=new Set([
+  VML_NAMESPACE,OFFICE_VML_NAMESPACE,WORD_VML_NAMESPACE
 ]);
 
 export async function prepareDocxEvidenceJob(job) {
@@ -355,6 +380,9 @@ function auditRemainingRelationships({
       referencedParts.add(resolvedTarget);
       const suffix=relationshipTypeSuffix(relation.Type);
       if (partName==="_rels/.rels"&&suffix==="officeDocument") continue;
+      if (partName==="_rels/.rels"&&
+          SAFE_ROOT_METADATA_RELATIONSHIPS.get(relation.Type)===
+            resolvedTarget) continue;
       if (!IMAGE_RELATIONSHIP_TYPES.has(relation.Type)&&
           !SUPPORTED_INTERNAL_RELATIONSHIP_SUFFIXES.has(suffix)) {
         limitations.add(relationshipLimitation(suffix));
@@ -372,6 +400,8 @@ function parseWordContentPart(bytes,ownerPartName,styles,orderBase) {
   let textCaptureDepth=0;
   let drawingDepth=0;
   let drawingHasBlip=false;
+  const legacyPictures=[];
+  const legacyShapes=[];
   let order=orderBase;
   let rootSeen=false;
   parseXml(bytes,{
@@ -383,6 +413,26 @@ function parseWordContentPart(bytes,ownerPartName,styles,orderBase) {
         }
       }
       detectUnsupported(node,limitations);
+      if (wordNode(node)&&node.localName==="pict") {
+        legacyPictures.push({hasImage:false});
+      }
+      if (node.namespaceURI===VML_NAMESPACE&&node.localName==="shape") {
+        legacyShapes.push({hasImage:false});
+      }
+      if (legacyDrawingNode(node)&&legacyPictures.length===0) {
+        limitations.add("unsupported_vml");
+      }
+      if (node.namespaceURI===VML_NAMESPACE&&
+          node.localName==="imagedata"&&legacyPictures.length>0) {
+        const relationshipId=relationshipAttribute(node,"id");
+        if (!relationshipId) throw invalid();
+        legacyPictures.at(-1).hasImage=true;
+        if (legacyShapes.length===0) limitations.add("unsupported_vml");
+        else legacyShapes.at(-1).hasImage=true;
+        imageReferences.push(Object.freeze({
+          ownerPartName,relationshipId,documentOrder:order+=1
+        }));
+      }
       if (wordNode(node)&&node.localName==="tc") tableCellDepth+=1;
       if (wordNode(node)&&node.localName==="p") {
         paragraphs.push({
@@ -434,14 +484,16 @@ function parseWordContentPart(bytes,ownerPartName,styles,orderBase) {
         if (text) {
           const style=paragraph.styleId?styles.get(paragraph.styleId):null;
           const headingLevel=headingLevelFor(paragraph.styleId,style);
+          const type=paragraph.tableCell?"table_cell"
+            :headingLevel!==null?"heading"
+              :paragraph.numId!==null?"list_item":"paragraph";
+          const level=type==="heading"?headingLevel
+            :type==="list_item"?paragraph.level:null;
           observations.push(Object.freeze({
             ownerPartName,documentOrder:order+=1,
-            type:paragraph.tableCell?"table_cell"
-              :headingLevel!==null?"heading"
-                :paragraph.numId!==null?"list_item":"paragraph",
+            type,
             text,
-            ...(headingLevel===null?{}:{level:headingLevel}),
-            ...(paragraph.numId===null?{}:{level:paragraph.level})
+            ...(level===null?{}:{level})
           }));
         }
       }
@@ -449,6 +501,14 @@ function parseWordContentPart(bytes,ownerPartName,styles,orderBase) {
       if (wordNode(node)&&node.localName==="drawing") {
         if (!drawingHasBlip) limitations.add("unsupported_drawing");
         drawingDepth-=1;
+      }
+      if (wordNode(node)&&node.localName==="pict") {
+        const picture=legacyPictures.pop();
+        if (!picture?.hasImage) limitations.add("unsupported_vml");
+      }
+      if (node.namespaceURI===VML_NAMESPACE&&node.localName==="shape") {
+        const shape=legacyShapes.pop();
+        if (!shape?.hasImage) limitations.add("unsupported_vml");
       }
     }
   });
@@ -527,8 +587,20 @@ function detectUnsupported(node,limitations) {
     namespace.includes("officeDocument/2006/math")||
     namespace.includes("ooxml/officeDocument/math")||
     namespace.includes("wordprocessingShape");
+  const knownLegacy=
+    namespace===VML_NAMESPACE&&SUPPORTED_VML_ELEMENTS.has(node.localName)||
+    namespace===OFFICE_VML_NAMESPACE&&
+      SUPPORTED_OFFICE_VML_ELEMENTS.has(node.localName)||
+    namespace===WORD_VML_NAMESPACE&&
+      SUPPORTED_WORD_VML_ELEMENTS.has(node.localName);
+  if (LEGACY_DRAWING_NAMESPACES.has(namespace)&&!knownLegacy) {
+    limitations.add("unsupported_vml");
+  }
   if (!wordNode(node)&&!DRAWING_NAMESPACES.has(namespace)&&
-      !knownUnsupported) limitations.add("unknown_visible_xml");
+      !knownUnsupported&&!knownLegacy&&
+      !LEGACY_DRAWING_NAMESPACES.has(namespace)) {
+    limitations.add("unknown_visible_xml");
+  }
   if (wordNode(node)&&!KNOWN_WORD_CONTENT_ELEMENTS.has(node.localName)&&
       !new Set([
         "ins","del","moveFrom","moveTo","commentRangeStart",
@@ -589,12 +661,23 @@ function parseXml(bytes,visitor) {
     }
     if (rootClosed) throw invalid();
     const start=parseStartTag(xml,cursor);
-    const parentNamespaces=stack.at(-1)?.namespaces||new Map();
+    const parentNamespaces=stack.at(-1)?.namespaces||
+      new Map([["xml",XML_NAMESPACE]]);
     const namespaces=new Map(parentNamespaces);
     for (const attribute of start.attributes) {
-      if (attribute.qname==="xmlns") namespaces.set("",attribute.value);
+      if (attribute.qname==="xmlns") {
+        if (RESERVED_NAMESPACE_URIS.has(attribute.value)) {
+          throw invalid();
+        }
+        namespaces.set("",attribute.value);
+      }
       else if (attribute.qname.startsWith("xmlns:")) {
-        namespaces.set(attribute.qname.slice(6),attribute.value);
+        const prefix=attribute.qname.slice(6);
+        if (!prefix||prefix==="xmlns"||
+            (prefix==="xml"
+              ?attribute.value!==XML_NAMESPACE
+              :RESERVED_NAMESPACE_URIS.has(attribute.value))) throw invalid();
+        namespaces.set(prefix,attribute.value);
       }
     }
     const elementName=resolveXmlName(start.qname,namespaces,true);
@@ -745,6 +828,10 @@ function relationshipAttribute(node,localName) {
     attribute.localName===localName&&
     OFFICE_RELATIONSHIP_NAMESPACES.has(attribute.namespaceURI)
   )?.value;
+}
+
+function legacyDrawingNode(node) {
+  return LEGACY_DRAWING_NAMESPACES.has(node.namespaceURI);
 }
 
 function plainAttribute(node,localName) {

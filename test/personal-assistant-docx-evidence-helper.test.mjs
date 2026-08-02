@@ -36,7 +36,8 @@ test("prepares ordered text and owner-scoped PNG evidence with complete coverage
       paragraph("标题",{style:"Heading1"})+
       paragraph("列表项",{numId:1,level:0})+
       paragraph("正文段落")+
-      `<w:tbl><w:tr><w:tc>${paragraph("表格内容")}</w:tc></w:tr></w:tbl>`+
+      `<w:tbl><w:tr><w:tc>${paragraph("表格内容",{numId:1,level:0})}`+
+      `</w:tc></w:tr></w:tbl>`+
       imageParagraph("rId1")
     );
     const {outputDir,result}=await runFixture(root,{
@@ -90,6 +91,12 @@ test("prepares ordered text and owner-scoped PNG evidence with complete coverage
         {type:"paragraph",text:"尾注",ownerPartName:"word/endnotes.xml"}
       ]
     );
+    assert.equal(
+      Object.hasOwn(
+        result.observations.find(item=>item.text==="表格内容"),"level"
+      ),
+      false
+    );
     assert.deepEqual(
       result.imageCandidates.map(item=>({
         ownerPartName:item.ownerPartName,
@@ -124,6 +131,113 @@ test("prepares ordered text and owner-scoped PNG evidence with complete coverage
         Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a])
       ),true);
     }
+  } finally { await rm(root,{recursive:true,force:true}); }
+});
+
+test("accepts the predefined XML namespace used by xml:space",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"llw-docx-evidence-xml-space-"));
+  try {
+    const {result}=await runFixture(root,{
+      documentXml:wordDocument(
+        `<w:p><w:r><w:t xml:space="preserve">  保留空格  </w:t></w:r></w:p>`
+      )
+    });
+    assert.equal(result.coverage.status,"complete");
+    assert.deepEqual(
+      result.observations.map(({type,text})=>({type,text})),
+      [{type:"paragraph",text:"保留空格"}]
+    );
+  } finally { await rm(root,{recursive:true,force:true}); }
+});
+
+test("represents a standard legacy VML header image and package metadata",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"llw-docx-evidence-vml-image-"));
+  try {
+    const vml="urn:schemas-microsoft-com:vml";
+    const office="urn:schemas-microsoft-com:office:office";
+    const word10="urn:schemas-microsoft-com:office:word";
+    const header=`<?xml version="1.0" encoding="UTF-8"?>`+
+      `<w:hdr xmlns:w="${W}" xmlns:r="${REL_BASE}" `+
+      `xmlns:v="${vml}" xmlns:o="${office}" xmlns:w10="${word10}">`+
+      `<w:p><w:r><w:pict>`+
+      `<v:shapetype><v:stroke/><v:formulas><v:f/></v:formulas>`+
+      `<v:path/><o:lock/><w10:wrap/></v:shapetype>`+
+      `<v:shape><v:imagedata r:id="rIdLegacy"/></v:shape>`+
+      `</w:pict></w:r></w:p></w:hdr>`;
+    const formatting=`<w:p><w:pPr><w:shd w:fill="FFFFFF"/>`+
+      `<w:outlineLvl w:val="0"/></w:pPr><w:r><w:t>正文</w:t></w:r></w:p>`+
+      `<w:tbl><w:tblPr><w:tblInd w:w="0"/></w:tblPr>`+
+      `<w:tr><w:tc><w:tcPr><w:tcMar/><w:hMerge/></w:tcPr>`+
+      `${paragraph("表格")}</w:tc></w:tr></w:tbl>`;
+    const {result}=await runFixture(root,{
+      documentXml:wordDocument(formatting),
+      extraParts:{
+        "_rels/.rels":relationships([
+          {id:"rIdRoot",type:`${REL_BASE}/officeDocument`,target:"word/document.xml"},
+          {id:"rIdCore",type:"http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties",target:"docProps/core.xml"},
+          {id:"rIdApp",type:`${REL_BASE}/extended-properties`,target:"docProps/app.xml"}
+        ]),
+        "docProps/core.xml":"<core/>",
+        "docProps/app.xml":"<app/>",
+        "word/header1.xml":header,
+        "word/media/legacy.png":PNG_1X1
+      },
+      relationsByOwner:{
+        "word/document.xml":[
+          {id:"rIdHeader",type:`${REL_BASE}/header`,target:"header1.xml"}
+        ],
+        "word/header1.xml":[
+          {id:"rIdLegacy",type:`${REL_BASE}/image`,target:"media/legacy.png"}
+        ]
+      }
+    });
+    assert.equal(result.coverage.status,"complete");
+    assert.deepEqual(result.coverage.limitations,[]);
+    assert.deepEqual(result.imageCandidates.map(image=>({
+      ownerPartName:image.ownerPartName,
+      relationshipId:image.relationshipId,
+      targetMediaPartName:image.targetMediaPartName
+    })),[{
+      ownerPartName:"word/header1.xml",
+      relationshipId:"rIdLegacy",
+      targetMediaPartName:"word/media/legacy.png"
+    }]);
+  } finally { await rm(root,{recursive:true,force:true}); }
+});
+
+test("keeps a legacy vector-only VML drawing partial",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"llw-docx-evidence-vml-vector-"));
+  try {
+    const documentXml=`<?xml version="1.0" encoding="UTF-8"?>`+
+      `<w:document xmlns:w="${W}" xmlns:v="urn:schemas-microsoft-com:vml">`+
+      `<w:body><w:p><w:r><w:pict><v:shape/></w:pict></w:r></w:p>`+
+      `<w:sectPr/></w:body></w:document>`;
+    const {result}=await runFixture(root,{documentXml});
+    assert.equal(result.coverage.status,"partial");
+    assert.equal(result.coverage.limitations.includes("unsupported_vml"),true);
+  } finally { await rm(root,{recursive:true,force:true}); }
+});
+
+test("keeps a mixed VML image and vector shape partial",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"llw-docx-evidence-vml-mixed-"));
+  try {
+    const documentXml=`<?xml version="1.0" encoding="UTF-8"?>`+
+      `<w:document xmlns:w="${W}" xmlns:r="${REL_BASE}" `+
+      `xmlns:v="urn:schemas-microsoft-com:vml">`+
+      `<w:body><w:p><w:r><w:pict>`+
+      `<v:shape><v:imagedata r:id="rIdImage"/></v:shape>`+
+      `<v:shape/>`+
+      `</w:pict></w:r></w:p><w:sectPr/></w:body></w:document>`;
+    const {result}=await runFixture(root,{
+      documentXml,
+      extraParts:{"word/media/image.png":PNG_1X1},
+      relationsByOwner:{"word/document.xml":[
+        {id:"rIdImage",type:`${REL_BASE}/image`,target:"media/image.png"}
+      ]}
+    });
+    assert.equal(result.coverage.status,"partial");
+    assert.equal(result.coverage.limitations.includes("unsupported_vml"),true);
+    assert.equal(result.imageCandidates.length,1);
   } finally { await rm(root,{recursive:true,force:true}); }
 });
 
@@ -193,6 +307,28 @@ test("fails closed on malformed, stale, unsafe or dangling DOCX evidence",async 
       {
         name:"malformed-xml",
         options:{documentXml:`<w:document xmlns:w="${W}"><w:body></w:document>`}
+      },
+      {
+        name:"unbound-arbitrary-prefix",
+        options:{documentXml:wordDocument(
+          `<w:p><w:r><w:t bad:space="preserve">正文</w:t></w:r></w:p>`
+        )}
+      },
+      {
+        name:"reserved-xml-prefix-rebound",
+        options:{documentXml:
+          `<w:document xmlns:w="${W}" `+
+          `xmlns:xml="https://example.invalid/not-xml">`+
+          `<w:body><w:p><w:r><w:t xml:space="preserve">正文</w:t>`+
+          `</w:r></w:p></w:body></w:document>`}
+      },
+      {
+        name:"reserved-xml-namespace-aliased",
+        options:{documentXml:
+          `<w:document xmlns:w="${W}" `+
+          `xmlns:x="http://www.w3.org/XML/1998/namespace">`+
+          `<w:body><w:p><w:r><w:t x:space="preserve">正文</w:t>`+
+          `</w:r></w:p></w:body></w:document>`}
       },
       {
         name:"forbidden-entity",
