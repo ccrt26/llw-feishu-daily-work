@@ -186,7 +186,11 @@ test("production keeps source, DOCX preparation and AI deadlines independent",as
   );
   assert.match(
     source,
-    /new TaskDocxReader\(\{[\s\S]*?docx-evidence-jobs[\s\S]*?timeoutMs:DOCX_PREPARE_TIMEOUT_MS[\s\S]*?\}\)/
+    /const docxTempRoot=join\(dirname\(config\.stateFile\),"docx-evidence-jobs"\);[\s\S]*?new TaskDocxReader\(\{[\s\S]*?tempRoot:docxTempRoot,[\s\S]*?timeoutMs:DOCX_PREPARE_TIMEOUT_MS[\s\S]*?\}\)/
+  );
+  assert.match(
+    source,
+    /await scavengeTaskDocxTempRoot\(docxTempRoot\)/
   );
   assert.match(
     source,

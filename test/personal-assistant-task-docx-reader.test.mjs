@@ -11,7 +11,7 @@ import {
   prepareDocxEvidenceJob
 } from "../src/personal-assistant/docx-evidence-helper.mjs";
 import {
-  TaskDocxReader
+  TaskDocxReader,scavengeTaskDocxTempRoot
 } from "../src/personal-assistant/task-docx-reader.mjs";
 import {
   PNG_1X1,REL_BASE,buildDocxFixture,imageParagraph,paragraph,wordDocument
@@ -113,6 +113,21 @@ test("keeps multiple DOCX sources disjoint and skips non-DOCX sources",async()=>
       "source-002.docx-image-001.png"
     ]);
   } finally { await rm(fixture.root,{recursive:true,force:true}); }
+});
+
+test("startup scavenger removes every abandoned private DOCX job",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"llw-task-docx-scavenge-"));
+  await chmod(root,0o700);
+  const oldJob=join(root,"llw-task-docx-old");
+  const recentJob=join(root,"llw-task-docx-recent");
+  const unrelated=join(root,"job-unrelated");
+  try {
+    for (const directory of [oldJob,recentJob,unrelated]) {
+      await mkdir(directory,{mode:0o700});
+    }
+    await scavengeTaskDocxTempRoot(root);
+    assert.deepEqual((await readdir(root)).sort(),["job-unrelated"]);
+  } finally { await rm(root,{recursive:true,force:true}); }
 });
 
 async function readerFixture({

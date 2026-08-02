@@ -75,7 +75,7 @@ import {
   TaskPdfReader
 } from "./personal-assistant/task-pdf-reader.mjs";
 import {
-  TaskDocxReader
+  TaskDocxReader,scavengeTaskDocxTempRoot
 } from "./personal-assistant/task-docx-reader.mjs";
 import {
   createBilibiliPublicAdapter
@@ -299,11 +299,12 @@ async function runPersonalAssistantMain(config) {
     maxDimension:3508,
     timeoutMs:invoiceConfig.pdfPrepareTimeoutMs
   });
+  const docxTempRoot=join(dirname(config.stateFile),"docx-evidence-jobs");
   const docxReader=new TaskDocxReader({
     helperPath:fileURLToPath(new URL(
       "./personal-assistant/docx-evidence-helper.mjs",import.meta.url
     )),
-    tempRoot:join(dirname(config.stateFile),"docx-evidence-jobs"),
+    tempRoot:docxTempRoot,
     timeoutMs:DOCX_PREPARE_TIMEOUT_MS
   });
   const coordinator=new PersonalAssistantCoordinator({
@@ -343,6 +344,7 @@ async function runPersonalAssistantMain(config) {
   });
   await scavengeInvoiceTempRoot(invoiceConfig.tempRoot);
   await scavengeInvoiceTempRoot(knowledgeConfig.tempRoot);
+  await scavengeTaskDocxTempRoot(docxTempRoot);
   await invoiceWriter.recoverTransactions();
   await dispatcher.resumeReplies();
   const cleanupOutputs=()=>documentWorkspace.cleanup({

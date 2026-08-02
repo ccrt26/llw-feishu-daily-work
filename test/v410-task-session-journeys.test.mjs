@@ -7,6 +7,7 @@ import {
 } from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {dirname,join} from "node:path";
+import {fileURLToPath} from "node:url";
 import {promisify} from "node:util";
 import {
   createFeishuIncomingMessage,createWechatIncomingMessage
@@ -32,6 +33,9 @@ import {
 import {
   TaskSourceWorkspace
 } from "../src/personal-assistant/task-source-workspace.mjs";
+import {
+  TaskDocxReader
+} from "../src/personal-assistant/task-docx-reader.mjs";
 import {StateStore} from "../src/state-store.mjs";
 import {
   FileOutputWorkspace
@@ -462,6 +466,12 @@ test("Feishu and WeChat keep isolated active tasks, source workspaces and reply 
       root:join(root,"task-sources"),
       prepareTurnSources,now:()=>nowMs
     });
+    const docxReader=new TaskDocxReader({
+      helperPath:fileURLToPath(new URL(
+        "../src/personal-assistant/docx-evidence-helper.mjs",import.meta.url
+      )),
+      tempRoot:join(root,"docx-evidence-jobs"),timeoutMs:2_000
+    });
     const contexts=[],sent=[];
     const assistant=new PersonalAssistantClient({
       codex:async context=>{
@@ -486,7 +496,7 @@ test("Feishu and WeChat keep isolated active tasks, source workspaces and reply 
         markReplied:key=>state.markReplied(key)
       },
       messenger,personalRules:[],model:"codex",
-      skillVersion:"4.1.0",taskManager,taskWorkspace
+      skillVersion:"4.1.0",taskManager,taskWorkspace,docxReader
     });
     const dispatcher=new PersonalAssistantDispatcher({
       binding:{senderId:"owner",chatId:"private-chat"},

@@ -164,15 +164,49 @@ export class TaskDocxReader {
   }
 
   async ensureTempRoot() {
-    await mkdir(this.tempRoot,{recursive:true,mode:0o700});
-    await chmod(this.tempRoot,0o700);
-    const info=await lstat(this.tempRoot);
-    if (!info.isDirectory()||info.isSymbolicLink()||
-        info.uid!==process.getuid()||(info.mode&0o077)!==0) {
+    try {
+      await ensurePrivateTempRoot(this.tempRoot);
+    } catch {
       throw new Error("task_docx_reader_invalid");
     }
-    await realpath(this.tempRoot);
   }
+}
+
+export async function scavengeTaskDocxTempRoot(tempRoot) {
+  if (typeof tempRoot!=="string"||!isAbsolute(tempRoot)) {
+    throw new Error("task_docx_scavenge_invalid");
+  }
+  try {
+    await ensurePrivateTempRoot(tempRoot);
+    for (const entry of await readdir(tempRoot,{withFileTypes:true})) {
+      if (!/^llw-task-docx-[A-Za-z0-9_-]{1,128}$/u.test(entry.name)) {
+        continue;
+      }
+      const path=join(tempRoot,entry.name);
+      const info=await lstat(path);
+      if (!entry.isDirectory()||!info.isDirectory()||info.isSymbolicLink()||
+          info.uid!==process.getuid()||(info.mode&0o077)!==0) {
+        throw new Error("invalid_job");
+      }
+      await rm(path,{recursive:true,force:true});
+    }
+  } catch {
+    throw new Error("task_docx_scavenge_invalid");
+  }
+}
+
+async function ensurePrivateTempRoot(directory) {
+  await mkdir(directory,{recursive:true,mode:0o700});
+  const before=await lstat(directory);
+  if (!before.isDirectory()||before.isSymbolicLink()||
+      before.uid!==process.getuid()) throw new Error("unsafe_root");
+  await chmod(directory,0o700);
+  const after=await lstat(directory);
+  if (!after.isDirectory()||after.isSymbolicLink()||
+      after.uid!==process.getuid()||(after.mode&0o077)!==0) {
+    throw new Error("unsafe_root");
+  }
+  await realpath(directory);
 }
 
 export function runDocxEvidenceHelper({helperPath,job,signal}) {
