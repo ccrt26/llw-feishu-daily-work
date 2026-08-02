@@ -28,6 +28,52 @@ test("accepts ordered hashed PDF pages and returns only relative paths",async()=
   }
 });
 
+test("accepts owner-scoped ordered DOCX PNG descriptors",async()=>{
+  const fixture=await docxImageFixture();
+  try {
+    assert.deepEqual(
+      await validateModelImageEvidence({
+        workspaceDir:fixture.workspaceDir,files:fixture.files
+      }),
+      [
+        "source-001.docx-image-001.png",
+        "source-001.docx-image-002.png"
+      ]
+    );
+  } finally { await rm(fixture.workspaceDir,{recursive:true,force:true}); }
+});
+
+for (const [name,mutate] of [
+  ["non-increasing document order",fixture=>{
+    fixture.files[1].documentOrder=fixture.files[0].documentOrder;
+  }],
+  ["unsafe owner part",fixture=>{
+    fixture.files[0].ownerPartName="../document.xml";
+  }],
+  ["invalid relationship id",fixture=>{
+    fixture.files[0].relationshipId="";
+  }],
+  ["unsafe media target",fixture=>{
+    fixture.files[0].targetMediaPartName="word/../outside.png";
+  }],
+  ["unexpected DOCX field",fixture=>{
+    fixture.files[0].pageNumber=1;
+  }]
+]) {
+  test(`rejects DOCX image evidence with ${name}`,async()=>{
+    const fixture=await docxImageFixture();
+    try {
+      mutate(fixture);
+      await assert.rejects(
+        validateModelImageEvidence({
+          workspaceDir:fixture.workspaceDir,files:fixture.files
+        }),
+        /model_image_evidence_invalid/u
+      );
+    } finally { await rm(fixture.workspaceDir,{recursive:true,force:true}); }
+  });
+}
+
 for (const [name,mutate] of [
   ["absolute path",fixture=>{
     fixture.files[0].relativePath=fixture.paths[0];
@@ -190,6 +236,35 @@ async function imageFixture({firstBytes=png(12,16,1)}={}) {
       sha256:sha256(bytes[index]),
       pageNumber:index+1
     }))
+  };
+}
+
+async function docxImageFixture() {
+  const workspaceDir=await mkdtemp(join(tmpdir(),"llw-model-docx-images-"));
+  await chmod(workspaceDir,0o700);
+  const paths=[
+    join(workspaceDir,"source-001.docx-image-001.png"),
+    join(workspaceDir,"source-001.docx-image-002.png")
+  ];
+  const bytes=[png(12,16,1),png(12,16,2)];
+  await writeFile(paths[0],bytes[0],{mode:0o600});
+  await writeFile(paths[1],bytes[1],{mode:0o600});
+  return {
+    workspaceDir,paths,
+    files:[
+      {
+        sourceId:"source-001",relativePath:"source-001.docx-image-001.png",
+        sha256:sha256(bytes[0]),documentOrder:4,
+        ownerPartName:"word/document.xml",relationshipId:"rId1",
+        targetMediaPartName:"word/media/body.png"
+      },
+      {
+        sourceId:"source-001",relativePath:"source-001.docx-image-002.png",
+        sha256:sha256(bytes[1]),documentOrder:1_000_002,
+        ownerPartName:"word/header1.xml",relationshipId:"rId1",
+        targetMediaPartName:"word/media/header.png"
+      }
+    ]
   };
 }
 

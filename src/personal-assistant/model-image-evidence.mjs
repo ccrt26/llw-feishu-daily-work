@@ -15,6 +15,10 @@ const PDF_FIELDS=new Set([
 const VIDEO_FIELDS=new Set([
   "sourceId","relativePath","sha256","startMs","endMs"
 ]);
+const DOCX_FIELDS=new Set([
+  "sourceId","relativePath","sha256","documentOrder",
+  "ownerPartName","relationshipId","targetMediaPartName"
+]);
 
 export async function validateModelImageEvidence(options) {
   try {
@@ -76,6 +80,7 @@ function validateDescriptors(files) {
   const seenPaths=new Set();
   const nextPage=new Map();
   const lastVideoEnd=new Map();
+  const lastDocxOrder=new Map();
   return files.map(value=>{
     if (!plain(value)||
         !SOURCE_ID.test(value.sourceId||"")||
@@ -95,7 +100,11 @@ function validateDescriptors(files) {
     const hasPage=Object.hasOwn(value,"pageNumber");
     const hasTime=Object.hasOwn(value,"startMs")||
       Object.hasOwn(value,"endMs");
-    if (hasPage===hasTime) throw invalid();
+    const hasDocx=Object.hasOwn(value,"documentOrder")||
+      Object.hasOwn(value,"ownerPartName")||
+      Object.hasOwn(value,"relationshipId")||
+      Object.hasOwn(value,"targetMediaPartName");
+    if ([hasPage,hasTime,hasDocx].filter(Boolean).length!==1) throw invalid();
     if (hasPage) {
       if (!exact(value,PDF_FIELDS)||
           !bounded(value.pageNumber,1,16)) {
@@ -104,7 +113,7 @@ function validateDescriptors(files) {
       const expected=nextPage.get(value.sourceId)??1;
       if (value.pageNumber!==expected) throw invalid();
       nextPage.set(value.sourceId,expected+1);
-    } else {
+    } else if (hasTime) {
       if (!exact(value,VIDEO_FIELDS)||
           !Number.isSafeInteger(value.startMs)||value.startMs<0||
           !Number.isSafeInteger(value.endMs)||
@@ -115,6 +124,21 @@ function validateDescriptors(files) {
       const previous=lastVideoEnd.get(value.sourceId)??0;
       if (value.startMs<previous) throw invalid();
       lastVideoEnd.set(value.sourceId,value.endMs);
+    } else {
+      if (!exact(value,DOCX_FIELDS)||
+          !bounded(value.documentOrder,1,8_999_999)||
+          !/^word\/(?:document|header\d+|footer\d+|footnotes|endnotes)\.xml$/u
+            .test(value.ownerPartName||"")||
+          !/^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$/u
+            .test(value.relationshipId||"")||
+          !/^word\/media\/[A-Za-z0-9._-]+\.png$/u
+            .test(value.targetMediaPartName||"")||
+          !new RegExp(
+            `^${value.sourceId}\\.docx-image-[0-9]{3}\\.png$`,"u"
+          ).test(value.relativePath)) throw invalid();
+      const previous=lastDocxOrder.get(value.sourceId)??0;
+      if (value.documentOrder<=previous) throw invalid();
+      lastDocxOrder.set(value.sourceId,value.documentOrder);
     }
     return structuredClone(value);
   });
