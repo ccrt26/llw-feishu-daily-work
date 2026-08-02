@@ -41,6 +41,22 @@ On 2026-08-02 the new relationship-policy test ran against the unchanged
 This is a behavior RED: safe hyperlink classification and unknown-mode
 fail-closed handling are both absent from the current implementation.
 
+## Candidate verification
+
+- Code commit: `4e5ee7c`
+- Safe hyperlink and relationship-policy direct contract: `36/36`
+- Source Preparer, Task Source, save_knowledge and Writer compatibility:
+  `42/42`
+- Feishu-shaped safe-save and mixed-external zero-write journeys: `2/2`
+- Final focused candidate set: `106/106`
+- Restricted complete regression: `673/674`; the only failure was the known
+  AVFoundation synthetic-video `Cannot Encode` sandbox condition.
+- The unchanged native video test then passed `1/1` with normal local media
+  permissions. Effective complete regression: `674/674`.
+- Real Feishu, external AI, ASR, network, formal Vault and production calls: 0
+- Production, permissions, configuration, state and Skill changes: 0
+
 ## Production status
 
-V4.4.4 is not implemented or deployed. The current system remains V4.4.3.
+V4.4.4 is implemented only on the isolated candidate branch and is not
+deployed. The current system remains V4.4.3.
