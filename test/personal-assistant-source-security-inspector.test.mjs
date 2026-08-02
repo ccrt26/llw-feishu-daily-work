@@ -146,6 +146,21 @@ test("accepts standard HTTP and HTTPS hyperlinks only as inert OOXML data",async
   } finally { await rm(root,{recursive:true,force:true}); }
 });
 
+test("accepts a valid empty self-closing OOXML relationship part",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"llw-v444-empty-relationships-"));
+  try {
+    const file=await officeFixture(root,{
+      name:"empty-relationships.docx",
+      extraParts:{
+        "word/_rels/document.xml.rels":
+          `<Relationships xmlns="${RELATIONSHIPS_NAMESPACE}"/>`
+      }
+    });
+    const result=await inspectAssistantSource(file,{claimedExtension:"docx"});
+    assert.equal(result.format,"docx");
+  } finally { await rm(root,{recursive:true,force:true}); }
+});
+
 test("rejects every unsafe OOXML relationship variant",async context=>{
   const root=await mkdtemp(join(tmpdir(),"llw-v444-unsafe-relationships-"));
   try {
@@ -163,6 +178,7 @@ test("rejects every unsafe OOXML relationship variant",async context=>{
       ["javascript-target","javascript:alert(1)"],
       ["unc-target","file://server/share/item"],
       ["credential-target","https://user:pass@example.invalid/item"],
+      ["leading-space-target"," https://example.invalid/item"],
       ["control-target","https://example.invalid/a&#x0A;b"],
       ["oversized-target",`https://example.invalid/${"a".repeat(2049)}`]
     ];
@@ -264,6 +280,20 @@ test("rejects every unsafe OOXML relationship variant",async context=>{
         xml:relationships([
           relationship({target:"https://example.invalid"})
         ],{prefix:"<?unexpected value?>"})
+      },
+      {
+        name:"whitespace-before-declaration",
+        xml:` \n<?xml version="1.0" encoding="UTF-8"?>`+
+          `<Relationships xmlns="${RELATIONSHIPS_NAMESPACE}">`+
+          relationship({target:"https://example.invalid"})+
+          `</Relationships>`
+      },
+      {
+        name:"declaration-version-not-first",
+        xml:`<?xml encoding="UTF-8" version="1.0"?>`+
+          `<Relationships xmlns="${RELATIONSHIPS_NAMESPACE}">`+
+          relationship({target:"https://example.invalid"})+
+          `</Relationships>`
       },
       {
         name:"trailing-content",
