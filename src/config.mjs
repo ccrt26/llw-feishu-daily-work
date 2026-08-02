@@ -21,6 +21,7 @@ const MEDIA_INPUT_GATE_FIELDS=new Set([
   "nativeVoiceEnabled","audioFileEnabled","localVideoEnabled",
   "webPageEnabled","bilibiliEnabled","douyinEnabled"
 ]);
+const PERSONAL_ASSISTANT_AI_TIMEOUTS=new Set([120_000,300_000]);
 const DEEPSEEK_MODELS=new Set(["deepseek-v4-pro"]);
 const DAILY_FIELDS=new Set(["enabled","skillRoot"]);
 const INVOICE_FIELDS=new Set([
@@ -176,7 +177,7 @@ function validatePersonalAssistantConfig(value,vaultRoot) {
   exact(value,PERSONAL_ASSISTANT_FIELDS,"personal_assistant");
   if (value.enabled!==true||
       value.skillName!=="llw-personal-assistant"||
-      value.aiTimeoutMs!==120_000||
+      !PERSONAL_ASSISTANT_AI_TIMEOUTS.has(value.aiTimeoutMs)||
       value.maxContextBytes!==512*1024||
       value.maxSourcesPerTurn!==8||
       value.maxSourceFileBytes!==20*1024*1024||

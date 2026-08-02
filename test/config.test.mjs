@@ -305,6 +305,37 @@ test("version 7 allows only the approved Bilibili and Douyin gates",async()=>{
   }
 });
 
+test("version 7 accepts only legacy and v445 Personal Assistant timeouts",async()=>{
+  const dir=await mkdtemp(join(tmpdir(),"llw-config-v445-timeout-"));
+  const file=join(dir,"config.json");
+  try {
+    const withTimeout=aiTimeoutMs=>configV7({
+      personalAssistant:{
+        ...configV7().personalAssistant,
+        aiTimeoutMs
+      }
+    });
+    await saveConfig(file,withTimeout(120000));
+    assert.equal(
+      (await loadConfig(file)).personalAssistant.aiTimeoutMs,
+      120000
+    );
+    await saveConfig(file,withTimeout(300000));
+    assert.equal(
+      (await loadConfig(file)).personalAssistant.aiTimeoutMs,
+      300000
+    );
+    for (const value of [1,119999,120001,299999,300001]) {
+      await assert.rejects(
+        ()=>saveConfig(file,withTimeout(value)),
+        /invalid_personal_assistant/
+      );
+    }
+  } finally {
+    await rm(dir,{recursive:true,force:true});
+  }
+});
+
 test("version 5 requires one exact configurable knowledge-ingest definition with disjoint managed roots",async()=>{
   const dir=await mkdtemp(join(tmpdir(),"llw-config-v5-knowledge-"));
   const file=join(dir,"config.json");
