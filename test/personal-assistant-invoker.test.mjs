@@ -394,6 +394,24 @@ test("reports a bounded assistant timeout without exposing child details",async(
   );
 });
 
+test("accepts the exact 300-second Codex ceiling and rejects a larger value",async()=>{
+  const response=JSON.stringify({
+    type:"reply",
+    reply:{text:"完成。"},
+    ask:null,
+    sourceReadRequest:null,
+    toolCall:null,
+    taskUpdate:null
+  });
+  await assert.doesNotReject(
+    ()=>invokeSyntheticCodex({FAKE_RESPONSE:response},300000)
+  );
+  await assert.rejects(
+    ()=>invokeSyntheticCodex({FAKE_RESPONSE:response},300001),
+    /assistant_invocation_invalid/
+  );
+});
+
 test("reports a bounded assistant process failure without stderr",async()=>{
   await assert.rejects(
     invokeSyntheticCodex({FAKE_CODEX_MODE:"process-failure"}),
