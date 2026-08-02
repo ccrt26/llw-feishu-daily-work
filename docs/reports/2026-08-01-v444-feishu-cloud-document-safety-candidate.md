@@ -108,7 +108,15 @@ before stopping the single service.
 
 ## Production status
 
-V4.4.4 is not deployed. The current system remains V4.4.3. No production file,
-service, configuration, permission, user data or external API state was changed
-while forming this candidate. The system version may change only after the
-candidate is deployed and a real Feishu read-summary-save journey succeeds.
+The six approved candidate files were atomically deployed to the existing
+single service on 2026-08-02. The owner-only rollback point is
+`v444-feishu-cloud-document-safety-pre-deploy-20260802-slsjBp`; its hashes,
+Git bundle, fresh-directory extraction and restored V4.4.3 inspector contract
+all passed. The installed focused set passed `106/106`. Configuration version
+7, state version 4, the private Skill manifest, LaunchAgent, media gates and
+knowledge fingerprint were unchanged. Startup has one Node main process, one
+direct Feishu consumer, an advancing heartbeat and no new error.
+
+The current system remains V4.4.3 until a real Feishu
+read-summary-save journey succeeds. No permission, user data, model, Agent,
+Writer, service, dependency or external API boundary was expanded.
