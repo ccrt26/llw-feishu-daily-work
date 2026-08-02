@@ -7,6 +7,7 @@ import {
 } from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {dirname,join} from "node:path";
+import {fileURLToPath} from "node:url";
 import {promisify} from "node:util";
 import {
   createFeishuIncomingMessage
@@ -32,6 +33,9 @@ import {
 import {
   TaskSourceWorkspace
 } from "../src/personal-assistant/task-source-workspace.mjs";
+import {
+  TaskDocxReader
+} from "../src/personal-assistant/task-docx-reader.mjs";
 import {StateStore} from "../src/state-store.mjs";
 
 const run=promisify(execFile);
@@ -187,6 +191,12 @@ async function createJourney({root,mixedExternal}) {
   const taskWorkspace=new TaskSourceWorkspace({
     root:join(root,"task-sources"),prepareTurnSources,now:()=>nowMs
   });
+  const docxReader=new TaskDocxReader({
+    helperPath:fileURLToPath(new URL(
+      "../src/personal-assistant/docx-evidence-helper.mjs",import.meta.url
+    )),
+    tempRoot:join(root,"docx-evidence-jobs"),timeoutMs:2_000
+  });
   const realWriter=new KnowledgeWriter({
     vaultRoot,
     libraries:[{
@@ -251,7 +261,7 @@ async function createJourney({root,mixedExternal}) {
       markReplied:key=>state.markReplied(key)
     },
     messenger,personalRules:[],model:"codex",skillVersion:"4.4.0",
-    taskManager,taskWorkspace
+    taskManager,taskWorkspace,docxReader
   });
   const dispatcher=new PersonalAssistantDispatcher({
     binding:{senderId:"owner",chatId:"private-chat"},
