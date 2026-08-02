@@ -236,7 +236,7 @@ function validateCommon({
       !Array.isArray(imageFiles)||imageFiles.length>8||
       imageFiles.some(file=>!isAbsolute(file))||
       !Array.isArray(modelImageFiles)||modelImageFiles.length>16||
-      !Number.isInteger(timeoutMs)||timeoutMs<1||timeoutMs>300_000) {
+      !Number.isInteger(timeoutMs)||timeoutMs<1||timeoutMs>600_000) {
     throw new Error("assistant_invocation_invalid");
   }
 }

@@ -394,7 +394,7 @@ test("reports a bounded assistant timeout without exposing child details",async(
   );
 });
 
-test("accepts the exact 300-second Codex ceiling and rejects a larger value",async()=>{
+test("accepts the exact 600-second Codex ceiling and rejects a larger value",async()=>{
   const response=JSON.stringify({
     type:"reply",
     reply:{text:"完成。"},
@@ -404,10 +404,10 @@ test("accepts the exact 300-second Codex ceiling and rejects a larger value",asy
     taskUpdate:null
   });
   await assert.doesNotReject(
-    ()=>invokeSyntheticCodex({FAKE_RESPONSE:response},300000)
+    ()=>invokeSyntheticCodex({FAKE_RESPONSE:response},600000)
   );
   await assert.rejects(
-    ()=>invokeSyntheticCodex({FAKE_RESPONSE:response},300001),
+    ()=>invokeSyntheticCodex({FAKE_RESPONSE:response},600001),
     /assistant_invocation_invalid/
   );
 });

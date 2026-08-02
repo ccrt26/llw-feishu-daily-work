@@ -25,7 +25,8 @@ export class PersonalAssistantClient {
             modelImageFiles:structuredClone(
               options.modelImageFiles||[]
             ),
-            allowSourceRead
+            allowSourceRead,
+            timeoutMs:options.timeoutMs
           }
         ),
         availableSources:context.sources||[],

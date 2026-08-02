@@ -127,3 +127,20 @@ test("forwards source-read availability as an explicit boolean",async()=>{
   );
   assert.deepEqual(flags,[false,true]);
 });
+
+test("forwards an optional per-call timeout without inventing a default",async()=>{
+  const timeouts=[];
+  const client=new PersonalAssistantClient({
+    codex:async(_context,options)=>{
+      timeouts.push(options.timeoutMs);
+      return {type:"reply",text:"完成"};
+    },
+    deepseek:async()=>{throw new Error("unexpected_deepseek");}
+  });
+  await client.decide({model:"codex",tools:[],sources:[]});
+  await client.decide(
+    {model:"codex",tools:[],sources:[]},
+    {timeoutMs:600_000}
+  );
+  assert.deepEqual(timeouts,[undefined,600_000]);
+});

@@ -305,7 +305,7 @@ test("version 7 allows only the approved Bilibili and Douyin gates",async()=>{
   }
 });
 
-test("version 7 accepts only legacy and v445 Personal Assistant timeouts",async()=>{
+test("version 7 keeps the Personal Assistant configuration timeout fixed",async()=>{
   const dir=await mkdtemp(join(tmpdir(),"llw-config-v445-timeout-"));
   const file=join(dir,"config.json");
   try {
@@ -320,12 +320,7 @@ test("version 7 accepts only legacy and v445 Personal Assistant timeouts",async(
       (await loadConfig(file)).personalAssistant.aiTimeoutMs,
       120000
     );
-    await saveConfig(file,withTimeout(300000));
-    assert.equal(
-      (await loadConfig(file)).personalAssistant.aiTimeoutMs,
-      300000
-    );
-    for (const value of [1,119999,120001,299999,300001]) {
+    for (const value of [1,119999,120001,300000,600000]) {
       await assert.rejects(
         ()=>saveConfig(file,withTimeout(value)),
         /invalid_personal_assistant/
