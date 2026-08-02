@@ -27,6 +27,20 @@
 - User data copied into evidence: no
 - Raw URL, title, token, document text, hyperlink target or platform identifier recorded: no
 
+## Root-cause RED
+
+On 2026-08-02 the new relationship-policy test ran against the unchanged
+`606e63f` production code:
+
+- the valid standard HTTP/HTTPS hyperlink document failed with
+  `assistant_source_invalid` at the unconditional External check;
+- the unknown `TargetMode="Remote"` relationship was incorrectly accepted;
+- all 26 other dangerous or malformed relationship variants were rejected;
+- result: 27 passed subtests and the two intended behavior failures above.
+
+This is a behavior RED: safe hyperlink classification and unknown-mode
+fail-closed handling are both absent from the current implementation.
+
 ## Production status
 
 V4.4.4 is not implemented or deployed. The current system remains V4.4.3.
