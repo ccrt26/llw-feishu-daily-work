@@ -8,9 +8,18 @@
 
 **Tech Stack:** Node.js ESM, `node:test`, existing child-process and atomic-file primitives, macOS LaunchAgent, Git/GitHub.
 
+## Execution result
+
+2026-08-02，Tasks 1–9 已按本计划完成实现、部署和真实飞书验收。下方未勾选的
+步骤保留为当时的逐步执行合同，不再表示待办状态。最终真实来源得到 123 个文字
+结构、14/14 张图片和 `complete` 覆盖；一次 Personal Assistant 决策完成一次
+Writer，Outcome 先保存后回复，知识项只包含一份 Markdown 和一份哈希一致的
+原 DOCX。标准飞书导出结构的最后兼容修复提交为 `65da141`，未扩大权限、架构、
+模型、服务、依赖或非 DOCX 行为。
+
 ## Global constraints
 
-- Current external version remains V4.4.3 until a real retained Feishu DOCX completes Writer → Outcome → original-entry reply.
+- Release gate at execution start: the external version remained V4.4.3 until a real retained Feishu DOCX completed Writer → Outcome → original-entry reply; that gate has now passed.
 - V4.4.4 OOXML safety behavior is the required base and must remain green throughout the shared package-reader refactor.
 - Production `personalAssistant.aiTimeoutMs` remains exactly `120000`; config schema remains 7 and state schema remains 4.
 - `inspect`, `export` and existing attachment downloads remain bounded by their existing 120-second contracts.
@@ -489,3 +498,7 @@ V4.4.5 is complete only when all of the following are true:
 - focused tests, one justified full regression and deployment-shape resource measurements pass;
 - the retained real Feishu journey completes Writer → Outcome → original-entry reply exactly once;
 - production health is green and the external version is then, and only then, V4.4.5.
+
+**Gate result:** passed on 2026-08-02. Production is V4.4.5; schema 7 and
+`personalAssistant.aiTimeoutMs=120000` remain unchanged. The verified rollback
+baselines remain owner-only outside Git.
