@@ -75,6 +75,9 @@ import {
   TaskPdfReader
 } from "./personal-assistant/task-pdf-reader.mjs";
 import {
+  TaskDocxReader
+} from "./personal-assistant/task-docx-reader.mjs";
+import {
   createBilibiliPublicAdapter
 } from "./personal-assistant/bilibili-public-adapter.mjs";
 import {
@@ -114,6 +117,10 @@ export const DOUYIN_WEBKIT_HELPER_PATH=
   "/Users/ccrt/Library/Application Support/LLW Assistant/runtime/douyin-webkit-reader-v1/douyin_webkit_reader_v1";
 export const DOUYIN_WEBKIT_HELPER_SHA256=
   "91fc46449857ee7d1a5134ef0fd9700ae79855bd62375374eeea13af9ce86a37";
+export const SOURCE_OPERATION_TIMEOUT_MS=120_000;
+export const DOCX_PREPARE_TIMEOUT_MS=60_000;
+export const DOCX_ANALYSIS_TIMEOUT_MS=600_000;
+export const DOCX_PROGRESS_MS=300_000;
 
 const run=promisify(execFile);
 
@@ -174,7 +181,7 @@ async function runPersonalAssistantMain(config) {
   const feishuDocumentExporter=createFeishuDocumentExporter({
     cliPath:config.cliPath,profile:config.profile,
     tempRoot:knowledgeConfig.tempRoot,
-    timeoutMs:config.personalAssistant.aiTimeoutMs
+    timeoutMs:SOURCE_OPERATION_TIMEOUT_MS
   });
   const state=await StateStore.open(config.stateFile,{
     migratePersonalAssistantConversations:true
@@ -205,7 +212,7 @@ async function runPersonalAssistantMain(config) {
         fileKey:attachment.sourceAttachmentId,
         type:attachment.type==="image"?"image":"file",
         tempRoot:knowledgeConfig.tempRoot,
-        timeoutMs:config.personalAssistant.aiTimeoutMs
+        timeoutMs:SOURCE_OPERATION_TIMEOUT_MS
       });
     }
     if (message.source==="wechat"&&wechatApi) {
@@ -213,7 +220,7 @@ async function runPersonalAssistantMain(config) {
         api:wechatApi,resourceId:attachment.sourceAttachmentId,
         resources:wechatResources,tempRoot:knowledgeConfig.tempRoot,
         maxFileBytes:invoiceConfig.maxFileBytes,
-        timeoutMs:config.personalAssistant.aiTimeoutMs,
+        timeoutMs:SOURCE_OPERATION_TIMEOUT_MS,
         allowedFileExtensions:[
           "pdf","txt","md","docx","pptx","xlsx"
         ]
@@ -239,11 +246,11 @@ async function runPersonalAssistantMain(config) {
   const prepareTurnSources=publicVideoRuntime.prepareTurnSources;
   const assistant=new PersonalAssistantClient({
     codex:(context,{
-      workspaceDir,imageFiles,modelImageFiles,allowSourceRead
+      workspaceDir,imageFiles,modelImageFiles,allowSourceRead,timeoutMs
     })=>invokePersonalAssistantCodex({
       codexPath:config.codexPath,workspaceDir,
       skillBundle,context,imageFiles,modelImageFiles,allowSourceRead,
-      timeoutMs:config.personalAssistant.aiTimeoutMs
+      timeoutMs:timeoutMs??config.personalAssistant.aiTimeoutMs
     }),
     deepseek:(context,{
       imageFiles,modelImageFiles
@@ -292,6 +299,13 @@ async function runPersonalAssistantMain(config) {
     maxDimension:3508,
     timeoutMs:invoiceConfig.pdfPrepareTimeoutMs
   });
+  const docxReader=new TaskDocxReader({
+    helperPath:fileURLToPath(new URL(
+      "./personal-assistant/docx-evidence-helper.mjs",import.meta.url
+    )),
+    tempRoot:join(dirname(config.stateFile),"docx-evidence-jobs"),
+    timeoutMs:DOCX_PREPARE_TIMEOUT_MS
+  });
   const coordinator=new PersonalAssistantCoordinator({
     assistant,
     writer:new KnowledgeWriter({
@@ -308,7 +322,9 @@ async function runPersonalAssistantMain(config) {
     loadDailyCandidates:()=>dailyCatalog.list({limit:20}).catch(()=>[]),
     personalRules:[],
     personalRulesStore,
-    taskManager,taskWorkspace,pdfReader,
+    taskManager,taskWorkspace,pdfReader,docxReader,
+    docxAiTimeoutMs:DOCX_ANALYSIS_TIMEOUT_MS,
+    docxProgressMs:DOCX_PROGRESS_MS,
     sourceReader:publicVideoRuntime.sourceReader,
     publicVideoReader:publicVideoRuntime.publicVideoReader,
     skillVersion:"4.4.0"

@@ -44,6 +44,7 @@ test("version 7 enters one personal-assistant composition",async()=>{
   ]) assert.equal(source.includes(expected),true);
   for (const expected of [
     "TaskPdfReader",
+    "TaskDocxReader",
     "mediaInputGates:config.mediaInputGates",
     "cancelTaskWork:value=>coordinator.cancelTaskWork(value)",
     "createBilibiliPublicAdapter",
@@ -134,6 +135,10 @@ test("version 7 enters one personal-assistant composition",async()=>{
   assert.equal(mainComposition.includes("conversationStore:"),false);
   const {
     PERSONAL_ASSISTANT_PRIVATE_SKILL_ALLOWLIST,
+    SOURCE_OPERATION_TIMEOUT_MS,
+    DOCX_PREPARE_TIMEOUT_MS,
+    DOCX_ANALYSIS_TIMEOUT_MS,
+    DOCX_PROGRESS_MS,
     VIDEO_TIMELINE_HELPER_PATH,
     VIDEO_TIMELINE_HELPER_SHA256
   }=await import("../src/main.mjs");
@@ -145,6 +150,10 @@ test("version 7 enters one personal-assistant composition",async()=>{
     modelSupport:["codex","deepseek"],
     enabled:true
   }]);
+  assert.equal(SOURCE_OPERATION_TIMEOUT_MS,120_000);
+  assert.equal(DOCX_PREPARE_TIMEOUT_MS,60_000);
+  assert.equal(DOCX_ANALYSIS_TIMEOUT_MS,600_000);
+  assert.equal(DOCX_PROGRESS_MS,300_000);
   assert.equal(
     VIDEO_TIMELINE_HELPER_PATH,
     "/Users/ccrt/Library/Application Support/LLW Assistant/runtime/video-timeline-reader-v2/video_timeline_reader_v2"
@@ -152,6 +161,40 @@ test("version 7 enters one personal-assistant composition",async()=>{
   assert.equal(
     VIDEO_TIMELINE_HELPER_SHA256,
     "4f967d8a45cbc2c7c517c8222619be1dd585a2269110f78723b94a50275039d6"
+  );
+});
+
+test("production keeps source, DOCX preparation and AI deadlines independent",async()=>{
+  const source=await readFile(
+    fileURLToPath(new URL("../src/main.mjs",import.meta.url)),"utf8"
+  );
+  assert.match(
+    source,
+    /createFeishuDocumentExporter\(\{[\s\S]*?timeoutMs:SOURCE_OPERATION_TIMEOUT_MS[\s\S]*?\}\)/
+  );
+  assert.match(
+    source,
+    /downloadLarkResource\(\{[\s\S]*?timeoutMs:SOURCE_OPERATION_TIMEOUT_MS[\s\S]*?\}\)/
+  );
+  assert.match(
+    source,
+    /downloadWechatResource\(\{[\s\S]*?timeoutMs:SOURCE_OPERATION_TIMEOUT_MS[\s\S]*?allowedFileExtensions/
+  );
+  assert.match(
+    source,
+    /codex:\(context,\{[\s\S]*?timeoutMs[\s\S]*?\}\)=>invokePersonalAssistantCodex\(\{[\s\S]*?timeoutMs:timeoutMs\?\?config\.personalAssistant\.aiTimeoutMs/
+  );
+  assert.match(
+    source,
+    /new TaskDocxReader\(\{[\s\S]*?docx-evidence-jobs[\s\S]*?timeoutMs:DOCX_PREPARE_TIMEOUT_MS[\s\S]*?\}\)/
+  );
+  assert.match(
+    source,
+    /new PersonalAssistantCoordinator\(\{[\s\S]*?taskManager,taskWorkspace,pdfReader,docxReader,[\s\S]*?docxAiTimeoutMs:DOCX_ANALYSIS_TIMEOUT_MS,[\s\S]*?docxProgressMs:DOCX_PROGRESS_MS/
+  );
+  assert.doesNotMatch(
+    source,
+    /createFeishuDocumentExporter\(\{[\s\S]*?timeoutMs:config\.personalAssistant\.aiTimeoutMs[\s\S]*?\}\)/
   );
 });
 
