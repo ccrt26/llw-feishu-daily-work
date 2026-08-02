@@ -1,18 +1,43 @@
-# V4.4.5 Bounded AI Timeout Baseline
+# V4.4.5 DOCX 证据准备与十分钟分析基线
 
-Date: 2026-08-02
+日期：2026-08-02
 
-- Real failure: `assistant_timeout` at exactly 120,000 ms.
-- Source preparation: passed; one retained DOCX remains in the current Task
-  Session.
-- Writer calls: 0.
-- Knowledge writes: 0.
-- Document shape: 2,666,430 bytes, 26 OOXML entries, 14 media entries,
-  84,340 `document.xml` bytes and approximately 6,673 text characters.
-- Configuration before deployment: schema 7 with
-  `personalAssistant.aiTimeoutMs=120000`.
-- V4.4.4 safety inspector remains deployed and accepted the document before
-  the model deadline began.
-- No document name, content, Task/message/user/chat identifier or Vault path is
-  retained in this evidence.
+## 已确认的真实故障
 
+- 一份真实飞书云文档已经用用户身份完成检查和 DOCX 导出，并通过 V4.4.4
+  OOXML 安全检查。
+- 来源成功进入当前 Task Session；原件约 2.67 MB，包含 26 个 OOXML 条目、
+  约 6,673 个正文字符和 14 个媒体对象。
+- 随后同一个 Personal Assistant 在历史固定的 120,000 ms 上限触发
+  `assistant_timeout`。
+- Writer 调用为 0，知识库写入为 0；失败 Outcome 已回复，原来源仍保留，可在
+  同一任务中直接重试。
+
+这证明 120 秒对该真实文档不够，但不能证明 300 秒一定够，也不能证明应该把所有
+来源下载、格式处理和普通 AI 任务一起延长。
+
+## 已回滚的错误候选
+
+第一次 V4.4.5 候选把 `personalAssistant.aiTimeoutMs` 从 120,000 改成
+300,000。实际主程序把这个值同时传给 Codex、飞书文档导出器和附件下载器；而
+导出器的合法上限仍是 120,000，因此服务在启动阶段即失败。该候选已经完整回滚，
+生产恢复到 schema 7、`personalAssistant.aiTimeoutMs=120000` 和健康的
+V4.4.4 热修状态。
+
+根因因此不是“统一超时数值太小”，而是三类工作共用了一个不合适的时间参数，
+同时把可由确定性程序完成的 DOCX 正文和图片准备留给了 AI 临时处理。
+
+## V4.4.5 的新基线约束
+
+- 生产配置继续只接受 `personalAssistant.aiTimeoutMs=120000`，schema 仍为 7。
+- 飞书检查/导出和飞书、微信附件下载继续各自最多 120 秒。
+- DOCX 在 AI 前由本地私有子进程确定性准备正文、结构和 PNG 图片证据；父进程对
+  整轮准备强制 60 秒看门狗。
+- 只有含已验证 DOCX、且不含公开视频的任务，才对现有同一个 Codex 调用显式使用
+  600 秒；5 分钟只发送一次进度提示，不是终止线。
+- 纯文字、图片、PDF、PPTX、XLSX 和视频任务继续使用原有 120 秒合同。
+- 选中的 DOCX 证据为 partial、缺失或与当前原件哈希不一致时，在 Writer
+  reservation 前确定性阻止保存。
+
+本文件不保留文档名称、正文、Task/message/user/chat 标识、知识库路径、令牌或
+其他私人数据。
