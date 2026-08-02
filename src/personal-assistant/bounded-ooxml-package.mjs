@@ -8,6 +8,7 @@ const HARD_MAX_ENTRIES=2048;
 const HARD_MAX_TOTAL_BYTES=64*1024*1024;
 const HARD_MAX_ENTRY_BYTES=16*1024*1024;
 const MAX_RELATIONSHIPS=2048;
+const MAX_RELATIONSHIP_TARGET_BYTES=2048;
 const RELATIONSHIPS_NAMESPACE=
   "http://schemas.openxmlformats.org/package/2006/relationships";
 const RELATIONSHIP_ATTRIBUTES=new Set([
@@ -123,6 +124,26 @@ export function resolveOoxmlTarget(ownerPartName,target) {
   } catch (error) {
     if (error?.message==="bounded_ooxml_invalid") throw error;
     throw invalid();
+  }
+}
+
+export function isSafeExternalOoxmlHyperlink(relationship) {
+  if (!relationship||typeof relationship!=="object"||
+      relationship.TargetMode!=="External"||
+      !new Set([
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink",
+        "http://purl.oclc.org/ooxml/officeDocument/relationships/hyperlink"
+      ]).has(relationship.Type)) return false;
+  const value=relationship.Target;
+  if (typeof value!=="string"||!value||value!==value.trim()||
+      Buffer.byteLength(value,"utf8")>MAX_RELATIONSHIP_TARGET_BYTES||
+      /[\u0000-\u001f\u007f]/u.test(value)) return false;
+  try {
+    const url=new URL(value);
+    return (url.protocol==="http:"||url.protocol==="https:")&&
+      !url.username&&!url.password;
+  } catch {
+    return false;
   }
 }
 

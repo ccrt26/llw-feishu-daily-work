@@ -1,17 +1,13 @@
 import {createHash} from "node:crypto";
 import {lstat,readFile} from "node:fs/promises";
 import {
-  openBoundedOoxmlBytes,parseOoxmlRelationships
+  isSafeExternalOoxmlHyperlink,openBoundedOoxmlBytes,
+  parseOoxmlRelationships
 } from "./bounded-ooxml-package.mjs";
 
 const MAX_FILE_BYTES=20*1024*1024;
-const MAX_RELATIONSHIP_TARGET_BYTES=2048;
 const OFFICE=new Set(["docx","pptx","xlsx"]);
 const TEXT=new Set(["txt","md"]);
-const HYPERLINK_RELATIONSHIP_TYPES=new Set([
-  "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink",
-  "http://purl.oclc.org/ooxml/officeDocument/relationships/hyperlink"
-]);
 const UTF8=new TextDecoder("utf-8",{fatal:true});
 
 export async function inspectAssistantSource(file,{
@@ -123,24 +119,9 @@ function inspectRelationshipPart(bytes) {
   for (const attributes of relationships) {
     const mode=attributes.TargetMode;
     if (mode===undefined||mode==="Internal") continue;
-    if (mode!=="External"||
-        !HYPERLINK_RELATIONSHIP_TYPES.has(attributes.Type)||
-        !safeExternalHyperlink(attributes.Target)) {
+    if (mode!=="External"||!isSafeExternalOoxmlHyperlink(attributes)) {
       throw invalid();
     }
-  }
-}
-
-function safeExternalHyperlink(value) {
-  if (typeof value!=="string"||!value||value!==value.trim()||
-      Buffer.byteLength(value,"utf8")>MAX_RELATIONSHIP_TARGET_BYTES||
-      /[\u0000-\u001f\u007f]/u.test(value)) return false;
-  try {
-    const url=new URL(value);
-    return (url.protocol==="http:"||url.protocol==="https:")&&
-      !url.username&&!url.password;
-  } catch {
-    return false;
   }
 }
 
