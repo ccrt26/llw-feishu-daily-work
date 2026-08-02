@@ -1,478 +1,491 @@
-# LLW Personal Assistant V4.4.5 Bounded AI Timeout Implementation Plan
+# LLW Personal Assistant V4.4.5 DOCX Evidence Preparation Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Extend only the Personal Assistant Codex analysis deadline from 120 seconds to the existing bounded 300-second ceiling, then complete the retained real Feishu cloud-document read-summary-save journey.
+**Goal:** Make one retained Feishu cloud DOCX reliably readable, summarizable and savable without changing permissions, architecture or non-DOCX behavior.
 
-**Architecture:** Keep the current single Personal Assistant and configuration schema 7. The validator will accept exactly the legacy 120,000 ms value and the V4.4.5 300,000 ms value; production will atomically change only that existing field. The existing invoker, task revision checks, Writer reservation, Outcome ordering, permissions, models and services remain unchanged.
+**Architecture:** Keep the existing Personal Assistant, Router, Writer, Task Session and configuration schema. A new deterministic `TaskDocxReader` prepares hash-bound text, PNG images and a trusted coverage index before AI. Eligible DOCX turns make exactly one existing Personal Assistant call with an explicit 600-second ceiling and a single five-minute progress message; source operations and all pure non-DOCX turns remain at 120 seconds. A trusted coverage gate blocks `save_knowledge` before Writer reservation when any selected DOCX is partial, missing or stale.
 
-**Tech Stack:** Node.js ESM, `node:test`, macOS LaunchAgent, existing atomic `loadConfig`/`saveConfig`, Git/GitHub.
+**Tech Stack:** Node.js ESM, `node:test`, existing child-process and atomic-file primitives, macOS LaunchAgent, Git/GitHub.
 
-## Global Constraints
+## Global constraints
 
-- Current external system version remains V4.4.3 until the real Feishu journey succeeds.
-- V4.4.4 safety code stays intact and is the required base for V4.4.5.
-- `personalAssistant.aiTimeoutMs` accepts only `120000` and `300000`; production uses `300000`.
-- Invoice, knowledge-ingest and assistant-work AI timeouts remain exactly `120000`.
-- Configuration schema remains 7 and state schema remains 4.
-- Do not add automatic retries, dynamic timeout policy, dependencies, permissions, models, Agents, Routers, Writers, tools, services or source types.
-- Do not read, log or commit document content, platform identifiers, Vault content, tokens or absolute private business paths.
-- Do not ask the owner to upload the source again; the retained Task Source is the acceptance input.
-- If the same task still times out at 300 seconds, stop and diagnose; do not raise the ceiling again.
+- Current external version remains V4.4.3 until a real retained Feishu DOCX completes Writer → Outcome → original-entry reply.
+- V4.4.4 OOXML safety behavior is the required base and must remain green throughout the shared package-reader refactor.
+- Production `personalAssistant.aiTimeoutMs` remains exactly `120000`; config schema remains 7 and state schema remains 4.
+- `inspect`, `export` and existing attachment downloads remain bounded by their existing 120-second contracts.
+- Only a turn containing at least one verified DOCX and no public video receives an explicit 600-second AI ceiling.
+- A qualifying DOCX turn makes exactly one provider call with `allowSourceRead=false`; it never enters the source-read decision loop.
+- Local DOCX preparation has one parent-enforced 60-second whole-turn deadline and runs in a private short-lived Node child process.
+- Do not add Agent, Router, Writer, service, queue, dependency, permission, model, reasoning setting, source type or knowledge format.
+- Do not modify the retired `ooxml_processor.py` unless a production caller is first proven. This plan does not modify it.
+- Do not log or commit private document content, titles, platform identifiers, tokens, task IDs or Vault paths.
+- New behavior is written test-first. Shared-core refactoring preserves existing behavior before new behavior is added.
+- Commit after each coherent green task. Do not push or update production version before real acceptance.
 
 ---
 
-### Task 1: Define the two-value Personal Assistant timeout contract
+### Task 1: Remove the obsolete 300-second configuration candidate and expose a per-call timeout
 
 **Files:**
 - Modify: `test/config.test.mjs`
-- Modify: `src/config.mjs`
-
-**Interfaces:**
-- Consumes: `saveConfig(file, config)` and `loadConfig(file)` from `src/config.mjs`.
-- Produces: schema-7 configurations whose `personalAssistant.aiTimeoutMs` is exactly `120000` or `300000`; every other value throws `invalid_personal_assistant`.
-
-- [ ] **Step 1: Run the unchanged direct baseline**
-
-Run:
-
-```bash
-/usr/local/bin/node --test test/config.test.mjs test/config-v6.test.mjs
-```
-
-Expected: PASS. Record the exact test count before changing tests.
-
-- [ ] **Step 2: Add the failing schema-7 contract test**
-
-Add this test to `test/config.test.mjs`:
-
-```js
-test("version 7 accepts only legacy and v445 Personal Assistant timeouts",async()=>{
-  const dir=await mkdtemp(join(tmpdir(),"llw-config-v445-timeout-"));
-  const file=join(dir,"config.json");
-  try {
-    const withTimeout=aiTimeoutMs=>configV7({
-      personalAssistant:{
-        ...configV7().personalAssistant,
-        aiTimeoutMs
-      }
-    });
-    await saveConfig(file,withTimeout(120000));
-    assert.equal(
-      (await loadConfig(file)).personalAssistant.aiTimeoutMs,
-      120000
-    );
-    await saveConfig(file,withTimeout(300000));
-    assert.equal(
-      (await loadConfig(file)).personalAssistant.aiTimeoutMs,
-      300000
-    );
-    for (const value of [1,119999,120001,299999,300001]) {
-      await assert.rejects(
-        ()=>saveConfig(file,withTimeout(value)),
-        /invalid_personal_assistant/
-      );
-    }
-  } finally {
-    await rm(dir,{recursive:true,force:true});
-  }
-});
-```
-
-- [ ] **Step 3: Run RED and confirm the intended failure**
-
-Run:
-
-```bash
-/usr/local/bin/node --test test/config.test.mjs
-```
-
-Expected: FAIL only when saving `aiTimeoutMs:300000`, with `invalid_personal_assistant`. If another assertion fails first, correct the test fixture before touching production code.
-
-- [ ] **Step 4: Implement the minimal validator change**
-
-Near the other configuration constants in `src/config.mjs`, add:
-
-```js
-const PERSONAL_ASSISTANT_AI_TIMEOUTS=new Set([120_000,300_000]);
-```
-
-Replace only the hardcoded Personal Assistant timeout predicate:
-
-```js
-!PERSONAL_ASSISTANT_AI_TIMEOUTS.has(value.aiTimeoutMs)||
-```
-
-Do not modify the invoice, knowledge-ingest or assistant-work validators.
-
-- [ ] **Step 5: Run GREEN and the adjacent configuration contract**
-
-Run:
-
-```bash
-/usr/local/bin/node --test test/config.test.mjs test/config-v6.test.mjs
-```
-
-Expected: PASS. The legacy 120-second fixtures and the new 300-second schema-7 case both pass.
-
-- [ ] **Step 6: Commit the contract and implementation**
-
-Run:
-
-```bash
-git add src/config.mjs test/config.test.mjs
-git commit -m "fix: allow bounded personal assistant analysis time"
-```
-
-### Task 2: Lock the existing invoker ceiling without changing runtime code
-
-**Files:**
 - Modify: `test/personal-assistant-invoker.test.mjs`
-- Verify unchanged: `src/personal-assistant/invoke-personal-assistant.mjs`
-- Verify unchanged: `src/main.mjs`
+- Modify: `test/personal-assistant-client.test.mjs`
+- Modify: `src/config.mjs`
+- Modify: `src/personal-assistant/invoke-personal-assistant.mjs`
+- Modify: `src/personal-assistant/client.mjs`
 
-**Interfaces:**
-- Consumes: `invokePersonalAssistantCodex({timeoutMs})`, whose current validator accepts integer values from 1 through 300,000.
-- Produces: regression evidence that exactly 300,000 ms is accepted and 300,001 ms is rejected before a child process can perform work.
+**Contracts:**
+- Schema 7 accepts only `personalAssistant.aiTimeoutMs === 120000`.
+- The invoker accepts explicit integer timeouts through `600000` and rejects `600001`.
+- `PersonalAssistantClient.decide(context, {timeoutMs})` forwards that value to its provider; when absent, the provider keeps its existing default.
 
-- [ ] **Step 1: Add the upper-bound characterization test**
+- [ ] **Step 1: Run the direct baseline and record the existing counts**
 
-Add after the existing timeout test:
+```bash
+/usr/local/bin/node --test test/config.test.mjs test/config-v6.test.mjs test/personal-assistant-invoker.test.mjs test/personal-assistant-client.test.mjs
+```
+
+- [ ] **Step 2: Replace the obsolete configuration test with a failing exact-120 contract**
+
+Test `120000` succeeds and each of `1`, `119999`, `120001`, `300000`, `600000` fails with `invalid_personal_assistant`. Run `test/config.test.mjs`; RED must be the current acceptance of `300000`.
+
+- [ ] **Step 3: Replace the old invoker ceiling test with a failing 600-second boundary test**
+
+Use the existing synthetic child fixture. Assert `600000` does not reject and `600001` rejects with `assistant_invocation_invalid`. Run the single test; RED must be the current 300-second ceiling.
+
+- [ ] **Step 4: Add a failing client forwarding test**
+
+Capture the provider options from:
 
 ```js
-test("accepts the exact 300-second Codex ceiling and rejects a larger value",async()=>{
-  const response=JSON.stringify({
-    type:"reply",
-    reply:{text:"完成。"},
-    ask:null,
-    sourceReadRequest:null,
-    toolCall:null,
-    taskUpdate:null
-  });
-  await assert.doesNotReject(
-    ()=>invokeSyntheticCodex({FAKE_RESPONSE:response},300000)
-  );
-  await assert.rejects(
-    ()=>invokeSyntheticCodex({FAKE_RESPONSE:response},300001),
-    /assistant_invocation_invalid/
-  );
-});
+await client.decide(context, {timeoutMs: 600_000});
+assert.equal(received.timeoutMs, 600_000);
 ```
 
-- [ ] **Step 2: Run the invoker and composition contracts**
+Also assert an omitted `timeoutMs` remains omitted. Run `test/personal-assistant-client.test.mjs`; RED must show that the option is not forwarded.
 
-Run:
+- [ ] **Step 5: Implement the minimal contracts**
+
+Restore `src/config.mjs` to exact `120_000` validation. Change only the invoker upper validator from `300_000` to `600_000`; keep its default `120_000`. Extend `PersonalAssistantClient.decide` to pass an optional `timeoutMs` to the provider without introducing a new default.
+
+- [ ] **Step 6: Run GREEN and confirm unrelated timeout validators did not change**
 
 ```bash
-/usr/local/bin/node --test test/personal-assistant-invoker.test.mjs test/main-composition.test.mjs
+/usr/local/bin/node --test test/config.test.mjs test/config-v6.test.mjs test/personal-assistant-invoker.test.mjs test/personal-assistant-client.test.mjs
+git diff -- src/config.mjs src/personal-assistant/invoke-personal-assistant.mjs src/personal-assistant/client.mjs
 ```
 
-Expected: PASS. Confirm `git diff -- src/personal-assistant/invoke-personal-assistant.mjs src/main.mjs` is empty.
-
-- [ ] **Step 3: Commit the characterization test**
-
-Run:
+- [ ] **Step 7: Commit**
 
 ```bash
-git add test/personal-assistant-invoker.test.mjs
-git commit -m "test: lock bounded Codex analysis ceiling"
+git add src/config.mjs src/personal-assistant/invoke-personal-assistant.mjs src/personal-assistant/client.mjs test/config.test.mjs test/personal-assistant-invoker.test.mjs test/personal-assistant-client.test.mjs
+git commit -m "fix: separate docx analysis timeout contract"
 ```
 
-### Task 3: Verify the complete candidate and record deployable evidence
+### Task 2: Extract one strict bounded OOXML package reader without changing V4.4.4
 
 **Files:**
-- Create: `docs/evidence/2026-08-02-v445-bounded-ai-timeout-baseline.md`
-- Create: `docs/reports/2026-08-02-v445-bounded-ai-timeout-candidate.md`
-- Modify: `README.md`
-- Verify unchanged: all files outside the approved V4.4.5 allowlist.
+- Create: `src/personal-assistant/bounded-ooxml-package.mjs`
+- Create: `test/personal-assistant-bounded-ooxml-package.test.mjs`
+- Modify: `src/personal-assistant/source-security-inspector.mjs`
+- Verify: `test/personal-assistant-source-security-inspector.test.mjs`
+- Verify: `test/v444-feishu-cloud-document-ingest-journey.test.mjs`
 
-**Interfaces:**
-- Consumes: Tasks 1–2 commits and the already deployed V4.4.4 safety journey.
-- Produces: one immutable candidate commit, focused and complete regression evidence, exact changed-file list, rollback requirements and the statement that production still uses 120 seconds until deployment.
+**API:**
 
-- [ ] **Step 1: Run the focused candidate set**
-
-Run:
-
-```bash
-/usr/local/bin/node --test   test/config.test.mjs   test/config-v6.test.mjs   test/main-composition.test.mjs   test/personal-assistant-invoker.test.mjs   test/personal-assistant-task-session.test.mjs   test/personal-assistant-task-source-workspace.test.mjs   test/personal-assistant-save-knowledge.test.mjs   test/knowledge-writer.test.mjs   test/v444-feishu-cloud-document-ingest-journey.test.mjs
+```js
+openBoundedOoxmlPackage(filePath, {
+  maxEntries,
+  maxEntryBytes,
+  maxTotalBytes,
+  expectedSha256
+})
+// returns immutable canonical entry metadata plus bounded readEntry(name)
 ```
 
-Expected: all pass. This set proves configuration, the 300-second invoker bound, current-task safety, Writer/Outcome contracts and the Feishu cloud-document journey.
+The module owns canonical ZIP-name validation, duplicate detection, entry and aggregate size limits, CRC/decompression checks, package-relative target resolution, strict relationship parsing, and XML preflight that rejects `DOCTYPE`/`ENTITY`/external entities.
 
-- [ ] **Step 2: Run one complete regression because configuration is shared startup code**
+- [ ] **Step 1: Run the complete V4.4.4 safety baseline**
 
-Run:
+```bash
+/usr/local/bin/node --test test/personal-assistant-source-security-inspector.test.mjs test/v444-feishu-cloud-document-ingest-journey.test.mjs
+```
+
+- [ ] **Step 2: Add RED package-reader tests**
+
+Cover: expected SHA match/mismatch, canonical names, duplicate normalized names, `../` escape, max entries, single-entry limit, aggregate limit, truncated data, XML declarations, forbidden `DOCTYPE`/`ENTITY`, internal relationship resolution, dangling target, and External relationship preservation for the inspector to classify.
+
+- [ ] **Step 3: Move existing low-level primitives into the shared module**
+
+Do not alter the inspector's relationship policy. The inspector must call the shared reader and retain its exact V4.4.4 allow/reject decisions, especially: only typed Office hyperlink + valid credential-free HTTP(S) may be external; unknown/type-missing/external media/template/OLE/workbook/attachment remain rejected.
+
+- [ ] **Step 4: Run GREEN, the V4.4.4 journey, and diff for policy drift**
+
+```bash
+/usr/local/bin/node --test test/personal-assistant-bounded-ooxml-package.test.mjs test/personal-assistant-source-security-inspector.test.mjs test/v444-feishu-cloud-document-ingest-journey.test.mjs
+git diff -- src/personal-assistant/source-security-inspector.mjs
+```
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/personal-assistant/bounded-ooxml-package.mjs src/personal-assistant/source-security-inspector.mjs test/personal-assistant-bounded-ooxml-package.test.mjs
+git commit -m "refactor: share bounded ooxml package reader"
+```
+
+### Task 3: Build the deterministic DOCX parser and coverage classifier
+
+**Files:**
+- Create: `src/personal-assistant/docx-evidence-helper.mjs`
+- Create: `test/fixtures/docx-evidence-fixture.mjs`
+- Create: `test/personal-assistant-docx-evidence-helper.test.mjs`
+
+**Child input/output:**
+
+```js
+// stdin job
+{ inputPath, expectedSha256, outputDir, limits }
+
+// stdout result envelope
+{
+  originalSha256,
+  observations,
+  imageCandidates,
+  coverage: { status: "complete" | "partial", limitations, parts }
+}
+```
+
+Each image candidate contains exactly `documentOrder`, `ownerPartName`, `relationshipId`, `targetMediaPartName`, `jobRelativePath`, `sha256`. It is emitted only when the relationship in that exact owner part resolves to the declared `word/media/...` PNG.
+
+- [ ] **Step 1: Add a minimal synthetic DOCX fixture builder**
+
+The builder creates bounded packages without private business data and can vary document XML, owner-part relationships, media, content types and extra entries.
+
+- [ ] **Step 2: Add RED complete-coverage tests**
+
+Prove ordered representation of headings, paragraphs, numbered/bulleted lists, table cells, headers, footers, footnotes, endnotes and PNG images. Include the same relationship ID in `document.xml` and `header1.xml` pointing to different PNG files; assert both exact owner-scoped mappings and monotonically increasing `documentOrder`.
+
+- [ ] **Step 3: Add RED partial-coverage tests**
+
+Each of comments, tracked changes, chart, diagram/SmartArt, equation, text box, `altChunk`, custom XML binding, other DrawingML, JPEG/WebP/GIF/SVG/EMF/TIFF, image-budget overflow, text-budget overflow and unknown possibly-visible internal content must yield `partial` with a stable limitation code. A syntactically valid unsupported internal relation is partial, never complete.
+
+- [ ] **Step 4: Add RED fail-closed tests**
+
+Cover malformed XML, forbidden entities, unsafe/dangling/escaping relationship targets, duplicate normalized ZIP names, resource violations, hash mismatch, media declared PNG but non-PNG magic, and unknown external relations. These return a deterministic preparation error and publish nothing.
+
+- [ ] **Step 5: Implement the helper using only the shared package reader**
+
+Parse supported WordprocessingML objectively. Do not summarize or perform network access. Require `word/document.xml`; parse optional numbering/styles/header/footer/footnotes/endnotes when present. Classify every package entry and relationship as represented, known metadata, known unsupported, unknown possibly visible or unsafe.
+
+- [ ] **Step 6: Run GREEN and verify the helper has no network/runtime dependency**
+
+```bash
+/usr/local/bin/node --test test/personal-assistant-docx-evidence-helper.test.mjs test/personal-assistant-bounded-ooxml-package.test.mjs test/personal-assistant-source-security-inspector.test.mjs
+```
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/personal-assistant/docx-evidence-helper.mjs test/fixtures/docx-evidence-fixture.mjs test/personal-assistant-docx-evidence-helper.test.mjs
+git commit -m "feat: prepare deterministic docx evidence"
+```
+
+### Task 4: Publish and reuse owner-only, hash-bound task DOCX evidence
+
+**Files:**
+- Create: `src/personal-assistant/task-docx-evidence.mjs`
+- Create: `src/personal-assistant/task-docx-reader.mjs`
+- Create: `test/personal-assistant-task-docx-evidence.test.mjs`
+- Create: `test/personal-assistant-task-docx-reader.test.mjs`
+- Modify: `src/personal-assistant/model-image-evidence.mjs`
+- Modify: `test/personal-assistant-model-image-evidence.test.mjs`
+
+**Reader API:**
+
+```js
+await taskDocxReader.prepare({workspaceDir, sources, signal, now});
+// {
+//   observations,
+//   modelImageFiles,
+//   coverageBySource: {
+//     [sourceId]: {
+//       sourceId, originalSha256, indexRelativePath, indexSha256,
+//       status: "complete" | "partial", limitations
+//     }
+//   }
+// }
+```
+
+Each `DocxImageEvidence` has exactly: `sourceId`, `relativePath`, `sha256`, `documentOrder`, `ownerPartName`, `relationshipId`, `targetMediaPartName`.
+
+- [ ] **Step 1: Add RED publication tests**
+
+Assert fixed safe names `source-00N.docx-text.json`, `source-00N.docx-image-NNN.png`, `source-00N.docx-index.json`; `0600`; exclusive staging; atomic rename; original/index/evidence hashes; owner-part relation map; sidecar manifest; cleanup on any failure; no modification of original DOCX.
+
+- [ ] **Step 2: Add RED exact-reuse tests**
+
+Reuse only when original SHA, index SHA, every evidence SHA and the reconstructed trusted coverage map match. Missing files, extra files, wrong permission, altered index, stale original or changed relation map fail closed rather than silently regenerating from stale evidence.
+
+- [ ] **Step 3: Add RED child/watchdog/cancellation tests**
+
+Use an injectable fake sleeping helper to prove the parent terminates it at the configured 60-second contract, cleans the private job, publishes nothing and respects an abort signal. Do not add a real 60-second wall-clock test.
+
+- [ ] **Step 4: Extend the model-image validator test-first**
+
+Add a DOCX descriptor branch while preserving PDF/video descriptors. Validate exact keys, safe private relative path, PNG signature, bytes, dimensions/pixels, SHA, strictly increasing `documentOrder`, and owner/relationship/target syntax. The authoritative `(ownerPartName, relationshipId) → targetMediaPartName` proof remains in the signed/hash-bound DOCX index produced by the publisher; the generic validator must not invent that mapping.
+
+- [ ] **Step 5: Implement reader, publisher and validator branch**
+
+Copy the current DOCX into an owner-only private job, start the short-lived Node helper, enforce the whole `prepare` deadline in the parent, validate all child output, publish atomically, then return only evidence reconstructed from the validated index.
+
+- [ ] **Step 6: Run GREEN and adjacent PDF/video evidence regressions**
+
+```bash
+/usr/local/bin/node --test test/personal-assistant-task-docx-evidence.test.mjs test/personal-assistant-task-docx-reader.test.mjs test/personal-assistant-model-image-evidence.test.mjs test/personal-assistant-task-pdf-reader.test.mjs test/personal-assistant-video-timeline-reader.test.mjs
+```
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/personal-assistant/task-docx-evidence.mjs src/personal-assistant/task-docx-reader.mjs src/personal-assistant/model-image-evidence.mjs test/personal-assistant-task-docx-evidence.test.mjs test/personal-assistant-task-docx-reader.test.mjs test/personal-assistant-model-image-evidence.test.mjs
+git commit -m "feat: publish trusted task docx evidence"
+```
+
+### Task 5: Integrate one-call DOCX analysis, five-minute progress and the Writer coverage gate
+
+**Files:**
+- Modify: `src/personal-assistant/coordinator.mjs`
+- Create: `test/personal-assistant-coordinator-docx.test.mjs`
+- Verify: `test/personal-assistant-coordinator-tools.test.mjs`
+- Modify: `src/personal-assistant/dispatcher.mjs` (only if this is the current failure-reply owner)
+- Modify: corresponding dispatcher test if needed
+
+**Decision rules:**
+- Eligible: at least one verified DOCX and no public video.
+- Mixed DOCX + ordinary text/image/PDF/PPTX/XLSX: eligible; all existing non-DOCX readers remain unchanged.
+- DOCX + public video: reject before provider and Writer with a user-facing split-task request.
+- Eligible call: `timeoutMs: 600000`, `allowSourceRead: false`, call count exactly one.
+- Non-DOCX-only call: existing `120000` config/default and existing source-read behavior.
+
+- [ ] **Step 1: Add RED routing and call-count tests**
+
+Cover pure DOCX, DOCX mixed with ordinary sources, DOCX + public video rejection, pure PDF, pure PPTX/XLSX, pure image/text and pure public video. Assert provider options and exact call counts. If a DOCX provider returns a source-read envelope, assert invalid result, one call and zero Writer.
+
+- [ ] **Step 2: Add RED progress tests using fake timers**
+
+At 299,999 ms send nothing. At 300,000 ms send at most one message only if the exact task/revision is still current and AI remains pending. Use deterministic idempotency key `docx-progress:<task-id>:<revision>`. Progress failure must not fail the eventual final path, create Outcome or reserve Writer. Completion/cancel/revision change clears the timer.
+
+- [ ] **Step 3: Add RED trusted coverage-gate tests**
+
+Before `reserveWriter`, take the union of `toolCall.arguments.sourceIds` and `evidenceSourceIds`. For each selected DOCX require a current `coverageBySource` entry whose source ID and original SHA match, index/evidence were validated, and status is `complete`. Selected partial/missing/stale DOCX yields a limitation-aware reply and Writer reservations/calls of zero. An unselected partial DOCX must not block saving another selected complete source.
+
+- [ ] **Step 4: Implement minimal coordinator changes**
+
+Prepare DOCX evidence before context construction, merge observations/images through existing evidence contracts, classify the turn, schedule/cancel the progress timer, pass the explicit per-call timeout, prohibit the DOCX source-read loop and apply the gate before Writer reservation. Add a stable `docx_prepare_failed` phase only if the existing phase vocabulary cannot accurately report helper failure.
+
+- [ ] **Step 5: Run GREEN plus current task/revision/Writer/Outcome contracts**
+
+```bash
+/usr/local/bin/node --test test/personal-assistant-coordinator-docx.test.mjs test/personal-assistant-coordinator-tools.test.mjs test/personal-assistant-task-session.test.mjs test/personal-assistant-task-session-manager.test.mjs test/personal-assistant-save-knowledge.test.mjs
+```
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/personal-assistant/coordinator.mjs test/personal-assistant-coordinator-docx.test.mjs src/personal-assistant/dispatcher.mjs test/personal-assistant-dispatcher.test.mjs
+git commit -m "feat: bound single-call docx analysis"
+```
+
+Only add dispatcher files if they actually changed.
+
+### Task 6: Wire independent time contracts in main composition
+
+**Files:**
+- Modify: `src/main.mjs`
+- Modify: `test/main-composition.test.mjs`
+- Modify: any direct constructor fixture that must receive `TaskDocxReader`
+
+**Composition:**
+- Feishu document exporter `inspect/export`: `120000`.
+- Existing Feishu/WeChat attachment downloader: existing `120000` boundary.
+- `TaskDocxReader`: parent `60000` preparation deadline.
+- Provider closure: `timeoutMs ?? config.personalAssistant.aiTimeoutMs`.
+- Coordinator eligible DOCX call: explicit `600000`.
+
+- [ ] **Step 1: Add RED composition tests**
+
+Use injected fakes to prove each distinct timeout reaches only its intended component. Prove changing per-call AI timeout cannot make exporter/downloader construction fail. Prove non-DOCX uses config `120000`.
+
+- [ ] **Step 2: Wire the reader and decouple timeouts**
+
+Instantiate one `TaskDocxReader`; pass it to the existing coordinator. Keep configuration, permissions, models, services and all other readers unchanged.
+
+- [ ] **Step 3: Run GREEN and startup/config regressions**
+
+```bash
+/usr/local/bin/node --test test/main-composition.test.mjs test/config.test.mjs test/config-v6.test.mjs test/personal-assistant-invoker.test.mjs
+```
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/main.mjs test/main-composition.test.mjs
+git commit -m "fix: decouple source and docx analysis deadlines"
+```
+
+### Task 7: Prove the vertical Feishu DOCX journey and failure boundaries
+
+**Files:**
+- Create or replace: `test/v445-feishu-docx-evidence-journey.test.mjs`
+- Modify only if needed: existing journey fixtures
+
+- [ ] **Step 1: Add the successful vertical contract**
+
+Test:
+
+```text
+Feishu cloud-document message
+→ user-identity export
+→ V4.4.4 safety inspection
+→ DOCX evidence preparation
+→ exactly one Personal Assistant call
+→ save_knowledge
+→ one KnowledgeWriter atomic write
+→ Outcome persisted
+→ one final Feishu reply
+→ staging cleanup
+```
+
+Assert DOCX provider options (`600000`, `allowSourceRead=false`), trusted complete coverage, progress idempotency behavior, Writer at most once and Outcome-before-reply ordering.
+
+- [ ] **Step 2: Add zero-write failure journeys**
+
+Cover partial selected DOCX, preparation timeout/error, AI ten-minute timeout, invalid source-read envelope, task revision update and cancellation. Each must retain source, make Writer zero, avoid false-success Outcome/reply and clean unpublished jobs.
+
+- [ ] **Step 3: Add mixed/non-DOCX regression journeys**
+
+Prove DOCX + ordinary sources remains one 600-second call; DOCX + public video rejects before AI; pure PDF/video/text retains existing reader/source-read/120-second behavior.
+
+- [ ] **Step 4: Run the journey set**
+
+```bash
+/usr/local/bin/node --test test/v444-feishu-cloud-document-ingest-journey.test.mjs test/v445-feishu-docx-evidence-journey.test.mjs test/v427-video-knowledge-save-wechat-journey.test.mjs
+```
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add test/v445-feishu-docx-evidence-journey.test.mjs
+git commit -m "test: prove v4.4.5 feishu docx journey"
+```
+
+### Task 8: Candidate verification, resource measurements and documentation
+
+**Files:**
+- Modify: `README.md`
+- Replace: `docs/evidence/2026-08-02-v445-bounded-ai-timeout-baseline.md`
+- Replace: `docs/reports/2026-08-02-v445-bounded-ai-timeout-candidate.md`
+- Modify if present: version/changelog documentation that currently calls the old 300-second candidate active
+
+- [ ] **Step 1: Run the focused contract set**
+
+Run all files added or changed in Tasks 1–7 plus V4.4.4 inspector/journey, Task Session, Writer and Outcome tests. Record command, counts, duration and result without private data.
+
+- [ ] **Step 2: Measure DOCX preparation on deployment-type Mac**
+
+Use synthetic, non-private bounded fixtures. Measure cold and warm runs for:
+
+1. one legal DOCX at the 2,048-entry/64-MiB expanded package boundary;
+2. up to eight legal DOCX files at the 80-MiB task boundary.
+
+Record total duration, peak published bytes and result code. Any 60-second watchdog hit, resource violation for a legal fixture or clearly nonlinear growth blocks deployment. Do not weaken limits to make a benchmark pass.
+
+- [ ] **Step 3: Run one complete regression because shared startup, OOXML and coordinator code changed**
 
 ```bash
 /usr/local/bin/npm test
 ```
 
-Expected: zero product failures. If only `test/video-timeline-reader-contract.test.mjs` fails with the already documented restricted-sandbox AVFoundation `Cannot Encode` condition, rerun that exact unchanged test once with normal local media permission and record both results; do not repeat the whole suite.
+This single complete run is required to detect format, entry and source-safety regressions that focused tests cannot see. Do not mechanically repeat it. If an environment-only media test fails, rerun only that exact unchanged test under the required local media permission and record both results.
 
-- [ ] **Step 3: Write the baseline evidence**
-
-The evidence file must record only:
-
-```markdown
-# V4.4.5 Bounded AI Timeout Baseline
-
-- Real failure: assistant_timeout at exactly 120000 ms
-- Source preparation: passed; one retained DOCX
-- Writer calls: 0
-- Knowledge writes: 0
-- Document shape: 2666430 bytes, 26 OOXML entries, 14 media entries,
-  84340 document.xml bytes, approximately 6673 text characters
-- Configuration before deployment: schema 7, personalAssistant.aiTimeoutMs 120000
-- V4.4.4 safety inspector remains deployed
-```
-
-Do not include the document name, Task ID, message ID, user ID, chat ID, content or Vault path.
-
-- [ ] **Step 4: Write the candidate report and README status**
-
-The candidate report must include exact base/head commits, RED/GREEN results, focused and complete regression counts, changed-file allowlist, no-expanded-boundaries statement, rollback instructions and “not deployed” status. README must state that V4.4.5 is a bounded 300-second candidate and that the external system version remains V4.4.3 pending real acceptance.
-
-- [ ] **Step 5: Self-check and commit candidate evidence**
-
-Run:
+- [ ] **Step 4: Run static hygiene and inspect the exact scope**
 
 ```bash
 git diff --check
 git status --short
 git diff --name-only a0f365e..HEAD
+rg -n "300_000|300000|V4\.4\.5|aiTimeoutMs" src test README.md docs/superpowers docs/evidence docs/reports
 ```
 
-Expected changed files are limited to `src/config.mjs`, the two direct tests, the V4.4.5 spec/plan/evidence/report and `README.md`.
+Every remaining `300000` must be the five-minute progress contract or clearly marked superseded history, never production configuration or final AI timeout.
 
-Commit:
+- [ ] **Step 5: Replace obsolete candidate evidence and update README**
+
+Record the approved design, RED/GREEN evidence, exact changed files, focused/full results, resource measurements, rollback requirements and status “not externally released”. Mark the old fixed-300 plan/deployment attempt as superseded and rolled back. Do not include private content or identifiers.
+
+- [ ] **Step 6: Perform main-agent correctness review against every design invariant**
+
+Verify exact one-call, timeout separation, fail-closed package parsing, owner-scoped image relationships, coverage-before-reservation, zero-write failures, non-DOCX unchanged, and no scope expansion. Do not use another subagent; the approved independent design review already consumed the one reviewer allowed by the owner.
+
+- [ ] **Step 7: Commit the candidate report**
 
 ```bash
 git add README.md docs/evidence/2026-08-02-v445-bounded-ai-timeout-baseline.md docs/reports/2026-08-02-v445-bounded-ai-timeout-candidate.md
-git commit -m "docs: record v4.4.5 bounded timeout candidate"
+git commit -m "docs: record v4.4.5 docx evidence candidate"
 ```
 
-### Task 4: Build and verify the V4.4.4 rollback point
+### Task 9: Deploy safely and complete the retained real Feishu acceptance
 
-**Files:**
-- Create outside Git: owner-only baseline under `/Users/ccrt/Library/Application Support/LLW Assistant/backups/baselines/`
-- Read only: production component, configuration, state, Skill manifest and LaunchAgent.
+**Files outside Git:**
+- Production component: `/Users/ccrt/Library/Application Support/LLW Assistant/components/feishu-daily-work`
+- Owner-only rollback baseline: `/Users/ccrt/Library/Application Support/LLW Assistant/backups/baselines/`
+- Existing protected config/state/LaunchAgent and logs
 
-**Interfaces:**
-- Consumes: current V4.4.4 production component and schema-7 configuration with 120,000 ms.
-- Produces: a verified baseline able to restore the exact pre-V4.4.5 component and configuration without copying logs, Keychain secrets or Vault content.
+- [ ] **Step 1: Verify and refresh the rollback point**
 
-- [ ] **Step 1: Reconcile production before stopping**
+Capture production component hash manifest, config/state schema and permission modes without secret values. Preserve the currently healthy V4.4.4 production component and verify the restore procedure before changing production.
 
-Record only counts, modes and SHA-256 values for:
+- [ ] **Step 2: Deploy only the verified candidate atomically**
 
-```text
-one LaunchAgent
-one Node main process
-one direct lark-cli consumer
-advancing heartbeat
-config version 7 and state version 4
-personalAssistant.aiTimeoutMs 120000
-unchanged Skill manifest hash
-zero unreplied Outcome
-one retained DOCX Task Source
-zero new knowledge write for the failed attempt
-```
+Copy from the exact candidate commit, preserve owner-only permissions, restart the single existing LaunchAgent, and verify exactly one service, one Node main process, one direct Feishu consumer, advancing heartbeat and healthy Skill loading. Do not change production `personalAssistant.aiTimeoutMs` from `120000`.
 
-- [ ] **Step 2: Create the owner-only rollback baseline**
+- [ ] **Step 3: Verify pre-acceptance safety**
 
-Create a unique directory matching:
+Confirm the retained source still exists, no knowledge write occurred, no duplicate consumer exists and no stale candidate process remains.
 
-```text
-v445-bounded-ai-timeout-pre-deploy-20260802-XXXXXX
-```
+- [ ] **Step 4: Request the only necessary owner action**
 
-Set the directory to `0700` and artifacts to `0600`. Include:
+If no retained “重试” message is already pending after this deployment, ask the owner to send exactly “重试” in the same Feishu conversation. Do not ask for another upload.
 
-```text
-component-predeploy.tgz
-config-predeploy.json
-state-predeploy-live.tgz
-skills-predeploy.tgz
-com.llw.feishu-daily-work.plist
-component-repository.bundle
-SHA256SUMS
-FILE_MODES
-```
+- [ ] **Step 5: Observe one real vertical journey without reading/logging business content**
 
-The state archive may remain only in this protected local baseline. Do not include normal logs, Vault files, document copies outside the already protected state snapshot, tokens or Keychain data.
+Record only phase durations, counts, hashes/coverage result codes and ordering. Acceptance requires:
 
-- [ ] **Step 3: Restore-test in a fresh private directory**
+- current retained DOCX SHA matches its evidence index;
+- all 14 previously observed PNG media are represented or an explicit limitation safely blocks saving;
+- provider call count is exactly one and returns a valid decision within ten minutes;
+- KnowledgeWriter is called at most once;
+- successful save persists Outcome before the original-entry final reply;
+- no false-success reply and no duplicate write.
 
-Use `mktemp -d /private/tmp/llw-v445-rollback-restore.XXXXXX`, then verify:
+- [ ] **Step 6: Handle acceptance result**
 
-```bash
-shasum -a 256 -c SHA256SUMS
-git -C /private/tmp/llw-v444-feishu-cloud-document-safety bundle verify component-repository.bundle
-/usr/local/bin/node --test restored-component/test/config.test.mjs
-```
+On success, update production/system version documentation to V4.4.5, run final health checks and commit the release evidence. On any failure, preserve source and evidence, prove Writer zero or reconcile the single reservation outcome, roll back to the verified V4.4.4 baseline when runtime health or safety is uncertain, and report the exact failing phase. Do not raise the ten-minute ceiling.
 
-Also compare the restored `src/config.mjs` and `config-predeploy.json` byte-for-byte with production. Do not stop the service until all checks pass.
+- [ ] **Step 7: Sync only after verified success**
 
-### Task 5: Atomically deploy code and the one-field configuration change
+After all tests, health checks and real acceptance are green, commit the final release record and push the verified branch under the owner's standing synchronization authorization. Report branch, commits, deployment state and rollback point.
 
-**Files:**
-- Modify in production: `src/config.mjs`
-- Modify in production: direct V4.4.5 tests/docs/README from the verified candidate
-- Modify in protected state: `config.json` field `personalAssistant.aiTimeoutMs` only.
+## Completion gate
 
-**Interfaces:**
-- Consumes: verified candidate and rollback point.
-- Produces: the same single production service running schema 7 with `personalAssistant.aiTimeoutMs=300000`.
+V4.4.5 is complete only when all of the following are true:
 
-- [ ] **Step 1: Stop the existing service once and verify zero residual processes**
-
-Run:
-
-```bash
-launchctl bootout gui/501 /Users/ccrt/Library/LaunchAgents/com.llw.feishu-daily-work.plist
-```
-
-Expected: service absent, zero LLW main process and zero matching lark consumer.
-
-- [ ] **Step 2: Capture a stopped-state snapshot**
-
-Add `state-predeploy-stopped.tgz` to the rollback directory, regenerate `SHA256SUMS` and `FILE_MODES`, and verify every hash.
-
-- [ ] **Step 3: Atomically install only candidate allowlist files**
-
-Use mode `0644`, owner `ccrt`, group `staff`; stage each file beside its destination and rename it over the exact target. Verify each production SHA-256 equals the candidate SHA-256.
-
-- [ ] **Step 4: Atomically update the existing configuration through production code**
-
-From the production component directory, set `V445_CONFIG` to the absolute
-production config path and run:
-
-```bash
-/usr/local/bin/node --input-type=module -e '
-  const {loadConfig,saveConfig}=await import("./src/config.mjs");
-  const file=process.argv[1];
-  const before=await loadConfig(file);
-  const next=structuredClone(before);
-  next.personalAssistant.aiTimeoutMs=300000;
-  await saveConfig(file,next);
-' "$V445_CONFIG"
-```
-
-Then verify:
-
-```text
-config version == 7
-personalAssistant.aiTimeoutMs == 300000
-every other JSON field equals config-predeploy.json
-file mode == 0600
-invoice.aiTimeoutMs == 120000
-knowledge-ingest.aiTimeoutMs == 120000
-assistant-work.aiTimeoutMs == 120000
-```
-
-- [ ] **Step 5: Run production-path focused tests before restart**
-
-Run the Task 3 focused command from the production component directory. Expected: all pass.
-
-- [ ] **Step 6: Start the same LaunchAgent once**
-
-Run:
-
-```bash
-launchctl bootstrap gui/501 /Users/ccrt/Library/LaunchAgents/com.llw.feishu-daily-work.plist
-```
-
-Verify one main process, one direct Feishu consumer, advancing heartbeat, seven-file Skill load, no new startup error, unchanged state schema, unchanged Skill manifest, unchanged media gates, retained Task Source and unchanged knowledge fingerprint.
-
-### Task 6: Complete the real retained-source acceptance
-
-**Files:**
-- No candidate code changes.
-- Production state/knowledge changes only through the normal user-authorized workflow.
-
-**Interfaces:**
-- Consumes: the retained Task Session source and one authentic owner message `重试`.
-- Produces: one current revision, one `save_knowledge` call, one KnowledgeWriter result, durable Outcome before one reply and no temporary residue.
-
-- [ ] **Step 1: Ask for the only unavoidable owner action**
-
-Ask the project owner to send exactly:
-
-```text
-重试
-```
-
-in the same private Feishu conversation. Do not ask for the document again and do not synthesize an inbound message.
-
-- [ ] **Step 2: Monitor the journey without printing content or identifiers**
-
-Verify:
-
-```text
-same Task Session source count == 1
-no second export or second original-source copy
-AI completes within <= 300000 ms
-Writer reservation occurs only for the current revision
-Outcome status == committed or existing
-Outcome replied == true
-artifact count == 1
-knowledge file count increases once, or remains stable only for deterministic existing
-preserved DOCX SHA-256 equals retained source SHA-256
-temporary export/source staging is empty
-no assistant_timeout or source_security_rejected for this revision
-```
-
-- [ ] **Step 3: End and clean the accepted task**
-
-Ask the owner to send `任务结束`. Verify Task Session becomes inactive/empty and `task-sources` is cleaned without changing the published knowledge item.
-
-### Task 7: Declare V4.4.5 and close Git/GitHub
-
-**Files:**
-- Modify: `README.md`
-- Modify: `docs/reports/2026-08-02-v445-bounded-ai-timeout-candidate.md`
-- Modify: `docs/superpowers/specs/2026-08-02-llw-personal-ai-v4.4.5-bounded-ai-timeout-design.md`
-- Modify: root `.llw-system/README.md`
-- Modify: root `.llw-system/SYSTEM_MAP.md`
-- Modify: root `.llw-system/FEISHU_CLOUD_DOCUMENT_PERMISSION_AUDIT.md`
-- Modify: root `docs/superpowers/specs/2026-08-01-llw-personal-ai-v4.5.0-feishu-cloud-knowledge-source-design.md`
-
-**Interfaces:**
-- Consumes: verified production evidence from Tasks 4–6.
-- Produces: one authoritative V4.4.5 system version, accurate next-plan prerequisite, merged private GitHub history and a healthy production service.
-
-- [ ] **Step 1: Update component and system facts**
-
-Record exact candidate/merge commits, rollback path, focused/full regression counts, production config hash, one-process/one-consumer health, real Outcome status, Writer result, source hash equality and cleanup. Do not include private document content, names, IDs or Vault paths.
-
-Update the V4.5.0 prerequisite from “V4.4.4 real acceptance” to “V4.4.5 real acceptance”, because V4.4.5 is the version that completes the journey.
-
-- [ ] **Step 2: Run final verification before completion claims**
-
-Run fresh:
-
-```bash
-git diff --check
-git status --short
-/usr/local/bin/node --test   test/config.test.mjs   test/config-v6.test.mjs   test/main-composition.test.mjs   test/personal-assistant-invoker.test.mjs   test/v444-feishu-cloud-document-ingest-journey.test.mjs
-```
-
-Also recheck production process uniqueness, heartbeat, configuration value, zero unreplied Outcome and empty task-source staging after task end.
-
-- [ ] **Step 3: Commit final evidence**
-
-Run:
-
-```bash
-git add README.md docs/reports/2026-08-02-v445-bounded-ai-timeout-candidate.md docs/superpowers/specs/2026-08-02-llw-personal-ai-v4.4.5-bounded-ai-timeout-design.md
-git commit -m "docs: record v4.4.5 production acceptance"
-```
-
-- [ ] **Step 4: Publish through the private GitHub workflow**
-
-Use the `github:yeet` workflow to push `fix/v445-personal-assistant-timeout`, open a draft PR against `main`, verify the PR diff contains the V4.4.4 safety commits plus V4.4.5 bounded-timeout commits, run required checks, mark ready and merge without force-push. Confirm remote `main` contains the merge commit.
-
-- [ ] **Step 5: Finish the development branch**
-
-Use `superpowers:verification-before-completion` and `superpowers:finishing-a-development-branch`. Only then report V4.4.5 complete and identify V4.5.0 as the next planned capability.
+- configuration remains schema 7 with production AI default 120 seconds;
+- source operations remain 120 seconds and DOCX preparation is parent-bounded at 60 seconds;
+- qualifying DOCX analysis uses one 600-second call and one optional five-minute progress message;
+- pure non-DOCX behavior remains unchanged;
+- selected incomplete/stale DOCX cannot reserve or call Writer;
+- focused tests, one justified full regression and deployment-shape resource measurements pass;
+- the retained real Feishu journey completes Writer → Outcome → original-entry reply exactly once;
+- production health is green and the external version is then, and only then, V4.4.5.
