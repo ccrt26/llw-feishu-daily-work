@@ -25,8 +25,10 @@ export class PersonalAssistantCoordinator {
     loadDailyCandidates=async()=>[],
     personalRules,personalRulesStore=null,skillVersion,
     sourceReader=null,maxSourceReadRounds=3,pdfReader=null,
+    docxReader=null,docxAiTimeoutMs=600_000,docxProgressMs=300_000,
     publicVideoReader=null,
-    taskManager=null,taskWorkspace=null
+    taskManager=null,taskWorkspace=null,
+    setTimer=globalThis.setTimeout,clearTimer=globalThis.clearTimeout
   }) {
     this.assistant=assistant;
     this.writer=writer;
@@ -43,9 +45,14 @@ export class PersonalAssistantCoordinator {
     this.sourceReader=sourceReader;
     this.maxSourceReadRounds=maxSourceReadRounds;
     this.pdfReader=pdfReader;
+    this.docxReader=docxReader;
+    this.docxAiTimeoutMs=docxAiTimeoutMs;
+    this.docxProgressMs=docxProgressMs;
     this.publicVideoReader=publicVideoReader;
     this.taskManager=taskManager;
     this.taskWorkspace=taskWorkspace;
+    this.setTimer=setTimer;
+    this.clearTimer=clearTimer;
     this.taskControllers=new Map();
   }
 
@@ -108,6 +115,41 @@ export class PersonalAssistantCoordinator {
       } else {
         prepared=await this.taskWorkspace.ensure({session});
       }
+      const sourceHandles=prepared.sources.map(source=>source.handle??source);
+      const hasDocx=sourceHandles.some(handle=>handle.format==="docx");
+      const hasPublicVideo=sourceHandles.some(handle=>
+        handle.mediaClass==="video"&&
+        handle.representationIndexPath===`${handle.sourceId}.manifest.json`
+      );
+      if (hasDocx&&hasPublicVideo) {
+        return this.commitTaskResult(snapshot,{
+          status:"rejected",
+          reply:"Word 文档和公开视频需要分成两个任务处理；本次没有调用 AI 或 Writer，也没有写入。请分别发送。",
+          artifacts:[],replyFiles:[],noReplyRequired:false,
+          waiting:null,taskUpdate:null
+        });
+      }
+      if (hasDocx&&session.model!=="codex") {
+        return this.commitTaskResult(snapshot,{
+          status:"rejected",
+          reply:"Word 文档分析需要使用 Codex；本次没有调用 AI 或 Writer，也没有写入。请先切换为 Codex。",
+          artifacts:[],replyFiles:[],noReplyRequired:false,
+          waiting:null,taskUpdate:null
+        });
+      }
+      let docxEvidence={
+        observations:[],modelImageFiles:[],coverageBySource:{}
+      };
+      if (hasDocx) {
+        phase="docx_prepare_failed";
+        if (!this.docxReader) throw new Error("docx_prepare_failed");
+        docxEvidence=await this.docxReader.prepare({
+          workspaceDir:prepared.workspaceDir,
+          sources:prepared.sources,
+          signal:taskController.signal,
+          now:turnMessage.receivedAt
+        });
+      }
       let pdfEvidence={
         observations:[],
         modelImageFiles:[]
@@ -159,10 +201,12 @@ export class PersonalAssistantCoordinator {
         .map(source=>source.absolutePath);
       let decision;
       let sourceObservations=[
+        ...(docxEvidence.observations||[]),
         ...(pdfEvidence.observations||[]),
         ...(publicVideoEvidence.observations||[])
       ];
       let modelImageFiles=[
+        ...(docxEvidence.modelImageFiles||[]),
         ...(pdfEvidence.modelImageFiles||[]),
         ...(publicVideoEvidence.modelImageFiles||[])
       ];
@@ -198,14 +242,24 @@ export class PersonalAssistantCoordinator {
         const allowSourceRead=Boolean(this.sourceReader)&&
           sourceReadRounds<this.maxSourceReadRounds&&
           imageFiles.length+modelImageFiles.length<16;
-        decision=await this.assistant.decide(context,{
-          workspaceDir:prepared.workspaceDir,
-          imageFiles,
-          modelImageFiles,
-          allowSourceRead
-        });
+        const docxCall=hasDocx;
+        let cancelProgress=null;
+        try {
+          if (docxCall) {
+            cancelProgress=this.scheduleDocxProgress(snapshot);
+          }
+          decision=await this.assistant.decide(context,{
+            workspaceDir:prepared.workspaceDir,
+            imageFiles,
+            modelImageFiles,
+            allowSourceRead:docxCall?false:allowSourceRead,
+            ...(docxCall?{timeoutMs:this.docxAiTimeoutMs}:{})
+          });
+        } finally {
+          cancelProgress?.();
+        }
         if (decision.kind!=="source_read") break;
-        if (!allowSourceRead) {
+        if (docxCall||!allowSourceRead) {
           decision={
             kind:"reply",
             text:"本轮可用的视频区间读取次数或图片容量已经用完，本次没有执行保存或其他写入。"
@@ -266,18 +320,32 @@ export class PersonalAssistantCoordinator {
           }
         };
       } else if (decision.kind==="tool") {
-        phase=`${decision.toolCall.name}_writer_reservation_failed`;
-        const reserved=await this.taskManager.reserveWriter({
-          source,
-          taskId:snapshot.taskId,
-          revision:snapshot.revision,
-          updatedAt:snapshot.session.updatedAt,
-          toolName:decision.toolCall.name
-        });
-        if (!reserved) return {status:"stale"};
-        result=await this.executeTaskTool({
-          decision,snapshot,message:turnMessage,prepared
-        });
+        const coverageBlock=decision.toolCall.name==="save_knowledge"
+          ?selectedDocxCoverageBlock({
+            toolCall:decision.toolCall,
+            sources:prepared.sources,
+            coverageBySource:docxEvidence.coverageBySource||{}
+          })
+          :null;
+        if (coverageBlock) {
+          result={
+            status:"committed",reply:coverageBlock,
+            artifacts:[],waiting:null
+          };
+        } else {
+          phase=`${decision.toolCall.name}_writer_reservation_failed`;
+          const reserved=await this.taskManager.reserveWriter({
+            source,
+            taskId:snapshot.taskId,
+            revision:snapshot.revision,
+            updatedAt:snapshot.session.updatedAt,
+            toolName:decision.toolCall.name
+          });
+          if (!reserved) return {status:"stale"};
+          result=await this.executeTaskTool({
+            decision,snapshot,message:turnMessage,prepared
+          });
+        }
       } else {
         result={
           status:"rejected",
@@ -328,6 +396,34 @@ export class PersonalAssistantCoordinator {
     } catch {
       return false;
     }
+  }
+
+  scheduleDocxProgress(snapshot) {
+    let active=true;
+    let attempted=false;
+    const timer=this.setTimer(async()=>{
+      if (!active||attempted) return false;
+      attempted=true;
+      try {
+        if (!await this.taskManager.isCurrent(snapshot)) return false;
+        await this.messenger.send({
+          capability:"personal-assistant",
+          replyTarget:structuredClone(snapshot.message.replyTarget),
+          text:"文档内容较多，我仍在阅读和分析；完成后会直接回复。",
+          idempotencyKey:
+            `docx-progress:${snapshot.taskId}:${snapshot.revision}`,
+          replyFiles:[]
+        });
+        return true;
+      } catch {
+        return false;
+      }
+    },this.docxProgressMs);
+    return ()=>{
+      if (!active) return;
+      active=false;
+      this.clearTimer(timer);
+    };
   }
 
   async cancelTaskWork({taskId}) {
@@ -465,4 +561,64 @@ function mergeModelImageFiles(current,additional) {
     result.push(structuredClone(value));
   }
   return result;
+}
+
+function selectedDocxCoverageBlock({toolCall,sources,coverageBySource}) {
+  const argumentsValue=toolCall?.arguments||{};
+  const selected=new Set([
+    ...(Array.isArray(argumentsValue.sourceIds)
+      ?argumentsValue.sourceIds:[]),
+    ...(Array.isArray(argumentsValue.evidenceSourceIds)
+      ?argumentsValue.evidenceSourceIds:[])
+  ]);
+  const bindings=new Map(sources.map(source=>{
+    const handle=source?.handle??source;
+    return [handle.sourceId,handle];
+  }));
+  const limitations=new Set();
+  let missing=false;
+  for (const sourceId of selected) {
+    const handle=bindings.get(sourceId);
+    if (handle?.format!=="docx") continue;
+    const coverage=coverageBySource[sourceId];
+    if (!validDocxCoverage(coverage,handle)) {
+      missing=true;
+      continue;
+    }
+    if (coverage.status!=="complete") {
+      for (const limitation of coverage.limitations) {
+        limitations.add(limitation);
+      }
+    }
+  }
+  if (!missing&&limitations.size===0) return null;
+  if (limitations.size>0) {
+    const visible=[...limitations].slice(0,3).map(humanDocxLimitation);
+    return `所选 Word 文档仍有未完整表示的内容（${visible.join("、")}），因此本次没有调用 Writer，也没有写入。可以先查看当前总结，但要入库请提供不含这些复杂内容的版本。`;
+  }
+  return "所选 Word 文档的完整覆盖证据与当前原件不匹配，因此本次没有调用 Writer，也没有写入；来源仍保留，可以直接重试。";
+}
+
+function validDocxCoverage(value,handle) {
+  return value&&typeof value==="object"&&!Array.isArray(value)&&
+    value.sourceId===handle.sourceId&&
+    value.originalSha256===handle.sha256&&
+    value.indexRelativePath===`${handle.sourceId}.docx-index.json`&&
+    /^[a-f0-9]{64}$/u.test(value.indexSha256||"")&&
+    new Set(["complete","partial"]).has(value.status)&&
+    Array.isArray(value.limitations)&&value.limitations.length<=32&&
+    value.limitations.every(item=>
+      typeof item==="string"&&/^[a-z0-9_]{1,64}$/u.test(item)
+    )&&
+    (value.status==="complete")===(value.limitations.length===0);
+}
+
+function humanDocxLimitation(value) {
+  return new Map([
+    ["chart","图表"],["smart_art","SmartArt"],["equation","公式"],
+    ["text_box","文本框"],["tracked_changes","修订内容"],
+    ["comments","批注"],["unsupported_image_format","非 PNG 图片"],
+    ["image_budget_exceeded","图片数量超限"],
+    ["text_budget_exceeded","文字内容超限"]
+  ]).get(value)||"复杂版式或暂不支持的内容";
 }

@@ -465,6 +465,52 @@ test("reports a safe public-video cause without exposing internal details",async
   }
 });
 
+test("keeps a DOCX source retryable when evidence preparation fails",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"llw-dispatcher-docx-failure-"));
+  const state=await StateStore.open(join(root,"state.json"));
+  const manager=new PersonalAssistantTaskSessionManager({
+    state,
+    bindings:{
+      feishu:{userId:"owner",conversationId:"private"},
+      wechat:{userId:"wx-owner",conversationId:"wx-owner"}
+    },
+    selectModel:async()=>"codex",
+    createId:()=>"X".repeat(43),
+    now:()=>Date.parse("2026-07-28T00:01:00.000Z")
+  });
+  const dispatcher=new PersonalAssistantDispatcher({
+    binding:{senderId:"owner",chatId:"private"},
+    bindings:{
+      feishu:{userId:"owner",conversationId:"private"},
+      wechat:{userId:"wx-owner",conversationId:"wx-owner"}
+    },
+    state,taskManager:manager,
+    coordinator:{
+      async handleTask(){
+        const failure=new Error("docx_prepare_failed");
+        failure.failurePhase="docx_prepare_failed";
+        throw failure;
+      }
+    },
+    modelMode:{},deepseekEnabled:false,messenger:{async send(){}}
+  });
+  try {
+    await dispatcher.acceptIncomingMessage(incoming({
+      sourceMessageId:"docx-failure",
+      instructionText:"阅读 Word 文档"
+    }));
+    await dispatcher.flushAcceptedMessages();
+    const outcome=state.getOutcome("feishu:docx-failure");
+    assert.equal(outcome.reasonCode,"docx_prepare_failed");
+    assert.equal(
+      outcome.reply,
+      "Word 文档已安全保留，但正文和图片证据准备失败，本次没有调用 AI 或 Writer，也没有写入；可以直接重试，不需要重新发送文件。"
+    );
+  } finally {
+    await rm(root,{recursive:true,force:true});
+  }
+});
+
 function deferred() {
   let resolve;
   const promise=new Promise(done=>{resolve=done;});

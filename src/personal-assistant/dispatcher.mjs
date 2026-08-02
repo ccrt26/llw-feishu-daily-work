@@ -493,13 +493,13 @@ const SAFE_FAILURE_CODES=new Set([
   "personal_rules_invalid","assistant_model_failed",
   "assistant_model_unsupported","provider_result_invalid",
   "assistant_timeout","assistant_process_failed",
-  "assistant_result_invalid","pdf_prepare_failed",
+  "assistant_result_invalid","pdf_prepare_failed","docx_prepare_failed",
   "tool_call_invalid","tool_execution_failed","writer_partial",
   "reply_delivery_failed"
 ]);
 const PRECISE_PRE_WRITER_FAILURES=new Set([
   "assistant_timeout","assistant_process_failed",
-  "assistant_result_invalid","pdf_prepare_failed"
+  "assistant_result_invalid","pdf_prepare_failed","docx_prepare_failed"
 ]);
 const PUBLIC_VIDEO_FAILURE_CODES=new Set([
   "bilibili_url_invalid","bilibili_access_denied",
@@ -605,6 +605,10 @@ function failureReply(code,error) {
     [
       "pdf_prepare_failed",
       "PDF 已安全保留，但页面准备失败，本次没有完成分析，也没有确认任何写入；可以直接重试，不需要重新发送文件。"
+    ],
+    [
+      "docx_prepare_failed",
+      "Word 文档已安全保留，但正文和图片证据准备失败，本次没有调用 AI 或 Writer，也没有写入；可以直接重试，不需要重新发送文件。"
     ],
     [
       "public_video_source_preparation_failed",
